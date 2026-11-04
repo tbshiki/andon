@@ -386,6 +386,11 @@ try {
     # Windows と同じく、先頭のバイトが 02 なら有効、03 なら無効
     New-ItemProperty -LiteralPath $approved -Name 'andon.lnk' -PropertyType Binary -Value ([byte[]](3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)) | Out-Null
     New-ItemProperty -LiteralPath $approved -Name 'other.lnk' -PropertyType Binary -Value ([byte[]](2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)) | Out-Null
+    Assert-True (Test-StartupDisabled -StartupApprovedKey $approved) '先頭が 03 なら、タスク マネージャーで無効にしてある'
+    Set-ItemProperty -LiteralPath $approved -Name 'andon.lnk' -Value ([byte[]](2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+    Assert-Equal (Test-StartupDisabled -StartupApprovedKey $approved) $false '先頭が 02 なら有効'
+    Set-ItemProperty -LiteralPath $approved -Name 'andon.lnk' -Value ([byte[]](3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+    Assert-Equal (Test-StartupDisabled -StartupApprovedKey (Join-Path $regBase 'NoSuchKey')) $false '記録がなければ有効（無効にしていない）'
     # 本物の記録（StartupApproved\StartupFolder）を消さないよう、場所は必ず渡す
     Assert-Equal @(Remove-AndonRegistry -ClassesRoot $classes -NotificationsRoot $notifications -StartupApprovedKey $approved).Count 4 'アプリ ID の表示名、2 つの ID の通知の設定、スタートアップの有効・無効の記録を消す'
     Assert-Equal (Test-Path -LiteralPath (Join-Path $notifications 'example.other')) $true 'ほかのアプリの通知の設定は消さない'

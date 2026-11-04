@@ -221,6 +221,16 @@ function Remove-AndonShortcut {
     return $true
 }
 
+function Test-StartupDisabled {
+    <# タスク マネージャーの「スタートアップ アプリ」で、andon のショートカット（andon.lnk）を無効にしているか。
+       Windows は StartupApproved\StartupFolder に、ショートカットの名前で記録する。確かめた値は、先頭のバイトが
+       02 なら有効、03 なら無効。ほかの値も、先頭のバイトの下位のビットで見分ける #>
+    param([string]$StartupApprovedKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder')
+    if (-not (Test-Path -LiteralPath $StartupApprovedKey)) { return $false }
+    $value = (Get-Item -LiteralPath $StartupApprovedKey).GetValue('andon.lnk')
+    return [bool]($value -is [byte[]] -and $value.Length -gt 0 -and ($value[0] -band 1))
+}
+
 function Remove-AndonRegistry {
     <# andon と Windows が作ったレジストリのキーと値を消す。消したものを返す。
        - アプリ ID の表示名（andon が起動のたびに書く）と、通知の設定（最初の通知で Windows が作る）。
@@ -388,7 +398,10 @@ try {
     if ($version) { $name = "andon $version" }
     Write-Host ('{0} を入れて、起動しました: {1}' -f $name, $layout.InstallDir)
     Write-Host 'トレイから「終了」したあとは、スタートメニューの「andon」で起動できます。'
-    if (Test-AndonShortcut -Path $layout.Startup) { Write-Host 'ログオンしたときにも起動します（スタートアップ）。' }
+    if (Test-AndonShortcut -Path $layout.Startup) {
+        if (Test-StartupDisabled) { Write-Host 'スタートアップは、タスク マネージャーで無効にしてあるので、ログオンしたときには起動しません。' }
+        else { Write-Host 'ログオンしたときにも起動します（スタートアップ）。' }
+    }
     Write-Host ('消すときは: powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{0}" -Uninstall' -f (Join-Path $layout.InstallDir 'install.ps1'))
     exit 0
 }
