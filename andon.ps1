@@ -11,7 +11,7 @@
 
     - waiting（許可待ち・質問待ち）を赤、busy から idle に変わった未確認のもの（完了）を黄で上に並べる。
     - 新しい待ちが出たとき、このウィンドウが前面になければタスクバーを点滅させる。
-    - 行をクリックすると、cwd を含む *.code-workspace（なければフォルダ）を `code` で開く。
+    - 行をクリックすると、cwd を含む *.code-workspace（なければ repository の root）を `code` で開く。
       既に開いているウィンドウがあれば、そのウィンドウが前面に出る。ターミナルのタブまでは選ばない。
 
 .PARAMETER FallbackSec
@@ -163,37 +163,62 @@ function Get-WorkspaceFolders {
     return $result
 }
 
+function Get-WorkspaceFile {
+    <# フォルダの直下にある *.code-workspace を名前順に返す #>
+    param([string]$Dir)
+    return @(Get-ChildItem -LiteralPath $Dir -Filter '*.code-workspace' -File -ErrorAction SilentlyContinue |
+            Sort-Object Name)
+}
+
 function Resolve-VSCodeTarget {
+    <# セッションの作業フォルダから、`code` で開く対象（*.code-workspace かフォルダ）を決める #>
     param([string]$Cwd)
     # Claude が作る worktree（<repo>\.claude\worktrees\<name>）は元の repository として扱う
     $base = $Cwd -replace '\\\.claude\\worktrees\\.*$', ''
 
-    # 1) cwd から repository の root まで遡って *.code-workspace を探す
+    # repository の root。git の外なら作業フォルダそのもの。
+    # これより上の階層にある workspace は、無関係な物（ダウンロードした物など）を開かないよう、手順 1 では使わない
+    $top = $base
     $dir = $base
-    $repoRoot = $null
-    for ($i = 0; $i -lt 4 -and $dir; $i++) {
-        $ws = Get-ChildItem -LiteralPath $dir -Filter '*.code-workspace' -File -ErrorAction SilentlyContinue |
-            Select-Object -First 1
-        if ($ws) { return $ws.FullName }
-        if (Test-Path -LiteralPath (Join-Path $dir '.git')) { $repoRoot = $dir; break }
+    while ($dir) {
+        if (Test-Path -LiteralPath (Join-Path $dir '.git')) { $top = $dir; break }
         $dir = Split-Path -Parent $dir
     }
 
-    # 2) 隣の repository の *.code-workspace が、folders に cwd を含んでいればそれを使う（multi-root）
-    if (-not $repoRoot) { $repoRoot = $base }
-    $parent = Split-Path -Parent $repoRoot
-    if ($parent) {
-        $candidates = @(Get-ChildItem -LiteralPath $parent -Directory -ErrorAction SilentlyContinue |
-                ForEach-Object { Get-ChildItem -LiteralPath $_.FullName -Filter '*.code-workspace' -File -ErrorAction SilentlyContinue })
-        foreach ($ws in $candidates) {
-            foreach ($folder in (Get-WorkspaceFolders -Path $ws.FullName)) {
-                if (Test-PathUnder -Path $base -Root $folder) { return $ws.FullName }
-            }
-        }
+    # 1) 作業フォルダから repository の root まで遡り、*.code-workspace があれば最も近いものを使う
+    $dir = $base
+    while ($dir) {
+        $ws = Get-WorkspaceFile -Dir $dir | Select-Object -First 1
+        if ($ws) { return $ws.FullName }
+        if ($dir -ieq $top) { break }
+        $dir = Split-Path -Parent $dir
     }
 
-    # 3) 見つからなければフォルダを開く（そのフォルダのウィンドウが無ければ新しいウィンドウになる）
-    return $base
+    # 2) repository の親フォルダと、その隣のフォルダにある *.code-workspace のうち、folders に repository
+    #    （または作業フォルダを含む、その中のフォルダ）を挙げているものを使う（multi-root）。
+    #    親フォルダ全体（".." など）のように repository より広いフォルダは数えない。隣の repository の workspace が
+    #    すべての兄弟フォルダを取ってしまわないようにするため。複数あれば、作業フォルダに最も近いフォルダを挙げているもの
+    $parent = Split-Path -Parent $top
+    if ($parent) {
+        $candidates = @(Get-WorkspaceFile -Dir $parent) +
+            @(Get-ChildItem -LiteralPath $parent -Directory -ErrorAction SilentlyContinue | Sort-Object Name |
+                ForEach-Object { Get-WorkspaceFile -Dir $_.FullName })
+        $best = $null
+        $bestLength = -1
+        foreach ($ws in $candidates) {
+            foreach ($folder in (Get-WorkspaceFolders -Path $ws.FullName)) {
+                if ((Test-PathUnder -Path $base -Root $folder) -and (Test-PathUnder -Path $folder -Root $top)) {
+                    $length = $folder.TrimEnd('\').Length
+                    if ($length -gt $bestLength) { $best = $ws.FullName; $bestLength = $length }
+                }
+            }
+        }
+        if ($best) { return $best }
+    }
+
+    # 3) 見つからなければ repository の root（git の外なら作業フォルダ）を開く。
+    #    サブフォルダを開くと、root を開いている既存のウィンドウではなく新しいウィンドウになるため
+    return $top
 }
 
 function Find-VSCodeTarget {
