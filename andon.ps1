@@ -17,13 +17,20 @@
 .PARAMETER FallbackSec
     更新時刻に変化がなくても `claude agents --json` を呼ぶ間隔（秒）。
 
+.PARAMETER ScanMs
+    sessions/*.json の名前と更新時刻を見る間隔（ミリ秒）。長くすると、状態の変化に気付くのが遅れる。
+    経過時間の表示は 5 秒ごとに更新するので、それより長くはできない。
+
 .EXAMPLE
     powershell.exe -NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File .\andon.ps1
 #>
 [CmdletBinding()]
 param(
     [ValidateRange(5, 600)]
-    [int]$FallbackSec = 30
+    [int]$FallbackSec = 30,
+
+    [ValidateRange(200, 5000)]
+    [int]$ScanMs = 1000
 )
 
 # ---------------------------------------------------------------------------
@@ -496,7 +503,7 @@ $script:NextPoll = Get-Date
 $script:NextRender = Get-Date
 
 $timer = New-Object System.Windows.Forms.Timer
-$timer.Interval = 500
+$timer.Interval = $ScanMs
 $timer.Add_Tick({
         try {
             $now = Get-Date
