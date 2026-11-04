@@ -10,6 +10,8 @@
     ファイルの中身は読まない。同じ場所にある *.key には触れない。
 
     - waiting（許可待ち・質問待ち）を赤、busy から idle に変わった未確認のもの（完了）を黄で上に並べる。
+    - VS Code の拡張機能のパネルなど、SDK から動かしているセッションは、待機中（確認済み）なら出さない。
+      拡張機能は、パネルを閉じても claude を終了させず、待機中のまま残すため。
     - タスクバーには出さず、通知領域（タスクトレイ）のアイコンの色で状態を示す。
       × で閉じるとトレイに隠れる。終了はトレイの右クリックのメニューから行う。
     - 新しい待ちや完了が出たとき、このウィンドウが前面になければ Windows の通知を出す。
@@ -87,6 +89,7 @@ function Update-SessionState {
             $entry = [pscustomobject]@{
                 Key = $key; Status = $status; Since = $null; Unread = ($status -eq 'waiting')
                 Name = ''; Cwd = ''; Kind = ''; WaitingFor = ''; AlertAt = $null
+                Sdk = $null   # 拡張機能のパネルなど、ターミナルではなく SDK から動かしているか。$null は未判定
             }
             $script:State[$key] = $entry
             if ($entry.Unread) { $entry.AlertAt = $Now; $alert = $true }
@@ -131,6 +134,31 @@ function Get-StatusLabel {
         'busy' { return '実行中' }
         default { return [string]$Entry.Status }
     }
+}
+
+function Test-SdkCommandLine {
+    <# プロセスの起動引数から、ターミナルではなく SDK（VS Code の拡張機能のパネルなど）が動かしているセッションかを判定する。
+       claude agents --json はどちらも kind: interactive として返すので、起動引数で区別する #>
+    param([string]$CommandLine)
+    if (-not $CommandLine) { return $false }
+    return [regex]::IsMatch($CommandLine, '(?:^|\s)--input-format(?:=|\s+)"?stream-json\b')
+}
+
+function Get-ProcessCommandLine {
+    <# プロセスの起動引数。取れなければ $null #>
+    param([int]$Id)
+    try {
+        $p = Get-CimInstance Win32_Process -Filter "ProcessId=$Id" -ErrorAction Stop
+        if ($p) { return [string]$p.CommandLine }
+    }
+    catch { }
+    return $null
+}
+
+function Test-SessionVisible {
+    <# 拡張機能のパネルのセッションは、パネルを閉じても待機中のまま残るので、待機中（確認済み）なら一覧に出さない #>
+    param($Entry)
+    return -not ($Entry.Sdk -and (Get-Rank $Entry) -eq 3)
 }
 
 function Get-AlertLevel {
@@ -519,7 +547,7 @@ function Get-SelectedEntry {
 
 function Update-ListView {
     $now = Get-Date
-    $entries = @($script:State.Values | Sort-Object `
+    $entries = @($script:State.Values | Where-Object { Test-SessionVisible $_ } | Sort-Object `
             @{ Expression = { Get-Rank $_ } }, `
             @{ Expression = { if ($_.Since) { $_.Since } else { [datetime]::MinValue } } })
     $selectedKey = $null
@@ -642,6 +670,10 @@ $timer.Add_Tick({
                 $script:PollProc.Dispose()
                 $script:PollProc = $null
                 $alert = Update-SessionState -Sessions (ConvertFrom-SessionJson $json) -Now $now
+                foreach ($e in $script:State.Values) {
+                    # 起動引数は変わらないので、新しいセッションだけ 1 回見る。取れなければ普通のセッションとして扱う
+                    if ($null -eq $e.Sdk) { $e.Sdk = Test-SdkCommandLine (Get-ProcessCommandLine -Id $e.Key) }
+                }
                 Update-ListView
                 $script:NextRender = $now.AddSeconds(5)
                 $lblStatus.Text = '更新 ' + $now.ToString('HH:mm:ss')
