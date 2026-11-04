@@ -13,9 +13,12 @@
 | 実行中 | 通常 | ツールの実行や応答の生成中 |
 | 待機 | 灰 | 次のプロンプトを待っている（確認済み） |
 
-- 赤と黄の件数をウィンドウのタイトルに出します。新しく待ちが出たとき、andon が前面になければタスクバーが点滅し続けます。
 - 行をクリックすると、そのセッションの VS Code ウィンドウが前面に出ます。
 - 黄は、行をクリックする、右クリックの「既読にする」、「すべて既読」、そのセッションで次のプロンプトを送る、のいずれかで消えます。
+- andon はタスクバーには出ず、通知領域（タスクトレイ）にアイコンを置きます。アイコンは、赤があれば赤、黄があれば黄、どちらもなければ灰になります。赤と黄の件数は、ウィンドウのタイトルとアイコンのツールチップに出ます。
+- 新しく待ちや完了が出たとき、andon が前面になければ Windows の通知を出し、ウィンドウのタイトルバーを点滅させます。通知をクリックすると、そのセッションの VS Code ウィンドウが前面に出ます。通知の送り元は、andon を動かしている PowerShell の名前（`Windows PowerShell` など）で表示されます。
+- ウィンドウの × や最小化では、終了せずにトレイに隠れます。トレイのアイコンをクリックすると、表示と非表示が切り替わります。終了は、トレイのアイコンの右クリックのメニューから行います。
+- Windows 11 では、新しいアイコンは最初、通知領域の `^` の中に隠れています。常に見えるようにするには、`^` の中からアイコンをタスクバーへドラッグします。
 
 ## 動作環境
 
@@ -30,14 +33,16 @@ Claude Code は VS Code の統合ターミナルなどで普通に `claude` を�
 
 ```powershell
 git clone https://github.com/tbshiki/andon.git
-powershell.exe -NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File .\andon\andon.ps1
+Start-Process conhost.exe '--headless powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File .\andon\andon.ps1'
 ```
 
-画面の右下に、常に手前に表示されるウィンドウが開きます。二重に起動しても 2 つ目はすぐ終了します。
+画面の右下に、常に手前に表示されるウィンドウが開き、通知領域にアイコンが出ます。二重に起動しても 2 つ目はすぐ終了します（トレイに隠れているときは、トレイのアイコンから表示します）。
 
 ログオン時に自動で起動するには、`Win + R` で `shell:startup` を開き、次のショートカットを置きます。
 
-- リンク先: `powershell.exe -NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "<clone した場所>\andon.ps1"`
+- リンク先: `conhost.exe --headless powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "<clone した場所>\andon.ps1"`
+
+`conhost.exe --headless` は、PowerShell のコンソールをウィンドウなしで動かします。Windows 11 では既定のターミナルが Windows Terminal なので、`powershell.exe -WindowStyle Hidden` で起動すると、コンソールが Windows Terminal に引き渡されて隠れず、andon とは別にタスクバーに残ります。
 
 `-FallbackSec` で、変化がなくても状態を取り直す間隔（既定 30 秒）を変えられます。`-ScanMs` で、変化を見る間隔（既定 1000 ミリ秒、200〜5000）を変えられます。長くすると、待ちに気付くのが遅れます。
 
