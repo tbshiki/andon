@@ -4,6 +4,8 @@
 # 未追跡・無視対象・リポジトリ外のファイルは判定を返さず、通常の許可フローに委ねる。
 # .claude/ と .github/ の下は、追跡済みでも自動許可しない。AI の権限(この hook 自身や deny の設定)と
 # CI を決めるファイルなので、確認なしで書き換えさせない。
+# AGENTS.md と CLAUDE.md(サブフォルダのものも)も自動許可しない。AI への決まりを書いたファイルで、
+# 書き換えると次のセッションからも効くため。
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
@@ -33,7 +35,7 @@ try {
     if (-not $isTracked) { exit 0 }
 
     foreach ($relative in ([string]($listed -join '')).Split([char]0)) {
-        if ($relative -imatch '^\.(claude|github)/') { exit 0 }
+        if ($relative -imatch '^\.(claude|github)/|(^|/)(AGENTS|CLAUDE)\.md$') { exit 0 }
     }
 
     @{

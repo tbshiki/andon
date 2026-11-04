@@ -15,7 +15,9 @@
     - タスクバーには出さず、通知領域（タスクトレイ）のアイコンの色で状態を示す。
       × で閉じるとトレイに隠れる。終了はトレイの右クリックのメニューから行う。
     - 新しい待ちや完了が出たとき、このウィンドウが前面になければ Windows の通知を出す。
-      通知をクリックすると、そのセッションを開く。送り元は、プロセスのアプリ ID を andon にして「andon」と表示させる。
+      通知をクリックすると、そのセッションを開く。送り元は、プロセスにアプリ ID（tbshiki.andon）を付け、
+      その表示名を HKCU に登録して「andon」と表示させる。
+      ID はプロセス全体に付くので、andon のためだけに起動した PowerShell で動かしたときだけ付ける。
     - 行をクリックすると、cwd を含む *.code-workspace（なければ repository の root）を VS Code で開く。
       既に開いているウィンドウがあれば、そのウィンドウが前面に出る。ターミナルのタブまでは選ばない。
 
@@ -82,14 +84,20 @@ function Update-SessionState {
         $alive[$key] = $true
         $status = Get-JsonValue $s 'status'
         if (-not $status) { $status = 'unknown' }
+        $startedAt = Get-JsonValue $s 'startedAt'
 
         $entry = $script:State[$key]
+        # 終わったセッションの PID を新しいセッションが使い回したときは、前の状態を引き継がない
+        if ($entry -and $null -ne $startedAt -and $null -ne $entry.StartedAt -and $entry.StartedAt -ne $startedAt) {
+            $entry = $null
+        }
         if (-not $entry) {
             # 起動時点で idle のものは、いつ終わったか分からないので既読として扱う
             $entry = [pscustomobject]@{
                 Key = $key; Status = $status; Since = $null; Unread = ($status -eq 'waiting')
                 Name = ''; Cwd = ''; Kind = ''; WaitingFor = ''; AlertAt = $null
                 Sdk = $null   # 拡張機能のパネルなど、ターミナルではなく SDK から動かしているか。$null は未判定
+                StartedAt = $startedAt
             }
             $script:State[$key] = $entry
             if ($entry.Unread) { $entry.AlertAt = $Now; $alert = $true }
@@ -106,6 +114,7 @@ function Update-SessionState {
         $entry.Cwd = [string](Get-JsonValue $s 'cwd')
         $entry.Kind = [string](Get-JsonValue $s 'kind')
         $entry.WaitingFor = [string](Get-JsonValue $s 'waitingFor')
+        if ($null -ne $startedAt) { $entry.StartedAt = $startedAt }
     }
     foreach ($k in @($script:State.Keys)) {
         if (-not $alive.ContainsKey($k)) { $script:State.Remove($k) }
@@ -367,6 +376,31 @@ function Start-VSCode {
     if ($p) { $p.Dispose() }
 }
 
+function Test-DedicatedProcess {
+    <# プロセスの起動引数に、このスクリプト（andon.ps1）があるか。README の起動方法やスタートアップのショートカットのように、
+       andon のためだけに起動した PowerShell なら $true。対話で使っているシェルで直接動かしたときは $false #>
+    param([string[]]$Arguments, [string]$ScriptName)
+    if (-not $ScriptName) { return $false }
+    $pattern = '(^|[\\/])' + [regex]::Escape($ScriptName) + '$'
+    foreach ($a in $Arguments) {
+        if ($a -and [regex]::IsMatch($a.Trim('"', "'"), $pattern, 'IgnoreCase')) { return $true }
+    }
+    return $false
+}
+
+function Register-AppUserModelId {
+    <# アプリ ID に、通知の送り元として出す表示名を登録する（HKCU なので管理者の権限は要らない）。登録できたら $true。
+       登録しないと、Windows は ID の文字列をそのまま送り元に出す #>
+    param([string]$Id, [string]$DisplayName, [string]$Root = 'HKCU:\Software\Classes\AppUserModelId')
+    try {
+        $key = Join-Path $Root $Id
+        if (-not (Test-Path -LiteralPath $key)) { New-Item -Path $key -Force -ErrorAction Stop | Out-Null }
+        Set-ItemProperty -LiteralPath $key -Name DisplayName -Value $DisplayName -ErrorAction Stop
+        return $true
+    }
+    catch { return $false }
+}
+
 function Stop-ProcessTree {
     <# プロセスと、その子孫のプロセスを止める。claude が .cmd の場合、cmd.exe だけを止めると node が残るため #>
     param([int]$Id)
@@ -406,20 +440,27 @@ $script:SessionsDir = Join-Path (Get-ClaudeConfigDir) 'sessions'
 # （AppUserModelID）から決める。ID は、andon のウィンドウを作る前に付けなければならない。
 # 上のメッセージボックスを出したときは、そのまま終わるので ID は要らない。
 # 付けられなくても、送り元が PowerShell のままになるだけなので続ける。
+# ID はプロセス全体に付き、外せない。対話で使っているシェルで直接動かしたときは、andon を終えたあともシェルに残るので付けない。
+# ID は、ほかのアプリと通知の設定が混ざらないよう tbshiki.andon にし、送り元に andon と出るよう表示名を登録する。
+# 登録できなければ、ID の文字列がそのまま送り元に出るので、ID を andon にする。
 # AndonNative とは別の型にする。同じセッションで前の版の andon を動かしていると、前の版の AndonNative が残っていて、
 # 定義し直せないため
-try {
-    if (-not ('AndonAppId' -as [type])) {
-        Add-Type -TypeDefinition @'
+if (Test-DedicatedProcess -Arguments ([Environment]::GetCommandLineArgs()) -ScriptName ([IO.Path]::GetFileName($PSCommandPath))) {
+    $appId = 'andon'
+    if (Register-AppUserModelId -Id 'tbshiki.andon' -DisplayName 'andon') { $appId = 'tbshiki.andon' }
+    try {
+        if (-not ('AndonAppId' -as [type])) {
+            Add-Type -TypeDefinition @'
 using System.Runtime.InteropServices;
 public static class AndonAppId {
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)] public static extern int SetCurrentProcessExplicitAppUserModelID(string appId);
 }
 '@
+        }
+        [void][AndonAppId]::SetCurrentProcessExplicitAppUserModelID($appId)
     }
-    [void][AndonAppId]::SetCurrentProcessExplicitAppUserModelID('andon')
+    catch { }
 }
-catch { }
 
 if (-not ('AndonNative' -as [type])) {
     Add-Type -TypeDefinition @'
@@ -700,7 +741,9 @@ $timer.Add_Tick({
                     if ($form.Visible) { [AndonNative]::Flash($form.Handle) }
                     $notice = Get-AlertNotice -Entries @($script:State.Values) -Now $now
                     if ($notice) {
-                        $script:NoticeKey = $notice.Key   # 通知をクリックしたら、このセッションを開く
+                        # 通知をクリックしたら、このセッションを開く。覚えるのは最新の 1 件分でよい。
+                        # Windows は同じアイコンの通知を新しいもので置き換え、通知センターにも最新の 1 件しか残さないため
+                        $script:NoticeKey = $notice.Key
                         $tray.ShowBalloonTip(10000, $notice.Title, $notice.Text, [System.Windows.Forms.ToolTipIcon]::None)
                     }
                 }

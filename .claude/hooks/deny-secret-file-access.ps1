@@ -5,6 +5,9 @@
 # 参照している場合にブロックする。
 # .env.example は除外する。process.env のようなプロパティ参照は誤検知しない
 # (直前が単語文字の ".env" はパスと見なさない)。
+# PowerShell の $e.Key や $a[0].Key のような、変数か括弧のすぐ後ろの大文字の ".Key" も鍵ファイルと見なさない。
+# 小文字の ".key" は、bash の $name.key のようにファイル名になりうるので除外しない。
+# GitHub Actions の式 ${{ secrets.GITHUB_TOKEN }} は、ファイルではないので secrets.* と見なさない。
 # コマンドの文字列を正規表現で調べるだけの補助的な防止であり、文字列の分割や変数を使えば回避できる。
 # 権限の境界としては扱わない。ファイルを読むコマンドは .claude/settings.json で自動許可しないこと。
 
@@ -38,10 +41,14 @@ try {
     if ($scrubbed -imatch '(^|[^\w-])\.env(\.|\b)') {
         Deny '.env ファイルへのアクセスは禁止されています(AGENTS.md の秘密情報保護ルール)'
     }
-    if ($scrubbed -imatch '\.(key|pem)(\b|$)') {
+    # 大文字小文字を区別して、プロパティ参照の ".Key" だけを除いてから判定する
+    $keyScrubbed = $scrubbed -creplace '(\$[\w:]+(\.\w+)*|[)\]])\.Key\b', ''
+    if ($keyScrubbed -imatch '\.(key|pem)(\b|$)') {
         Deny '鍵ファイル(*.key / *.pem)へのアクセスは禁止されています(AGENTS.md の秘密情報保護ルール)'
     }
-    if ($scrubbed -imatch '(^|[^\w-])secrets\.\w') {
+    # ${{ ... }} の中は GitHub Actions の式なので、取り除いてから判定する
+    $expressionScrubbed = $scrubbed -replace '\$\{\{[\s\S]*?\}\}', ''
+    if ($expressionScrubbed -imatch '(^|[^\w-])secrets\.\w') {
         Deny 'secrets.* ファイルへのアクセスは禁止されています(AGENTS.md の秘密情報保護ルール)'
     }
     if ($scrubbed -imatch '\.credentials\.json\b') {

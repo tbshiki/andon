@@ -125,6 +125,27 @@ Assert-Equal $script:State['3'].Unread $false 'waiting から idle（手元で�
 $null = Update-SessionState -Sessions @([pscustomobject]@{ id = 'bg1'; kind = 'background'; state = 'done' }) -Now $t0.AddSeconds(25)
 Assert-Equal $script:State.Count 0 'プロセスのない background セッションは扱わない'
 
+# PID の使い回し: startedAt が変わったら、同じ PID でも別のセッションとして扱う
+$script:State = @{}
+$old = New-Session 8 'busy'; $old | Add-Member startedAt 1000
+$null = Update-SessionState -Sessions @($old) -Now $t0
+$script:State['8'].Sdk = $true
+$old.status = 'idle'
+$null = Update-SessionState -Sessions @($old) -Now $t0.AddSeconds(5)
+Assert-Equal $script:State['8'].Unread $true '使い回しの前: busy から idle で完了'
+$reused = New-Session 8 'idle'; $reused | Add-Member startedAt 2000
+$alert = Update-SessionState -Sessions @($reused) -Now $t0.AddSeconds(10)
+Assert-Equal $script:State['8'].Unread $false 'PID を使い回した新しいセッションは、前の完了を引き継がない'
+Assert-Equal $script:State['8'].Sdk $null 'PID を使い回した新しいセッションは、拡張機能のパネルかを判定し直す'
+Assert-Equal $script:State['8'].Since $null 'PID を使い回した新しいセッションは、前の経過時間を引き継がない'
+Assert-Equal $alert $false 'PID を使い回した新しいセッションが idle なら通知しない'
+$same = New-Session 8 'busy'; $same | Add-Member startedAt 2000
+$null = Update-SessionState -Sessions @($same) -Now $t0.AddSeconds(15)
+Assert-Equal $script:State['8'].Since $t0.AddSeconds(15) 'startedAt が同じなら同じセッションとして状態の変化を記録する'
+$noStart = New-Session 8 'idle'
+$null = Update-SessionState -Sessions @($noStart) -Now $t0.AddSeconds(20)
+Assert-Equal $script:State['8'].Unread $true 'startedAt がなければ PID だけで見分ける（busy から idle で完了）'
+
 Assert-Equal (Get-Rank ([pscustomobject]@{ Status = 'waiting'; Unread = $false })) 0 '並び順: 待ちが先頭'
 Assert-Equal (Get-Rank ([pscustomobject]@{ Status = 'idle'; Unread = $true })) 1 '並び順: 完了が次'
 Assert-Equal (Get-Rank ([pscustomobject]@{ Status = 'busy'; Unread = $false })) 2 '並び順: 実行中'
@@ -205,6 +226,34 @@ finally {
     $sdkProc.Dispose()
 }
 Assert-Equal (Get-ProcessCommandLine -Id 2147483646) $null '存在しないプロセスは $null'
+
+# ---------------------------------------------------------------------------
+Write-Host '== Test-DedicatedProcess'
+$ps51 = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
+Assert-True (Test-DedicatedProcess -Arguments @($ps51, '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', 'C:\work\andon\andon.ps1') -ScriptName 'andon.ps1') 'README の起動方法（-File で andon.ps1）は andon 専用'
+Assert-True (Test-DedicatedProcess -Arguments @('pwsh', '.\andon.ps1', '-ScanMs', '500') -ScriptName 'andon.ps1') 'pwsh に相対パスで渡したものも andon 専用'
+Assert-True (Test-DedicatedProcess -Arguments @($ps51, '-Command', "& 'C:\work\andon\andon.ps1'") -ScriptName 'andon.ps1') '-Command で呼んだものも andon 専用'
+Assert-True (Test-DedicatedProcess -Arguments @($ps51, '-File', 'C:\work\andon\ANDON.PS1') -ScriptName 'andon.ps1') '大文字小文字を区別しない'
+Assert-Equal (Test-DedicatedProcess -Arguments @($ps51) -ScriptName 'andon.ps1') $false '対話で使っているシェル（起動引数に andon.ps1 がない）は andon 専用ではない'
+Assert-Equal (Test-DedicatedProcess -Arguments @('C:\Program Files\PowerShell\7\pwsh.dll', '-NoLogo') -ScriptName 'andon.ps1') $false 'pwsh の対話のシェルも andon 専用ではない'
+Assert-Equal (Test-DedicatedProcess -Arguments @($ps51, '-File', 'C:\work\not-andon.ps1') -ScriptName 'andon.ps1') $false '名前の一部が同じだけの別のスクリプトは数えない'
+Assert-Equal (Test-DedicatedProcess -Arguments @($ps51, '-File', 'C:\work\andon\andon.ps1') -ScriptName '') $false 'スクリプトの名前が分からなければ andon 専用と見なさない'
+
+# ---------------------------------------------------------------------------
+Write-Host '== Register-AppUserModelId'
+# 本物の登録先（HKCU\Software\Classes\AppUserModelId）は使わず、テスト用のキーに書いて消す
+$regRoot = 'HKCU:\Software\andon-test-' + [guid]::NewGuid().ToString('N')
+try {
+    Assert-True (Register-AppUserModelId -Id 'example.andon' -DisplayName 'andon' -Root $regRoot) '表示名を登録できたら $true'
+    Assert-Equal (Get-ItemProperty -LiteralPath (Join-Path $regRoot 'example.andon')).DisplayName 'andon' '表示名を書く'
+    Assert-True (Register-AppUserModelId -Id 'example.andon' -DisplayName 'andon 2' -Root $regRoot) '登録済みでも書き直せる'
+    Assert-Equal (Get-ItemProperty -LiteralPath (Join-Path $regRoot 'example.andon')).DisplayName 'andon 2' '書き直した表示名'
+}
+finally {
+    if (Test-Path -LiteralPath $regRoot) { Remove-Item -LiteralPath $regRoot -Recurse -Force }
+}
+Assert-Equal (Test-Path -LiteralPath $regRoot) $false 'テスト用のキーを消した'
+Assert-Equal (Register-AppUserModelId -Id 'example.andon' -DisplayName 'andon' -Root 'NoSuchDrive:\x') $false '書けなければ $false（ID を andon に戻す）'
 
 # ---------------------------------------------------------------------------
 Write-Host '== Format-Elapsed'
@@ -407,6 +456,9 @@ else {
         Assert-Equal (Invoke-EditHook (Join-Path $root '.claude\settings.json')) '' '.claude の下は追跡済みでも自動許可しない'
         Assert-Equal (Invoke-EditHook (Join-Path $root '.claude\hooks\auto-allow-git-tracked-edit.ps1')) '' 'hook 自身を自動許可しない'
         Assert-Equal (Invoke-EditHook (Join-Path $root '.github\workflows\test.yml')) '' '.github の下は追跡済みでも自動許可しない'
+        Assert-Equal (Invoke-EditHook (Join-Path $root 'AGENTS.md')) '' 'AI への決まりを書いた AGENTS.md は自動許可しない'
+        Assert-Equal (Invoke-EditHook (Join-Path $root 'CLAUDE.md')) '' 'AI への決まりを書いた CLAUDE.md は自動許可しない'
+        Assert-True ((Invoke-EditHook (Join-Path $root 'README.md')) -match '"permissionDecision":"allow"') 'ほかの追跡済みの文書は自動許可する'
         Assert-Equal (Invoke-EditHook (Join-Path $root '[a]ndon.ps1')) '' 'パスの [ ] をワイルドカードとして扱わない'
         Assert-Equal (Invoke-EditHook (Join-Path $root 'untracked-new-file.ps1')) '' '未追跡のファイルは自動許可しない'
     }
@@ -414,6 +466,42 @@ else {
         $env:CLAUDE_PROJECT_DIR = $savedProjectDir
         Remove-Item -LiteralPath $hookTmp -Recurse -Force -ErrorAction SilentlyContinue
     }
+}
+
+# ---------------------------------------------------------------------------
+Write-Host '== .claude/hooks/deny-secret-file-access.ps1'
+$denyHook = Join-Path $root '.claude\hooks\deny-secret-file-access.ps1'
+$denyTmp = Join-Path ([IO.Path]::GetTempPath()) ('andon-hook-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $denyTmp -Force | Out-Null
+function Test-CommandDenied {
+    <# シェルのコマンドを、Claude Code と同じく UTF-8（BOM なし）の JSON で hook に渡し、止められたかを返す #>
+    param([string]$Command)
+    $in = Join-Path $denyTmp 'in.json'
+    $out = Join-Path $denyTmp 'out.txt'
+    $json = '{"tool_name":"PowerShell","tool_input":{"command":' + (ConvertTo-Json $Command) + '}}'
+    [IO.File]::WriteAllText($in, $json, (New-Object Text.UTF8Encoding($false)))
+    Start-Process -FilePath 'powershell.exe' -ArgumentList ('-NoLogo -NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $denyHook) `
+        -RedirectStandardInput $in -RedirectStandardOutput $out -NoNewWindow -Wait
+    return ([IO.File]::ReadAllText($out)) -match '"permissionDecision":"deny"'
+}
+try {
+    Assert-True (Test-CommandDenied 'Get-Content ~/.claude/sessions/1234.key') 'sessions の *.key を読むコマンドを止める'
+    Assert-True (Test-CommandDenied 'cat server.pem') '*.pem を読むコマンドを止める'
+    Assert-True (Test-CommandDenied 'cat $name.key') 'bash の $name.key（小文字）はファイル名として止める'
+    Assert-True (Test-CommandDenied 'Get-Content .env') '.env を読むコマンドを止める'
+    Assert-True (-not (Test-CommandDenied '$script:State.Values | % { $_.Key }')) '$_.Key はプロパティ参照なので止めない'
+    Assert-True (-not (Test-CommandDenied "Select-String -Pattern '`$notice.Key' andon.ps1")) '$notice.Key を探すコマンドを止めない'
+    Assert-True (-not (Test-CommandDenied '$script:State[''1''].Key')) '[ ] の後ろの .Key を止めない'
+    Assert-True (-not (Test-CommandDenied '(Get-AlertNotice -Entries $e -Now $t).Key')) '( ) の後ろの .Key を止めない'
+    Assert-True (-not (Test-CommandDenied '$_.Value.Key')) 'プロパティを続けた後ろの .Key を止めない'
+    Assert-True (-not (Test-CommandDenied 'cat .env.example')) '.env.example は止めない'
+    Assert-True (Test-CommandDenied 'cat secrets.json') 'secrets.json を読むコマンドを止める'
+    Assert-True (Test-CommandDenied 'Get-Content config/secrets.yaml') 'フォルダの中の secrets.yaml を読むコマンドを止める'
+    Assert-True (-not (Test-CommandDenied 'echo ${{ secrets.GITHUB_TOKEN }}')) 'GitHub Actions の式の secrets.* は止めない'
+    Assert-True (Test-CommandDenied 'echo ${{ secrets.GITHUB_TOKEN }}; cat secrets.json') '式の外に secrets.json があれば止める'
+}
+finally {
+    Remove-Item -LiteralPath $denyTmp -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 # ---------------------------------------------------------------------------
