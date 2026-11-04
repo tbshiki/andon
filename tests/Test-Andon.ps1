@@ -132,6 +132,45 @@ Assert-Equal (Get-Rank ([pscustomobject]@{ Status = 'idle'; Unread = $false })) 
 Assert-Equal (Get-StatusLabel ([pscustomobject]@{ Status = 'waiting'; WaitingFor = 'sandbox request' })) '待ち（sandbox request）' '未知の waitingFor はそのまま表示する'
 
 # ---------------------------------------------------------------------------
+Write-Host '== Get-AlertLevel / Get-AlertNotice'
+$script:State = @{}
+$null = Update-SessionState -Sessions @((New-Session 1 'busy'), (New-Session 2 'idle')) -Now $t0
+Assert-Equal $script:State['1'].AlertAt $null '通知していないものは AlertAt が空'
+Assert-Equal (Get-AlertLevel @($script:State.Values)) 'none' '待ちも完了もなければ none'
+Assert-Equal (Get-AlertLevel @()) 'none' 'セッションがなければ none'
+Assert-Equal (Get-AlertNotice -Entries @($script:State.Values) -Now $t0) $null '新しい待ちも完了もなければ通知しない'
+
+$t1 = $t0.AddSeconds(5)
+$null = Update-SessionState -Sessions @((New-Session 1 'idle'), (New-Session 2 'idle')) -Now $t1
+Assert-Equal $script:State['1'].AlertAt $t1 '完了した時刻を記録する'
+Assert-Equal (Get-AlertLevel @($script:State.Values)) 'done' '完了だけなら done'
+$notice = Get-AlertNotice -Entries @($script:State.Values) -Now $t1
+Assert-Equal $notice.Title 'Claude Code が完了しました' '完了だけのときの題'
+Assert-Equal $notice.Text '完了: s1' '本文は状態とセッション名'
+Assert-Equal $notice.Key '1' '通知のクリックで開くセッション'
+
+$t2 = $t0.AddSeconds(10)
+$null = Update-SessionState -Sessions @((New-Session 1 'idle'), (New-Session 2 'busy'), (New-Session 3 'waiting' 'permission prompt')) -Now $t2
+Assert-Equal (Get-AlertLevel @($script:State.Values)) 'waiting' '待ちがあれば、完了があっても waiting'
+$notice = Get-AlertNotice -Entries @($script:State.Values) -Now $t2
+Assert-Equal $notice.Title 'Claude Code が待っています' '待ちがあるときの題'
+Assert-Equal $notice.Text '許可待ち: s3' '前の回に通知したもの（s1 の完了）は含めない'
+
+$t3 = $t0.AddSeconds(15)
+$null = Update-SessionState -Sessions @((New-Session 1 'idle'), (New-Session 2 'idle'), (New-Session 3 'waiting' 'permission prompt'),
+    (New-Session 4 'waiting' 'input needed'), (New-Session 5 'waiting'), (New-Session 6 'waiting')) -Now $t3
+$notice = Get-AlertNotice -Entries @($script:State.Values) -Now $t3
+Assert-Equal $notice.Text "質問待ち: s4`n待ち: s5`n待ち: s6`nほか 1 件" '待ちを先に 3 件まで並べ、残りは件数にする'
+Assert-Equal $notice.Key '4' '先頭の待ちを開く'
+$script:State['2'].Unread = $false
+Assert-Equal (Get-AlertNotice -Entries @($script:State['2']) -Now $t3) $null '既読にした完了は通知しない'
+
+$noName = [pscustomobject]@{ Key = '9'; Status = 'waiting'; Unread = $true; Name = ''; Cwd = 'C:\work\proj'; WaitingFor = ''; AlertAt = $t3 }
+Assert-Equal (Get-AlertNotice -Entries @($noName) -Now $t3).Text '待ち: proj' 'セッション名がなければフォルダ名'
+$noName.Name = 'x' * 300
+Assert-Equal (Get-AlertNotice -Entries @($noName) -Now $t3).Text.Length 250 '長い本文は通知に収まるよう切り詰める'
+
+# ---------------------------------------------------------------------------
 Write-Host '== Format-Elapsed'
 Assert-Equal (Format-Elapsed ([TimeSpan]::FromSeconds(42))) '42秒' '1 分未満'
 Assert-Equal (Format-Elapsed ([TimeSpan]::FromSeconds(125))) '2分' '1 時間未満'

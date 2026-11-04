@@ -10,7 +10,10 @@
     ファイルの中身は読まない。同じ場所にある *.key には触れない。
 
     - waiting（許可待ち・質問待ち）を赤、busy から idle に変わった未確認のもの（完了）を黄で上に並べる。
-    - 新しい待ちが出たとき、このウィンドウが前面になければタスクバーを点滅させる。
+    - タスクバーには出さず、通知領域（タスクトレイ）のアイコンの色で状態を示す。
+      × で閉じるとトレイに隠れる。終了はトレイの右クリックのメニューから行う。
+    - 新しい待ちや完了が出たとき、このウィンドウが前面になければ Windows の通知を出す。
+      通知をクリックすると、そのセッションを開く。
     - 行をクリックすると、cwd を含む *.code-workspace（なければ repository の root）を VS Code で開く。
       既に開いているウィンドウがあれば、そのウィンドウが前面に出る。ターミナルのタブまでは選ばない。
 
@@ -83,17 +86,17 @@ function Update-SessionState {
             # 起動時点で idle のものは、いつ終わったか分からないので既読として扱う
             $entry = [pscustomobject]@{
                 Key = $key; Status = $status; Since = $null; Unread = ($status -eq 'waiting')
-                Name = ''; Cwd = ''; Kind = ''; WaitingFor = ''
+                Name = ''; Cwd = ''; Kind = ''; WaitingFor = ''; AlertAt = $null
             }
             $script:State[$key] = $entry
-            if ($entry.Unread) { $alert = $true }
+            if ($entry.Unread) { $entry.AlertAt = $Now; $alert = $true }
         }
         elseif ($entry.Status -ne $status) {
             $prev = $entry.Status
             $entry.Status = $status
             $entry.Since = $Now
-            if ($status -eq 'waiting') { $entry.Unread = $true; $alert = $true }
-            elseif ($status -eq 'idle' -and $prev -eq 'busy') { $entry.Unread = $true; $alert = $true }
+            if ($status -eq 'waiting') { $entry.Unread = $true; $entry.AlertAt = $Now; $alert = $true }
+            elseif ($status -eq 'idle' -and $prev -eq 'busy') { $entry.Unread = $true; $entry.AlertAt = $Now; $alert = $true }
             else { $entry.Unread = $false }   # busy に戻った = 誰かが応答した。waiting -> idle は手元で拒否した場合
         }
         $entry.Name = [string](Get-JsonValue $s 'name')
@@ -128,6 +131,35 @@ function Get-StatusLabel {
         'busy' { return '実行中' }
         default { return [string]$Entry.Status }
     }
+}
+
+function Get-AlertLevel {
+    <# トレイのアイコンの色を決める。待ちがあれば waiting、完了があれば done、どちらもなければ none #>
+    param([object[]]$Entries)
+    $ranks = @(foreach ($e in $Entries) { Get-Rank $e })
+    if ($ranks -contains 0) { return 'waiting' }
+    if ($ranks -contains 1) { return 'done' }
+    return 'none'
+}
+
+function Get-AlertNotice {
+    <# 時刻 $Now に新しく待ち・完了になったセッションから、通知の題・本文と、クリックで開くセッションを作る。なければ $null #>
+    param([object[]]$Entries, [datetime]$Now, [int]$MaxLines = 3)
+    $hits = @($Entries | Where-Object { $_.AlertAt -eq $Now -and (Get-Rank $_) -le 1 } |
+            Sort-Object @{ Expression = { Get-Rank $_ } }, @{ Expression = { $_.Key } })
+    if ($hits.Count -eq 0) { return $null }
+    $lines = foreach ($e in ($hits | Select-Object -First $MaxLines)) {
+        $title = $e.Name
+        if (-not $title -and $e.Cwd) { $title = Split-Path -Leaf $e.Cwd }
+        if (-not $title) { $title = $e.Key }
+        '{0}: {1}' -f (Get-StatusLabel $e), $title
+    }
+    if ($hits.Count -gt $MaxLines) { $lines = @($lines) + ('ほか {0} 件' -f ($hits.Count - $MaxLines)) }
+    $text = @($lines) -join "`n"
+    if ($text.Length -gt 250) { $text = $text.Substring(0, 249) + '…' }   # 通知の本文は 255 文字まで
+    $heading = 'Claude Code が完了しました'
+    if ((Get-Rank $hits[0]) -eq 0) { $heading = 'Claude Code が待っています' }
+    return [pscustomobject]@{ Title = $heading; Text = $text; Key = $hits[0].Key }
 }
 
 function Format-Elapsed {
@@ -351,7 +383,7 @@ public static class AndonNative {
     [StructLayout(LayoutKind.Sequential)]
     public struct FLASHWINFO { public uint cbSize; public IntPtr hwnd; public uint dwFlags; public uint uCount; public uint dwTimeout; }
     [DllImport("user32.dll")] static extern bool FlashWindowEx(ref FLASHWINFO pwfi);
-    // FLASHW_ALL | FLASHW_TIMERNOFG: ウィンドウが前面に来るまでタスクバーを点滅させる
+    // FLASHW_ALL | FLASHW_TIMERNOFG: ウィンドウが前面に来るまで点滅させる（タスクバーには出していないので、タイトルバーだけ）
     public static void Flash(IntPtr hwnd) {
         FLASHWINFO f = new FLASHWINFO();
         f.cbSize = (uint)Marshal.SizeOf(typeof(FLASHWINFO));
@@ -401,6 +433,45 @@ $form.ClientSize = New-Object System.Drawing.Size([int](640 * $scale), [int](230
 $workArea = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
 $form.Location = New-Object System.Drawing.Point(($workArea.Right - $form.Width - 8), ($workArea.Bottom - $form.Height - 8))
 $boldFont = New-Object System.Drawing.Font($form.Font, [System.Drawing.FontStyle]::Bold)
+# タスクバーには出さず、通知領域（タスクトレイ）のアイコンで状態を示す
+$form.ShowInTaskbar = $false
+
+function New-StateIcon {
+    <# 状態を示す丸いアイコン。起動時に状態ごとに 1 つ作り、状態が変わったら差し替える #>
+    param([System.Drawing.Color]$Color)
+    $size = [System.Windows.Forms.SystemInformation]::SmallIconSize.Width
+    $bmp = New-Object System.Drawing.Bitmap($size, $size)
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    $margin = [Math]::Max(1, [int]($size / 16))
+    $d = $size - 2 * $margin - 1
+    $brush = New-Object System.Drawing.SolidBrush($Color)
+    $pen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(140, 0, 0, 0), [float][Math]::Max(1, $size / 16))
+    $g.FillEllipse($brush, $margin, $margin, $d, $d)
+    $g.DrawEllipse($pen, $margin, $margin, $d, $d)
+    $pen.Dispose(); $brush.Dispose(); $g.Dispose()
+    $icon = [System.Drawing.Icon]::FromHandle($bmp.GetHicon())
+    $bmp.Dispose()
+    return $icon
+}
+$script:Icons = @{
+    waiting = New-StateIcon ([System.Drawing.Color]::FromArgb(220, 40, 40))
+    done    = New-StateIcon ([System.Drawing.Color]::FromArgb(240, 180, 0))
+    none    = New-StateIcon ([System.Drawing.Color]::FromArgb(150, 150, 150))
+}
+$form.Icon = $script:Icons['none']
+
+$tray = New-Object System.Windows.Forms.NotifyIcon
+$tray.Icon = $script:Icons['none']
+$tray.Text = 'andon'
+$trayMenu = New-Object System.Windows.Forms.ContextMenuStrip
+$miShow = $trayMenu.Items.Add('表示')
+$miTrayRead = $trayMenu.Items.Add('すべて既読')
+[void]$trayMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
+$miExit = $trayMenu.Items.Add('終了')
+$tray.ContextMenuStrip = $trayMenu
+$script:Exiting = $false
+$script:NoticeKey = $null
 
 $lv = New-Object System.Windows.Forms.ListView
 $lv.Dock = 'Fill'
@@ -476,6 +547,28 @@ function Update-ListView {
 
     $pending = @($entries | Where-Object { (Get-Rank $_) -le 1 }).Count
     if ($pending -gt 0) { $form.Text = "andon - 待ち $pending 件" } else { $form.Text = 'andon' }
+
+    # 変わったときだけ差し替える（毎回差し替えると、トレイのアイコンがちらつく）
+    $icon = $script:Icons[(Get-AlertLevel $entries)]
+    if (-not [object]::ReferenceEquals($tray.Icon, $icon)) { $tray.Icon = $icon; $form.Icon = $icon }
+    if ($tray.Text -ne $form.Text) { $tray.Text = $form.Text }
+}
+
+function Show-AndonWindow {
+    $form.Show()
+    if ($form.WindowState -eq [System.Windows.Forms.FormWindowState]::Minimized) {
+        $form.WindowState = [System.Windows.Forms.FormWindowState]::Normal
+    }
+    $form.Activate()
+}
+
+function Switch-AndonWindow {
+    if ($form.Visible) { $form.Hide() } else { Show-AndonWindow }
+}
+
+function Set-AllRead {
+    foreach ($e in $script:State.Values) { $e.Unread = $false }
+    Update-ListView
 }
 
 $lv.Add_ItemActivate({
@@ -490,11 +583,36 @@ $miRead.Add_Click({
         $e = Get-SelectedEntry
         if ($e) { $e.Unread = $false; Update-ListView }
     })
-$btnRead.Add_Click({
-        foreach ($e in $script:State.Values) { $e.Unread = $false }
-        Update-ListView
-    })
+$btnRead.Add_Click({ Set-AllRead })
 $chkTop.Add_CheckedChanged({ $form.TopMost = $chkTop.Checked })
+
+$tray.Add_MouseClick({
+        param($source, $mouse)
+        if ($mouse.Button -eq [System.Windows.Forms.MouseButtons]::Left) { Switch-AndonWindow }
+    })
+$tray.Add_BalloonTipClicked({
+        $e = $script:State[[string]$script:NoticeKey]
+        if ($e) { Open-Session -Entry $e; Update-ListView }
+    })
+$miShow.Add_Click({ Show-AndonWindow })
+$miTrayRead.Add_Click({ Set-AllRead })
+$miExit.Add_Click({
+        $script:Exiting = $true
+        $form.Close()
+    })
+# 最小化したらトレイに隠す（タスクバーに出していないので、最小化したウィンドウが画面の隅に残ってしまう）
+$form.Add_Resize({
+        if ($form.WindowState -eq [System.Windows.Forms.FormWindowState]::Minimized) { $form.Hide() }
+    })
+# × や Alt+F4（SC_CLOSE）では終わらずにトレイに隠れる。終了はトレイのメニューから。
+# ログオフや、ほかのプログラムが WM_CLOSE で閉じる（taskkill など）ときは UserClosing にならないので、そのまま終わる
+$form.Add_FormClosing({
+        param($source, $closing)
+        if ($closing.CloseReason -eq [System.Windows.Forms.CloseReason]::UserClosing -and -not $script:Exiting) {
+            $closing.Cancel = $true
+            $form.Hide()
+        }
+    })
 
 $script:PollTask = $null
 $script:PollProc = $null
@@ -527,7 +645,14 @@ $timer.Add_Tick({
                 Update-ListView
                 $script:NextRender = $now.AddSeconds(5)
                 $lblStatus.Text = '更新 ' + $now.ToString('HH:mm:ss')
-                if ($alert -and -not $form.ContainsFocus) { [AndonNative]::Flash($form.Handle) }
+                if ($alert -and -not $form.ContainsFocus) {
+                    if ($form.Visible) { [AndonNative]::Flash($form.Handle) }
+                    $notice = Get-AlertNotice -Entries @($script:State.Values) -Now $now
+                    if ($notice) {
+                        $script:NoticeKey = $notice.Key   # 通知をクリックしたら、このセッションを開く
+                        $tray.ShowBalloonTip(10000, $notice.Title, $notice.Text, [System.Windows.Forms.ToolTipIcon]::None)
+                    }
+                }
                 $script:NextPoll = $now.AddSeconds($FallbackSec)
                 return
             }
@@ -556,10 +681,15 @@ $timer.Add_Tick({
 
 $form.Add_FormClosed({
         $timer.Stop()
+        # 消さずに終わると、マウスを重ねるまでトレイにアイコンが残る
+        $tray.Visible = $false
+        $tray.Dispose()
         if ($script:PollProc -and -not $script:PollProc.HasExited) { try { Stop-ProcessTree -Id $script:PollProc.Id } catch { } }
         $script:Mutex.ReleaseMutex()
         $script:Mutex.Dispose()
     })
 
+$tray.Visible = $true
 $timer.Start()
-[void]$form.ShowDialog()
+# ShowDialog はウィンドウを隠すと終わってしまうので、トレイに隠せるよう Application.Run で動かす
+[System.Windows.Forms.Application]::Run($form)
