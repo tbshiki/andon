@@ -171,6 +171,42 @@ $noName.Name = 'x' * 300
 Assert-Equal (Get-AlertNotice -Entries @($noName) -Now $t3).Text.Length 250 '長い本文は通知に収まるよう切り詰める'
 
 # ---------------------------------------------------------------------------
+Write-Host '== 拡張機能のパネルのセッション（Test-SdkCommandLine / Test-SessionVisible / Get-ProcessCommandLine）'
+$panel = 'C:\ext\anthropic.claude-code-2.1.0-win32-x64\resources\native-binary\claude.exe --output-format stream-json --verbose --input-format stream-json --permission-prompt-tool=stdio'
+Assert-True (Test-SdkCommandLine $panel) '拡張機能のパネルの起動引数は SDK'
+Assert-True (Test-SdkCommandLine 'claude.exe --input-format=stream-json') '= で区切った形も SDK'
+Assert-Equal (Test-SdkCommandLine '"C:\tools\claude.exe"') $false 'ターミナルの claude は SDK ではない'
+Assert-Equal (Test-SdkCommandLine 'claude.exe --input-format text') $false '--input-format が stream-json でなければ SDK ではない'
+Assert-Equal (Test-SdkCommandLine '') $false '起動引数が取れなければ SDK ではない（一覧に出す）'
+
+$script:State = @{}
+$null = Update-SessionState -Sessions @((New-Session 7 'idle')) -Now $t0
+Assert-Equal $script:State['7'].Sdk $null '新しいセッションは未判定'
+
+Assert-Equal (Test-SessionVisible ([pscustomobject]@{ Status = 'idle'; Unread = $false; Sdk = $true })) $false 'SDK の待機中は出さない'
+Assert-True (Test-SessionVisible ([pscustomobject]@{ Status = 'busy'; Unread = $false; Sdk = $true })) 'SDK でも実行中は出す'
+Assert-True (Test-SessionVisible ([pscustomobject]@{ Status = 'waiting'; Unread = $true; Sdk = $true })) 'SDK でも待ちは出す'
+Assert-True (Test-SessionVisible ([pscustomobject]@{ Status = 'idle'; Unread = $true; Sdk = $true })) 'SDK でも完了は出す'
+Assert-True (Test-SessionVisible ([pscustomobject]@{ Status = 'idle'; Unread = $false; Sdk = $false })) 'ターミナルの待機中は出す'
+Assert-True (Test-SessionVisible ([pscustomobject]@{ Status = 'idle'; Unread = $false; Sdk = $null })) '未判定の待機中は出す'
+
+# PowerShell のコメント（#）の後ろに置いて、起動引数にだけ現れるようにする
+$psi = New-Object Diagnostics.ProcessStartInfo 'powershell.exe', '-NoProfile -Command "Start-Sleep -Seconds 30 # --input-format stream-json"'
+$psi.UseShellExecute = $false
+$psi.CreateNoWindow = $true
+$sdkProc = [Diagnostics.Process]::Start($psi)
+try {
+    $line = Get-ProcessCommandLine -Id $sdkProc.Id
+    Assert-True ($line -match 'Start-Sleep') 'プロセスの起動引数を取れる'
+    Assert-True (Test-SdkCommandLine $line) '起動引数から SDK のセッションと判定できる'
+}
+finally {
+    try { $sdkProc.Kill() } catch { }
+    $sdkProc.Dispose()
+}
+Assert-Equal (Get-ProcessCommandLine -Id 2147483646) $null '存在しないプロセスは $null'
+
+# ---------------------------------------------------------------------------
 Write-Host '== Format-Elapsed'
 Assert-Equal (Format-Elapsed ([TimeSpan]::FromSeconds(42))) '42秒' '1 分未満'
 Assert-Equal (Format-Elapsed ([TimeSpan]::FromSeconds(125))) '2分' '1 時間未満'
