@@ -22,6 +22,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      # step の shell には matrix を書けないので、pwsh から matrix の PowerShell でテストを起動する
       - name: Test (${{ matrix.shell }})
-        shell: ${{ matrix.shell }}
-        run: ./tests/Test-Andon.ps1
+        shell: pwsh
+        run: |
+          ${{ matrix.shell }} -NoProfile -ExecutionPolicy Bypass -File ./tests/Test-Andon.ps1
+          exit $LASTEXITCODE
