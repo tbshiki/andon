@@ -228,6 +228,18 @@ finally {
 Assert-Equal (Get-ProcessCommandLine -Id 2147483646) $null '存在しないプロセスは $null'
 
 # ---------------------------------------------------------------------------
+Write-Host '== Test-DedicatedProcess'
+$ps51 = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
+Assert-True (Test-DedicatedProcess -Arguments @($ps51, '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', 'C:\work\andon\andon.ps1') -ScriptName 'andon.ps1') 'README の起動方法（-File で andon.ps1）は andon 専用'
+Assert-True (Test-DedicatedProcess -Arguments @('pwsh', '.\andon.ps1', '-ScanMs', '500') -ScriptName 'andon.ps1') 'pwsh に相対パスで渡したものも andon 専用'
+Assert-True (Test-DedicatedProcess -Arguments @($ps51, '-Command', "& 'C:\work\andon\andon.ps1'") -ScriptName 'andon.ps1') '-Command で呼んだものも andon 専用'
+Assert-True (Test-DedicatedProcess -Arguments @($ps51, '-File', 'C:\work\andon\ANDON.PS1') -ScriptName 'andon.ps1') '大文字小文字を区別しない'
+Assert-Equal (Test-DedicatedProcess -Arguments @($ps51) -ScriptName 'andon.ps1') $false '対話で使っているシェル（起動引数に andon.ps1 がない）は andon 専用ではない'
+Assert-Equal (Test-DedicatedProcess -Arguments @('C:\Program Files\PowerShell\7\pwsh.dll', '-NoLogo') -ScriptName 'andon.ps1') $false 'pwsh の対話のシェルも andon 専用ではない'
+Assert-Equal (Test-DedicatedProcess -Arguments @($ps51, '-File', 'C:\work\not-andon.ps1') -ScriptName 'andon.ps1') $false '名前の一部が同じだけの別のスクリプトは数えない'
+Assert-Equal (Test-DedicatedProcess -Arguments @($ps51, '-File', 'C:\work\andon\andon.ps1') -ScriptName '') $false 'スクリプトの名前が分からなければ andon 専用と見なさない'
+
+# ---------------------------------------------------------------------------
 Write-Host '== Format-Elapsed'
 Assert-Equal (Format-Elapsed ([TimeSpan]::FromSeconds(42))) '42秒' '1 分未満'
 Assert-Equal (Format-Elapsed ([TimeSpan]::FromSeconds(125))) '2分' '1 時間未満'

@@ -16,6 +16,7 @@
       × で閉じるとトレイに隠れる。終了はトレイの右クリックのメニューから行う。
     - 新しい待ちや完了が出たとき、このウィンドウが前面になければ Windows の通知を出す。
       通知をクリックすると、そのセッションを開く。送り元は、プロセスのアプリ ID を andon にして「andon」と表示させる。
+      ID はプロセス全体に付くので、andon のためだけに起動した PowerShell で動かしたときだけ付ける。
     - 行をクリックすると、cwd を含む *.code-workspace（なければ repository の root）を VS Code で開く。
       既に開いているウィンドウがあれば、そのウィンドウが前面に出る。ターミナルのタブまでは選ばない。
 
@@ -374,6 +375,18 @@ function Start-VSCode {
     if ($p) { $p.Dispose() }
 }
 
+function Test-DedicatedProcess {
+    <# プロセスの起動引数に、このスクリプト（andon.ps1）があるか。README の起動方法やスタートアップのショートカットのように、
+       andon のためだけに起動した PowerShell なら $true。対話で使っているシェルで直接動かしたときは $false #>
+    param([string[]]$Arguments, [string]$ScriptName)
+    if (-not $ScriptName) { return $false }
+    $pattern = '(^|[\\/])' + [regex]::Escape($ScriptName) + '$'
+    foreach ($a in $Arguments) {
+        if ($a -and [regex]::IsMatch($a.Trim('"', "'"), $pattern, 'IgnoreCase')) { return $true }
+    }
+    return $false
+}
+
 function Stop-ProcessTree {
     <# プロセスと、その子孫のプロセスを止める。claude が .cmd の場合、cmd.exe だけを止めると node が残るため #>
     param([int]$Id)
@@ -413,20 +426,23 @@ $script:SessionsDir = Join-Path (Get-ClaudeConfigDir) 'sessions'
 # （AppUserModelID）から決める。ID は、andon のウィンドウを作る前に付けなければならない。
 # 上のメッセージボックスを出したときは、そのまま終わるので ID は要らない。
 # 付けられなくても、送り元が PowerShell のままになるだけなので続ける。
+# ID はプロセス全体に付き、外せない。対話で使っているシェルで直接動かしたときは、andon を終えたあともシェルに残るので付けない。
 # AndonNative とは別の型にする。同じセッションで前の版の andon を動かしていると、前の版の AndonNative が残っていて、
 # 定義し直せないため
-try {
-    if (-not ('AndonAppId' -as [type])) {
-        Add-Type -TypeDefinition @'
+if (Test-DedicatedProcess -Arguments ([Environment]::GetCommandLineArgs()) -ScriptName ([IO.Path]::GetFileName($PSCommandPath))) {
+    try {
+        if (-not ('AndonAppId' -as [type])) {
+            Add-Type -TypeDefinition @'
 using System.Runtime.InteropServices;
 public static class AndonAppId {
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)] public static extern int SetCurrentProcessExplicitAppUserModelID(string appId);
 }
 '@
+        }
+        [void][AndonAppId]::SetCurrentProcessExplicitAppUserModelID('andon')
     }
-    [void][AndonAppId]::SetCurrentProcessExplicitAppUserModelID('andon')
+    catch { }
 }
-catch { }
 
 if (-not ('AndonNative' -as [type])) {
     Add-Type -TypeDefinition @'
