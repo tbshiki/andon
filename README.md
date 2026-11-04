@@ -22,7 +22,7 @@
 - Windows 10 / 11
 - Windows PowerShell 5.1 または PowerShell 7
 - Claude Code（`claude agents --json` が対話セッションの `status` を返す版。動作確認は 2.1.318）
-- VS Code の `code` コマンド
+- VS Code の `code` コマンド（andon は、これを手がかりに `Code.exe` を探します）
 
 Claude Code は VS Code の統合ターミナルなどで普通に `claude` を起動していれば対象になります。VS Code 拡張機能のパネルで動かしている会話は確認していません。
 
@@ -45,15 +45,17 @@ powershell.exe -NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File
 
 - **状態:** 公式の `claude agents --json` から読みます。対話セッションごとに `status`（`busy` / `waiting` / `idle`）と、`waiting` の理由（`waitingFor`）が返ります。
 - **変化の検知:** `claude agents --json` は 1 回で CPU を 0.3 秒ほど使うので、短い間隔で呼び続けません。Claude Code は状態が変わるたびに `~/.claude/sessions/<pid>.json` を書き換えるので、0.5 秒ごとにそのファイル名と更新時刻だけを見て、変化があったときに呼びます。ファイルの中身は読みません。同じ場所にある `*.key` には触れません。`CLAUDE_CONFIG_DIR` を設定していればその下を見ます。
-- **ウィンドウの特定:** セッションの作業フォルダから、次の順に開く対象を決めて `code <対象>` を実行します。VS Code は、その workspace やフォルダを開いているウィンドウがあれば、新しく開かずにそのウィンドウを前面に出します。
-  1. 作業フォルダから repository の root まで遡り、`*.code-workspace` があればそれ
-  2. 隣のフォルダにある `*.code-workspace` の `folders` に作業フォルダが含まれていれば、それ（multi-root workspace）
-  3. どちらもなければ作業フォルダ
+- **ウィンドウの特定:** セッションの作業フォルダから、次の順に開く対象を決めて VS Code に渡します。VS Code は、その workspace やフォルダを開いているウィンドウがあれば、新しく開かずにそのウィンドウを前面に出します。`code` コマンド（`code.cmd`）は cmd.exe を通り、パスの `%VAR%` が展開されてしまうので、隣にある `Code.exe` に直接渡します（`Code.exe` が見つからなければ `code.cmd` を使います）。
+  1. 作業フォルダから repository の root まで遡り、`*.code-workspace` があれば最も近いもの
+  2. repository の親フォルダと、その隣のフォルダにある `*.code-workspace` のうち、`folders` に repository（または作業フォルダを含む、その中のフォルダ）を挙げているもの（multi-root workspace）。複数あれば、作業フォルダに最も近いフォルダを挙げているもの
+  3. どちらもなければ repository の root（git の外なら作業フォルダ）
+- 無関係な workspace を開かないよう、repository の root より上の階層の `*.code-workspace` は、`folders` で repository を挙げていない限り使いません。`folders` に親フォルダ全体（`..` など）を挙げているだけの workspace も使いません。
 - Claude Code が作る worktree（`<repo>\.claude\worktrees\<name>`）は、元の repository として扱います。
 
 ## 制約
 
 - 前面に出せるのはウィンドウまでです。どのターミナルのタブかまでは選べません。
+- workspace がないとき、repository のサブフォルダを直接開いているウィンドウや、repository より広いフォルダ（親フォルダ全体など）を開いているウィンドウは特定できません。repository の root が新しいウィンドウで開きます。
 - andon を起動した時点で待機中のセッションは、いつ終わったか分からないので「待機」（確認済み）として表示します。
 - 1 秒に満たない短いやり取りは、「完了」を取りこぼすことがあります。
 - `~/.claude/sessions` は Claude Code の内部のディレクトリなので、書き方が変わるかもしれません。その場合も `-FallbackSec` ごとの取得で状態には追従します。

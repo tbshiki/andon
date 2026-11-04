@@ -85,6 +85,9 @@ Assert-Equal $list[0].pid 1 '要素の値を読める'
 Assert-Equal (ConvertFrom-SessionJson '[{"pid":1},{"pid":2}]').Count 2 '2 件の配列'
 Assert-Equal (ConvertFrom-SessionJson '[]').Count 0 '空の配列'
 Assert-Equal (ConvertFrom-SessionJson "notice`n[{`"pid`":3}]").Count 1 '配列の前に余計な行があっても読める'
+Assert-Equal (ConvertFrom-SessionJson "[notice] update available`n[{`"pid`":4}]")[0].pid 4 '[ で始まる通知の行が前にあっても読める'
+Assert-Equal (ConvertFrom-SessionJson "[{`"pid`":5}]`n[done]")[0].pid 5 '] で終わる行が後ろにあっても読める'
+Assert-Equal (ConvertFrom-SessionJson "[`r`n  {`r`n    `"pid`": 6,`r`n    `"tags`": [1, 2]`r`n  }`r`n]`r`n")[0].pid 6 '複数行に整形された JSON'
 Assert-Throws { ConvertFrom-SessionJson '' } '空の出力は例外にする（直前の状態を消さない）'
 Assert-Throws { ConvertFrom-SessionJson 'error' } 'JSON 配列でない出力は例外にする'
 
@@ -160,7 +163,7 @@ try {
     Write-Host '== Resolve-VSCodeTarget'
     $ws = Join-Path $tmp 'ws'
     foreach ($d in 'repo-a\.git', 'repo-a\sub\deep', 'repo-a\.claude\worktrees\feature', 'repo-b\.git', 'repo-b\src',
-        'repo-b2\.git', 'repo-c\.git', 'repo d\.git', 'repo-f\.git', 'repo-g\.git') {
+        'repo-b2\.git', 'repo-c\.git', 'repo-c\sub', 'repo-c\a\b\c\d\e', 'repo d\.git', 'repo-f\.git', 'repo-g\.git') {
         New-Item -ItemType Directory -Path (Join-Path $ws $d) -Force | Out-Null
     }
     $absF = (Join-Path $ws 'repo-f') -replace '\\', '/'
@@ -171,13 +174,24 @@ try {
 	"folders": [
 		{ "path": "." },
 		{ "path": "../repo-b" },
+		// { "path": "../repo-c" },
+		/* { "path": "../repo-c" }, */
 		{ "path": "$absF" },
-		{ "path": "..\\repo-g" },
+		{ "path": "..\\repo-g" }, // 末尾のカンマの後のコメント
+		/* { "path": "../repo-c" } */
 	],
-	"settings": {}
+	"settings": {
+		"example.url": "https://example.invalid/*keep*/",
+		"example.nested": { "path": "../repo-c" },
+	}
 }
 "@
     [IO.File]::WriteAllText($wsA, $wsText)
+    Assert-Equal @(Get-WorkspaceFolders -Path $wsA).Count 4 'コメントと settings の中の path は folders として数えない'
+    Assert-Equal (ConvertFrom-Jsonc $wsText).settings.'example.url' 'https://example.invalid/*keep*/' '文字列の中の // や /* */ は消さない'
+    $wsBroken = Join-Path $tmp 'broken.code-workspace'
+    [IO.File]::WriteAllText($wsBroken, '{ "folders": [ { "path": ')
+    Assert-Equal @(Get-WorkspaceFolders -Path $wsBroken).Count 0 '読めない workspace は空として扱う'
     $wsD = Join-Path $ws 'repo d\d.code-workspace'
     [IO.File]::WriteAllText($wsD, '{ "folders": [ { "path": "." } ] }')
 
@@ -189,11 +203,142 @@ try {
     Assert-PathEqual (Resolve-VSCodeTarget -Cwd (Join-Path $ws 'repo-f')) $wsA 'folders の絶対パス（/ 区切り）'
     Assert-PathEqual (Resolve-VSCodeTarget -Cwd (Join-Path $ws 'repo-g')) $wsA 'folders のエスケープされた \'
     Assert-PathEqual (Resolve-VSCodeTarget -Cwd (Join-Path $ws 'repo-b2')) (Join-Path $ws 'repo-b2') '前方一致するだけの別フォルダは、そのフォルダを開く'
-    Assert-PathEqual (Resolve-VSCodeTarget -Cwd (Join-Path $ws 'repo-c')) (Join-Path $ws 'repo-c') 'workspace がなければフォルダを開く'
+    Assert-PathEqual (Resolve-VSCodeTarget -Cwd (Join-Path $ws 'repo-c')) (Join-Path $ws 'repo-c') 'workspace がなければフォルダを開く（コメントの中の folders は使わない）'
     Assert-PathEqual (Resolve-VSCodeTarget -Cwd (Join-Path $ws 'repo d')) $wsD '空白を含むパス'
+    Assert-PathEqual (Resolve-VSCodeTarget -Cwd (Join-Path $ws 'repo-c\sub')) (Join-Path $ws 'repo-c') 'workspace がなければ、サブフォルダではなく repository の root を開く'
+    Assert-PathEqual (Resolve-VSCodeTarget -Cwd (Join-Path $ws 'repo-c\a\b\c\d\e')) (Join-Path $ws 'repo-c') '深い階層からも repository の root まで遡る'
+
+    # 親フォルダの workspace、最も近いフォルダの優先、repository より広いフォルダの除外
+    $ws2 = Join-Path $tmp 'ws2'
+    foreach ($d in 'repo-p\.git', 'repo-q\.git', 'repo-q\src', 'repo-r\.git', 'tool\.git', 'aaa\.git') {
+        New-Item -ItemType Directory -Path (Join-Path $ws2 $d) -Force | Out-Null
+    }
+    $wsAll = Join-Path $ws2 'all.code-workspace'
+    [IO.File]::WriteAllText($wsAll, '{ "folders": [ { "path": "repo-p" }, { "path": "repo-q" } ] }')
+    $wsTool = Join-Path $ws2 'tool\q.code-workspace'
+    [IO.File]::WriteAllText($wsTool, '{ "folders": [ { "path": "." }, { "path": "../repo-q/src" } ] }')
+    [IO.File]::WriteAllText((Join-Path $ws2 'aaa\broad.code-workspace'), '{ "folders": [ { "path": ".." } ] }')
+
+    Assert-PathEqual (Resolve-VSCodeTarget -Cwd (Join-Path $ws2 'repo-p')) $wsAll '親フォルダにある multi-root の workspace'
+    Assert-PathEqual (Resolve-VSCodeTarget -Cwd (Join-Path $ws2 'repo-q')) $wsAll 'repository を挙げている workspace'
+    Assert-PathEqual (Resolve-VSCodeTarget -Cwd (Join-Path $ws2 'repo-q\src')) $wsTool '作業フォルダに最も近いフォルダを挙げている workspace を優先する'
+    Assert-PathEqual (Resolve-VSCodeTarget -Cwd (Join-Path $ws2 'repo-r')) (Join-Path $ws2 'repo-r') '親フォルダ全体（..）を挙げているだけの workspace は使わない'
+
+    # git の外では、上の階層にある workspace（ダウンロードした物など）を使わない
+    $outside = Join-Path $tmp 'dl\proj'
+    New-Item -ItemType Directory -Path $outside -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $tmp 'dl\downloaded.code-workspace'), '{ "folders": [ { "path": "." } ] }')
+    $tmpInRepo = $false
+    for ($d = $tmp; $d; $d = Split-Path -Parent $d) {
+        if (Test-Path -LiteralPath (Join-Path $d '.git')) { $tmpInRepo = $true; break }
+    }
+    if ($tmpInRepo) {
+        Write-Host '[SKIP] 一時フォルダが git の repository の中にあるので、git の外の場合を確かめられない'
+    }
+    else {
+        Assert-PathEqual (Resolve-VSCodeTarget -Cwd $outside) $outside 'git の外では上の階層の workspace を使わない'
+    }
+
+    Write-Host '== Find-CodeExe'
+    $vsc = Join-Path $tmp 'vsc'
+    New-Item -ItemType Directory -Path (Join-Path $vsc 'bin') -Force | Out-Null
+    $fakeCmd = Join-Path $vsc 'bin\code.cmd'
+    [IO.File]::WriteAllText($fakeCmd, '@echo off')
+    Assert-Equal (Find-CodeExe -CodeCmd $fakeCmd) $null 'Code.exe がなければ $null（code.cmd を使う）'
+    [IO.File]::WriteAllText((Join-Path $vsc 'Code.exe'), '')
+    Assert-PathEqual (Find-CodeExe -CodeCmd $fakeCmd) (Join-Path $vsc 'Code.exe') 'bin\code.cmd の隣の Code.exe'
+
+    Write-Host '== ConvertTo-ArgumentString'
+    Assert-Equal (ConvertTo-ArgumentString 'C:\a b') '"C:\a b"' '空白を含むパスを引用する'
+    Assert-Equal (ConvertTo-ArgumentString 'C:\') '"C:\\"' '閉じる " の直前の \ を重ねる'
+    # 実際にプロセスへ渡し、受け取った引数が元のパスと一致するか（cmd.exe を通さないので %VAR% も展開されない）
+    $dump = Join-Path $tmp 'dump-args.ps1'
+    $dumpOut = Join-Path $tmp 'args.txt'
+    [IO.File]::WriteAllText($dump, '[IO.File]::WriteAllLines($args[0], [string[]]$args[1..($args.Count - 1)], (New-Object Text.UTF8Encoding($true)))', (New-Object Text.UTF8Encoding($true)))
+    $values = @('C:\', 'C:\a b\', 'C:\x\v%USERNAME%v', 'C:\x\a&b', 'C:\x\日本語 フォルダ', '\\server\share\')
+    $psi = New-Object Diagnostics.ProcessStartInfo 'powershell.exe'
+    $psi.Arguments = '-NoProfile -ExecutionPolicy Bypass -File ' + ((@($dump, $dumpOut) + $values | ForEach-Object { ConvertTo-ArgumentString $_ }) -join ' ')
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $p = [Diagnostics.Process]::Start($psi)
+    $p.WaitForExit()
+    $p.Dispose()
+    $got = @([IO.File]::ReadAllLines($dumpOut))
+    Assert-Equal $got.Count $values.Count '引数の数が変わらない'
+    for ($i = 0; $i -lt $values.Count; $i++) {
+        Assert-Equal $got[$i] $values[$i] "引数がそのまま渡る: $($values[$i])"
+    }
+
+    Write-Host '== Stop-ProcessTree'
+    $psi = New-Object Diagnostics.ProcessStartInfo 'cmd.exe', '/c powershell.exe -NoProfile -Command Start-Sleep -Seconds 60'
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $parentProc = [Diagnostics.Process]::Start($psi)
+    $child = $null
+    $deadline = (Get-Date).AddSeconds(10)
+    while (-not $child -and (Get-Date) -lt $deadline) {
+        $child = Get-CimInstance Win32_Process -Filter "ParentProcessId=$($parentProc.Id) AND Name='powershell.exe'" | Select-Object -First 1
+        if (-not $child) { Start-Sleep -Milliseconds 200 }
+    }
+    Assert-True $child '子プロセスが起動した'
+    Stop-ProcessTree -Id $parentProc.Id
+    Assert-True ($parentProc.WaitForExit(5000)) '親プロセスを止める'
+    if ($child) {
+        $childGone = $false
+        $deadline = (Get-Date).AddSeconds(5)
+        while (-not $childGone -and (Get-Date) -lt $deadline) {
+            $childGone = -not (Get-Process -Id $child.ProcessId -ErrorAction SilentlyContinue)
+            if (-not $childGone) { Start-Sleep -Milliseconds 200 }
+        }
+        Assert-True $childGone '子孫のプロセスも止める'
+    }
+    $parentProc.Dispose()
 }
 finally {
     if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Recurse -Force }
+}
+
+# ---------------------------------------------------------------------------
+Write-Host '== .claude/hooks/auto-allow-git-tracked-edit.ps1'
+$inWorkTree = $false
+try {
+    $null = & git -C $root rev-parse --is-inside-work-tree 2>$null
+    $inWorkTree = ($LASTEXITCODE -eq 0)
+}
+catch { }
+if (-not $inWorkTree) {
+    Write-Host '[SKIP] git の作業ツリーではないので確かめられない'
+}
+else {
+    $hook = Join-Path $root '.claude\hooks\auto-allow-git-tracked-edit.ps1'
+    $hookTmp = Join-Path ([IO.Path]::GetTempPath()) ('andon-hook-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $hookTmp -Force | Out-Null
+    $savedProjectDir = $env:CLAUDE_PROJECT_DIR
+    function Invoke-EditHook {
+        <# Claude Code と同じく、UTF-8（BOM なし）の JSON を標準入力で渡して、hook の出力を返す #>
+        param([string]$Path)
+        # Windows PowerShell 5.1 の Process.StandardInput は先頭に BOM を書くので、ファイルから渡す
+        $in = Join-Path $hookTmp 'in.json'
+        $out = Join-Path $hookTmp 'out.txt'
+        $json = '{"tool_name":"Edit","tool_input":{"file_path":' + (ConvertTo-Json $Path) + '}}'
+        [IO.File]::WriteAllText($in, $json, (New-Object Text.UTF8Encoding($false)))
+        Start-Process -FilePath 'powershell.exe' -ArgumentList ('-NoLogo -NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $hook) `
+            -RedirectStandardInput $in -RedirectStandardOutput $out -NoNewWindow -Wait
+        return ([IO.File]::ReadAllText($out)).Trim()
+    }
+    try {
+        $env:CLAUDE_PROJECT_DIR = $root
+        Assert-True ((Invoke-EditHook (Join-Path $root 'andon.ps1')) -match '"permissionDecision":"allow"') '追跡済みのファイルは自動許可する'
+        Assert-Equal (Invoke-EditHook (Join-Path $root '.claude\settings.json')) '' '.claude の下は追跡済みでも自動許可しない'
+        Assert-Equal (Invoke-EditHook (Join-Path $root '.claude\hooks\auto-allow-git-tracked-edit.ps1')) '' 'hook 自身を自動許可しない'
+        Assert-Equal (Invoke-EditHook (Join-Path $root '.github\workflows\test.yml')) '' '.github の下は追跡済みでも自動許可しない'
+        Assert-Equal (Invoke-EditHook (Join-Path $root '[a]ndon.ps1')) '' 'パスの [ ] をワイルドカードとして扱わない'
+        Assert-Equal (Invoke-EditHook (Join-Path $root 'untracked-new-file.ps1')) '' '未追跡のファイルは自動許可しない'
+    }
+    finally {
+        $env:CLAUDE_PROJECT_DIR = $savedProjectDir
+        Remove-Item -LiteralPath $hookTmp -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 # ---------------------------------------------------------------------------
