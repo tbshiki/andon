@@ -18,6 +18,9 @@
       通知をクリックすると、そのセッションを開く。送り元は、プロセスにアプリ ID（tbshiki.andon）を付け、
       その表示名を HKCU に登録して「andon」と表示させる。
       ID はプロセス全体に付くので、andon のためだけに起動した PowerShell で動かしたときだけ付ける。
+    - ウィンドウを表示していれば、タイトルバーも点滅させる。点滅は、andon を前面に出したときのほか、
+      きっかけになったセッションの VS Code のウィンドウ（題名のフォルダ名や workspace 名で見分ける）を前面に出したときや、
+      そのセッションが待ちでも完了でもなくなったときに止める。
     - 行をクリックすると、cwd を含む *.code-workspace（なければ repository の root）を VS Code で開く。
       既に開いているウィンドウがあれば、そのウィンドウが前面に出る。ターミナルのタブまでは選ばない。
 
@@ -199,6 +202,21 @@ function Get-AlertNotice {
     return [pscustomobject]@{ Title = $heading; Text = $text; Key = $hits[0].Key }
 }
 
+function Get-PendingFlashKeys {
+    <# 点滅のきっかけになったセッション（キー -> VS Code の題名に出る名前）のうち、まだ点滅を続ける理由があるもの。
+       終わったもの、待ちでも完了でもなくなったもの、前面の VS Code のウィンドウ（題名 $ForegroundTitle）で
+       開いているものは外す。$ForegroundTitle は、前面が VS Code でなければ空 #>
+    param([hashtable]$FlashKeys, [hashtable]$State, [string]$ForegroundTitle)
+    $keep = @{}
+    foreach ($k in @($FlashKeys.Keys)) {
+        $e = $State[$k]
+        if (-not $e -or (Get-Rank $e) -gt 1) { continue }
+        if (Test-VSCodeWindowTitle -Title $ForegroundTitle -RootName $FlashKeys[$k]) { continue }
+        $keep[$k] = $FlashKeys[$k]
+    }
+    return $keep
+}
+
 function Format-Elapsed {
     param([TimeSpan]$Span)
     if ($Span.TotalSeconds -lt 60) { return '{0}秒' -f [int][Math]::Floor($Span.TotalSeconds) }
@@ -326,6 +344,31 @@ function Find-VSCodeTarget {
     param([string]$Cwd)
     if (-not $Cwd) { return $null }
     return Resolve-VSCodeTarget -Cwd $Cwd
+}
+
+function Get-VSCodeRootName {
+    <# VS Code がウィンドウの題名に出す、開いているものの名前。workspace はファイル名から拡張子を除いたもの、
+       フォルダはフォルダ名。分からなければ $null #>
+    param([string]$Target)
+    if (-not $Target) { return $null }
+    if ($Target -imatch '\.code-workspace$') { $name = [IO.Path]::GetFileNameWithoutExtension($Target) }
+    else { $name = Split-Path -Leaf $Target.TrimEnd('\') }
+    if (-not $name) { return $null }
+    return $name
+}
+
+function Test-VSCodeWindowTitle {
+    <# VS Code のウィンドウの題名に、開いているものの名前（Get-VSCodeRootName）が入っているか。
+       題名は既定で「ファイル - 名前 - Visual Studio Code」で、workspace は「名前 (Workspace)」と出る。
+       3 つ以上に分かれるときは、先頭（エディタで開いているファイル）は見ない #>
+    param([string]$Title, [string]$RootName)
+    if (-not $Title -or -not $RootName) { return $false }
+    $parts = @($Title -split ' - ' | ForEach-Object { $_.Trim() })
+    if ($parts.Count -ge 3) { $parts = $parts[1..($parts.Count - 1)] }
+    foreach ($p in $parts) {
+        if ($p -ieq $RootName -or $p.StartsWith($RootName + ' (', [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    return $false
 }
 
 function Find-CodeCmd {
@@ -482,6 +525,36 @@ public static class AndonNative {
 '@
 }
 
+# 点滅を止めるときに、前面のウィンドウを調べる。AndonNative と別の型にするのは、AndonAppId と同じ理由
+if (-not ('AndonWindow' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class AndonWindow {
+    [StructLayout(LayoutKind.Sequential)]
+    struct FLASHWINFO { public uint cbSize; public IntPtr hwnd; public uint dwFlags; public uint uCount; public uint dwTimeout; }
+    [DllImport("user32.dll")] static extern bool FlashWindowEx(ref FLASHWINFO pwfi);
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int max);
+    // FLASHW_STOP: 点滅を止めて、元の表示に戻す
+    public static void StopFlash(IntPtr hwnd) {
+        FLASHWINFO f = new FLASHWINFO();
+        f.cbSize = (uint)Marshal.SizeOf(typeof(FLASHWINFO));
+        f.hwnd = hwnd; f.dwFlags = 0; f.uCount = 0; f.dwTimeout = 0;
+        FlashWindowEx(ref f);
+    }
+    public static uint GetProcessId(IntPtr hWnd) { uint pid; GetWindowThreadProcessId(hWnd, out pid); return pid; }
+    public static string GetTitle(IntPtr hWnd) {
+        StringBuilder sb = new StringBuilder(1024);
+        GetWindowText(hWnd, sb, sb.Capacity);
+        return sb.ToString();
+    }
+}
+'@
+}
+
 function Start-Poll {
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $script:ClaudeExe
@@ -504,6 +577,53 @@ function Open-Session {
     if (-not $target) { return }
     Start-VSCode -Target $target -CodeExe $script:CodeExe -CodeCmd $script:CodeCmd
     $Entry.Unread = $false
+}
+
+$script:CodeProcessName = 'Code'
+if ($script:CodeExe) { $script:CodeProcessName = [IO.Path]::GetFileNameWithoutExtension($script:CodeExe) }
+$script:FlashKeys = @{}   # 点滅のきっかけになったセッション -> その VS Code のウィンドウの題名に出る名前
+
+function Get-ForegroundCodeTitle {
+    <# 前面のウィンドウが VS Code なら、その題名。そうでなければ $null #>
+    $hwnd = [AndonWindow]::GetForegroundWindow()
+    if ($hwnd -eq [IntPtr]::Zero) { return $null }
+    try {
+        $p = Get-Process -Id ([AndonWindow]::GetProcessId($hwnd)) -ErrorAction Stop
+        $name = $p.ProcessName
+        $p.Dispose()
+    }
+    catch { return $null }
+    if ($name -ine $script:CodeProcessName) { return $null }
+    return [AndonWindow]::GetTitle($hwnd)
+}
+
+function Start-Flash {
+    <# 時刻 $Now に新しく待ち・完了になったセッションのために、andon のウィンドウを点滅させる。
+       そのセッションの VS Code のウィンドウがすでに前面にあれば、点滅させない #>
+    param([datetime]$Now)
+    try {
+        $keys = @{}
+        foreach ($e in $script:State.Values) {
+            if ($e.AlertAt -eq $Now -and (Get-Rank $e) -le 1) { $keys[$e.Key] = Get-VSCodeRootName (Find-VSCodeTarget -Cwd $e.Cwd) }
+        }
+        $keys = Get-PendingFlashKeys -FlashKeys $keys -State $script:State -ForegroundTitle (Get-ForegroundCodeTitle)
+        if ($keys.Count -eq 0) { return }
+        foreach ($k in $keys.Keys) { $script:FlashKeys[$k] = $keys[$k] }
+    }
+    catch { }   # 調べられなくても点滅はさせる（止めるのは、andon を前面に出したときだけになる）
+    [AndonNative]::Flash($form.Handle)
+}
+
+function Update-Flash {
+    <# 点滅のきっかけになったセッションが、どれも点滅を続ける理由をなくしたら、点滅を止める。
+       そのセッションの VS Code のウィンドウを前面に出した、待ちでも完了でもなくなった、終わった、のいずれか #>
+    if ($script:FlashKeys.Count -eq 0) { return }
+    if ($form.ContainsFocus) { $script:FlashKeys = @{}; return }   # andon を前面に出すと、Windows が点滅を止める
+    try {
+        $script:FlashKeys = Get-PendingFlashKeys -FlashKeys $script:FlashKeys -State $script:State -ForegroundTitle (Get-ForegroundCodeTitle)
+        if ($script:FlashKeys.Count -eq 0) { [AndonWindow]::StopFlash($form.Handle) }
+    }
+    catch { $script:FlashKeys = @{} }   # 調べられなければ、andon を前面に出すまで点滅を続ける（これまでと同じ）
 }
 
 [void][AndonNative]::SetProcessDPIAware()
@@ -713,6 +833,7 @@ $timer.Interval = $ScanMs
 $timer.Add_Tick({
         try {
             $now = Get-Date
+            Update-Flash
             if ($script:PollTask) {
                 if (-not $script:PollTask.IsCompleted) {
                     if (($now - $script:PollStarted).TotalSeconds -gt 30) {
@@ -738,7 +859,7 @@ $timer.Add_Tick({
                 $script:NextRender = $now.AddSeconds(5)
                 $lblStatus.Text = '更新 ' + $now.ToString('HH:mm:ss')
                 if ($alert -and -not $form.ContainsFocus) {
-                    if ($form.Visible) { [AndonNative]::Flash($form.Handle) }
+                    if ($form.Visible) { Start-Flash -Now $now }
                     $notice = Get-AlertNotice -Entries @($script:State.Values) -Now $now
                     if ($notice) {
                         # 通知をクリックしたら、このセッションを開く。覚えるのは最新の 1 件分でよい。
