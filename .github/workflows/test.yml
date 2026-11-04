@@ -1,8 +1,9 @@
 name: test
 
 on:
+  # 作業ブランチは PR を作らずにローカルで main へマージすることがあるので、main に入る前に作業ブランチでも動かす
   push:
-    branches: [main]
+    branches: ['**']
   pull_request:
     branches: [main]
 
