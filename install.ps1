@@ -8,7 +8,7 @@
     管理者の権限は要らない。ユーザーや PC の実行ポリシーは変えない（ショートカットは、andon のプロセスだけを Bypass で起動する）。
 
     1. 動いている andon を終わらせる（名前付きのイベント Local\andon-exit で合図し、mutex Local\andon が消えるのを待つ）
-    2. andon.ps1・install.ps1・LICENSE を置き、ダウンロードした印（Mark of the Web）を外す
+    2. andon.ps1・install.ps1・andon.ico・LICENSE を置き、ダウンロードした印（Mark of the Web）を外す
     3. スタートメニューと、スタートアップ（ログオン時に起動）に andon のショートカットを作る
     4. andon を起動する
 
@@ -37,7 +37,7 @@ param(
 
 function Get-AndonPayload {
     <# 配るファイル。andon.ps1 は必須、ほかはあれば置く #>
-    return @('andon.ps1', 'install.ps1', 'LICENSE')
+    return @('andon.ps1', 'install.ps1', 'andon.ico', 'LICENSE')
 }
 
 function Get-AndonLayout {
@@ -188,7 +188,9 @@ function New-AndonShortcut {
         $lnk.TargetPath = $Launch.FilePath
         $lnk.Arguments = $Launch.Arguments
         $lnk.WorkingDirectory = $Launch.WorkingDirectory
-        $lnk.IconLocation = $Launch.PowerShell + ',0'
+        $iconPath = Join-Path $Launch.WorkingDirectory 'andon.ico'
+        if (Test-Path -LiteralPath $iconPath -PathType Leaf) { $lnk.IconLocation = $iconPath + ',0' }
+        else { $lnk.IconLocation = $Launch.PowerShell + ',0' }
         $lnk.Description = 'Claude Code のセッションの待ち・完了を一覧する'
         $lnk.Save()
     }

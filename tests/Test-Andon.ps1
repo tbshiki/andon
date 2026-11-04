@@ -398,16 +398,23 @@ try {
     $dst = Join-Path $installTmp 'dst'
     New-Item -ItemType Directory -Path $src -Force | Out-Null
     foreach ($n in @('andon.ps1', 'install.ps1', 'LICENSE', 'notes.txt')) { Set-Content -LiteralPath (Join-Path $src $n) -Value "v1 $n" -Encoding UTF8 }
+    Copy-Item -LiteralPath (Join-Path $root 'andon.ico') -Destination (Join-Path $src 'andon.ico')
     # ブラウザで落としてエクスプローラーで展開したときと同じく、ダウンロードした印を付ける
     Set-Content -LiteralPath (Join-Path $src 'andon.ps1') -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3"
-    Assert-Equal @(Copy-AndonFiles -SourceDir $src -InstallDir $dst).Count 3 '配るファイルを 3 つ置く'
+    Assert-Equal @(Copy-AndonFiles -SourceDir $src -InstallDir $dst).Count 4 'アイコンを含む配るファイルを 4 つ置く'
+    Add-Type -AssemblyName System.Drawing
+    foreach ($size in @(16, 32, 48, 128)) {
+        $icon = New-Object System.Drawing.Icon((Join-Path $dst 'andon.ico'), $size, $size)
+        try { Assert-Equal $icon.Width $size "配ったアイコンを $size px で読める" }
+        finally { $icon.Dispose() }
+    }
     Assert-Equal (Test-Path -LiteralPath (Join-Path $dst 'notes.txt')) $false '配るファイルでないものは置かない'
     Assert-Equal @(Get-Item -LiteralPath (Join-Path $dst 'andon.ps1') -Stream * | Where-Object { $_.Stream -eq 'Zone.Identifier' }).Count 0 'ダウンロードした印を外す'
     Set-Content -LiteralPath (Join-Path $src 'andon.ps1') -Value 'v2' -Encoding UTF8
     [void](Copy-AndonFiles -SourceDir $src -InstallDir $dst)
     Assert-Equal (Get-Content -LiteralPath (Join-Path $dst 'andon.ps1') -Raw -Encoding UTF8).Trim() 'v2' 'もう一度入れると新しいファイルに置き換える'
     Assert-Equal @(Get-ChildItem -LiteralPath $dst -Filter '*.new').Count 0 '一時ファイルを残さない'
-    Assert-Equal @(Copy-AndonFiles -SourceDir $dst -InstallDir $dst).Count 3 '入れた場所の install.ps1 から実行しても失敗しない'
+    Assert-Equal @(Copy-AndonFiles -SourceDir $dst -InstallDir $dst).Count 4 '入れた場所の install.ps1 から実行しても失敗しない'
     Remove-Item -LiteralPath (Join-Path $src 'andon.ps1')
     Assert-Throws { Copy-AndonFiles -SourceDir $src -InstallDir $dst } 'andon.ps1 がなければ例外にする'
 
@@ -417,7 +424,13 @@ try {
     New-AndonShortcut -Path $lnk -Launch $dstLaunch
     Assert-Equal (Get-ShortcutArguments -Path $lnk) $dstLaunch.Arguments 'ショートカットに起動の引数を書く'
     $wsh = New-Object -ComObject WScript.Shell
-    try { Assert-PathEqual $wsh.CreateShortcut($lnk).TargetPath $dstLaunch.FilePath 'ショートカットのリンク先は conhost.exe' }
+    try {
+        Assert-PathEqual $wsh.CreateShortcut($lnk).TargetPath $dstLaunch.FilePath 'ショートカットのリンク先は conhost.exe'
+        Assert-PathEqual $wsh.CreateShortcut($lnk).IconLocation ((Join-Path $dst 'andon.ico') + ',0') 'ショートカットはインストール先のアイコンを使う'
+        Remove-Item -LiteralPath (Join-Path $dst 'andon.ico')
+        New-AndonShortcut -Path $lnk -Launch $dstLaunch
+        Assert-PathEqual $wsh.CreateShortcut($lnk).IconLocation ($dstLaunch.PowerShell + ',0') 'アイコンがないときは PowerShell のアイコンで起動できる'
+    }
     finally { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($wsh) }
     Assert-True (Test-AndonShortcut -Path $lnk) 'andon を起動するショートカットと判定する'
     Assert-True (Remove-AndonShortcut -Path $lnk) 'andon を起動するショートカットを消す'

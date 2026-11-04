@@ -30,7 +30,7 @@ andon 自身はネットワークに通信せず、認証情報も読みませ�
 
 `install.ps1` が行うのは次のことだけです。ネットワークには通信しません。
 
-- 同じフォルダにある `andon.ps1`・`install.ps1`・`LICENSE` を `%LOCALAPPDATA%\Programs\andon` に置き、ダウンロードした印（Mark of the Web）を外す
+- 同じフォルダにある `andon.ps1`・`install.ps1`・`andon.ico`・`LICENSE` を `%LOCALAPPDATA%\Programs\andon` に置き、ダウンロードした印（Mark of the Web）を外す
 - スタートメニューとスタートアップに、andon を起動するショートカットを作る
 - 動いている andon を終わらせる。合図を受けられない古い版は、`andon.ps1` を `-File` で動かしている PowerShell のプロセスを止める
 - `-Uninstall` を付けたときは、これらと、andon と Windows が作ったレジストリのキー（`AppUserModelId\tbshiki.andon`、`Notifications\Settings\tbshiki.andon`）を消す
