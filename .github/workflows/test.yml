@@ -6,15 +6,22 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: windows-latest
+    # 境界の判定を誤って GUI が起動しても、既定の 6 時間待ち続けないようにする
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
         shell: [powershell, pwsh]
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Test (${{ matrix.shell }})
         shell: ${{ matrix.shell }}
         run: ./tests/Test-Andon.ps1
