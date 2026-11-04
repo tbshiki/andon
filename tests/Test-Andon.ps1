@@ -478,7 +478,10 @@ try {
     finally { $archive.Dispose() }
     Assert-Equal (Split-Path -Leaf (New-AndonPackage -SourceDir $root -OutDir (Join-Path $installTmp 'out') -Version $script:AndonVersion)) "andon-$($script:AndonVersion).zip" '同じ版の zip があれば作り直す'
     Assert-Throws { New-AndonPackage -SourceDir $root -OutDir (Join-Path $installTmp 'out') -Version 'v0.1' } '版の形が違えば例外にする'
-    Assert-Throws { New-AndonPackage -SourceDir $dst -OutDir (Join-Path $installTmp 'out') -Version $script:AndonVersion } '配るファイルが欠けていれば例外にする（欠けた zip を配らない）'
+    $partial = Join-Path $installTmp 'partial'
+    New-Item -ItemType Directory -Path $partial -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $root 'andon.ps1') -Destination $partial
+    Assert-Throws { New-AndonPackage -SourceDir $partial -OutDir (Join-Path $installTmp 'out') -Version $script:AndonVersion } '配るファイルが欠けていれば例外にする（欠けた zip を配らない）'
 }
 finally {
     if (Test-Path -LiteralPath $installTmp) { Remove-Item -LiteralPath $installTmp -Recurse -Force }

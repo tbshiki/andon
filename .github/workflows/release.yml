@@ -39,7 +39,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0   # tag のコミットが main にあるかを確かめるため、main の履歴も取る
+          fetch-depth: 0   # tag のコミットが main にあるかを確かめるため、履歴をすべて取る
       - name: Check tag and version
         shell: pwsh
         env:
@@ -50,8 +50,10 @@ jobs:
           $version = $Matches[1]
           $inFile = Get-AndonVersion -Path ./andon.ps1
           if ($version -ne $inFile) { throw "tag の版（$version）と andon.ps1 の版（$inFile）が違います" }
-          # 作業用ブランチのコミットから Release を作らない
-          git merge-base --is-ancestor HEAD origin/main
+          # 作業用ブランチのコミットから Release を作らない。main は、ここで取り直したものと比べる
+          git fetch --no-tags origin main
+          if ($LASTEXITCODE -ne 0) { throw 'main を取れませんでした' }
+          git merge-base --is-ancestor HEAD FETCH_HEAD
           if ($LASTEXITCODE -ne 0) { throw 'tag のコミットが main にありません' }
           Add-Content -LiteralPath $env:GITHUB_ENV -Value "VERSION=$version"
       - name: Create draft release
