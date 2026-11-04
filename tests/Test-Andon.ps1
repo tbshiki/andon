@@ -192,6 +192,39 @@ $noName.Name = 'x' * 300
 Assert-Equal (Get-AlertNotice -Entries @($noName) -Now $t3).Text.Length 250 '長い本文は通知に収まるよう切り詰める'
 
 # ---------------------------------------------------------------------------
+Write-Host '== 点滅を止める（Get-VSCodeRootName / Test-VSCodeWindowTitle / Get-PendingFlashKeys）'
+Assert-Equal (Get-VSCodeRootName 'C:\work\proj\proj.code-workspace') 'proj' 'workspace はファイル名から拡張子を除いたもの'
+Assert-Equal (Get-VSCodeRootName 'C:\work\proj') 'proj' 'フォルダはフォルダ名'
+Assert-Equal (Get-VSCodeRootName 'C:\work\proj\') 'proj' '末尾の区切りを無視する'
+Assert-Equal (Get-VSCodeRootName '') $null '開くものがなければ $null'
+
+Assert-True (Test-VSCodeWindowTitle 'andon.ps1 - proj - Visual Studio Code' 'proj') '既定の題名（ファイル - フォルダ - アプリ）'
+Assert-True (Test-VSCodeWindowTitle 'proj - Visual Studio Code' 'proj') 'エディタを開いていない題名'
+Assert-True (Test-VSCodeWindowTitle 'andon.ps1 - proj (Workspace) - Visual Studio Code' 'proj') 'workspace の題名'
+Assert-True (Test-VSCodeWindowTitle 'andon.ps1 - proj (ワークスペース) - Visual Studio Code' 'proj') '日本語の workspace の題名'
+Assert-True (Test-VSCodeWindowTitle '● andon.ps1 - PROJ - Visual Studio Code' 'proj') '保存していない印と大文字小文字を無視する'
+Assert-True (Test-VSCodeWindowTitle 'a.ps1 - proj - Work - Visual Studio Code' 'proj') 'プロファイル名が入った題名'
+Assert-Equal (Test-VSCodeWindowTitle 'proj - other - Visual Studio Code' 'proj') $false '先頭（開いているファイル名）は見ない'
+Assert-Equal (Test-VSCodeWindowTitle 'a.ps1 - project2 - Visual Studio Code' 'proj') $false '名前の前半が同じだけの別のフォルダは数えない'
+Assert-Equal (Test-VSCodeWindowTitle '' 'proj') $false '前面が VS Code でなければ（題名が空なら）数えない'
+Assert-Equal (Test-VSCodeWindowTitle 'proj - Visual Studio Code' $null) $false '名前が分からなければ数えない'
+
+$flashState = @{
+    '1' = [pscustomobject]@{ Key = '1'; Status = 'waiting'; Unread = $true }
+    '2' = [pscustomobject]@{ Key = '2'; Status = 'idle'; Unread = $true }
+    '3' = [pscustomobject]@{ Key = '3'; Status = 'busy'; Unread = $false }
+}
+$flashKeys = @{ '1' = 'p1'; '2' = 'p2'; '3' = 'p3'; '4' = 'p4' }
+$kept = Get-PendingFlashKeys -FlashKeys $flashKeys -State $flashState -ForegroundTitle $null
+Assert-Equal ((@($kept.Keys) | Sort-Object) -join ',') '1,2' '待ちと完了は残し、実行中に戻ったものと終わったものは外す'
+$kept = Get-PendingFlashKeys -FlashKeys $flashKeys -State $flashState -ForegroundTitle 'a.ps1 - p1 - Visual Studio Code'
+Assert-Equal ((@($kept.Keys) | Sort-Object) -join ',') '2' '前面の VS Code のウィンドウで開いているものは外す'
+Assert-Equal $kept['2'] 'p2' '残したものは名前を保つ'
+$flashState['2'].Unread = $false
+$kept = Get-PendingFlashKeys -FlashKeys $kept -State $flashState -ForegroundTitle $null
+Assert-Equal $kept.Count 0 '既読にした完了も外す（残りがなければ点滅を止める）'
+
+# ---------------------------------------------------------------------------
 Write-Host '== 拡張機能のパネルのセッション（Test-SdkCommandLine / Test-SessionVisible / Get-ProcessCommandLine）'
 $panel = 'C:\ext\anthropic.claude-code-2.1.0-win32-x64\resources\native-binary\claude.exe --output-format stream-json --verbose --input-format stream-json --permission-prompt-tool=stdio'
 Assert-True (Test-SdkCommandLine $panel) '拡張機能のパネルの起動引数は SDK'
