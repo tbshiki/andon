@@ -41,16 +41,28 @@
 - tag の作成・プッシュは、通常のブランチプッシュとは別にユーザーへ確認する。
 - コミット前に `git status --short` と対象ファイルを確認し、秘密情報と個人の値が含まれていないことを確かめる。
 
+## 版
+
+- 版は `andon.ps1` の `$script:AndonVersion` に `MAJOR.MINOR.PATCH` で書く。Release の tag は `v<版>` にする。
+- 版は Release を出すときに上げる。コミットのたびには上げない。
+- MAJOR は、ユーザーが決めたときに上げ、MINOR と PATCH を 0 に戻す。
+- MINOR は、配るファイル（`install.ps1` の `Get-AndonPayload`）を増やしたとき、減らしたときに上げ、PATCH を 0 に戻す。
+- PATCH は、配るファイルを直しただけのときに上げる。セキュリティの修正も含む。
+- 1 回の Release に、配るファイルの追加（または削除）と更新の両方があれば、MINOR を上げる。
+- 配らないファイル（テスト、CI、README など）だけを変えたときは、Release を出さず、版も上げない。
+
 ## GitHub の設定
 
 - `main` は ruleset で保護している（force push と削除の禁止、PR のマージには CI の成功が必須）。admin は規則を迂回できるので、ローカルで `--no-ff` マージした `main` はこれまで通り push できる。
+- `v*` の tag は ruleset（`release-tags`）で、作成・更新・削除を admin だけに限っている。Release は immutable releases を有効にしていて、公開したあとは asset と tag を変えられない。
 - GitHub Actions で使える action は GitHub 製のものに限り、コミットの SHA での固定を必須にしている。action を追加・更新するときは `uses: owner/action@<コミットの SHA> # vX.Y.Z` の形で書く。tag で書くと CI が動かない。
 - action の更新は Dependabot が PR で出す。CI の成功を確かめてからマージする。
 - GitHub の設定を変える操作（ruleset、Actions の権限、セキュリティ機能）は外部に影響するので、変える内容を示してユーザーの承認を得てから行う。
 
 ## 実装と検証
 
-- GUI に依存しない処理は、`andon.ps1` のドットソース境界（`if ($MyInvocation.InvocationName -eq '.') { return }`）より前に置き、テストから呼べるようにする。
+- GUI に依存しない処理は、`andon.ps1` と `install.ps1` のドットソース境界（`if ($MyInvocation.InvocationName -eq '.') { return }`）より前に置き、テストから呼べるようにする。
+- `install.ps1` は、実際の場所（`%LOCALAPPDATA%\Programs\andon`、スタートメニュー、スタートアップ、`HKCU`）に書き込み、動いている andon を終わらせる。AI は実行せず、ユーザーに実行するコマンドを示す。テストでは、場所を引数で変えられる関数だけを呼ぶ。
 - 変更後は `tests/Test-Andon.ps1` を Windows PowerShell 5.1 と PowerShell 7 の両方で実行する。
 
   ```powershell

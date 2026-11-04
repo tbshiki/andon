@@ -1,7 +1,8 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-    andon.ps1 の GUI 以外の部分を確かめる。Pester などの依存はない。失敗があれば終了コード 1 を返す。
+    andon.ps1 と install.ps1 の、GUI と実際のインストール先に依存しない部分を確かめる。Pester などの依存はない。
+    失敗があれば終了コード 1 を返す。
 
 .EXAMPLE
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-Andon.ps1
@@ -12,6 +13,7 @@
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 . (Join-Path $root 'andon.ps1')
+. (Join-Path $root 'install.ps1')
 
 $script:Count = 0
 $script:Failures = 0
@@ -287,6 +289,150 @@ finally {
 }
 Assert-Equal (Test-Path -LiteralPath $regRoot) $false 'テスト用のキーを消した'
 Assert-Equal (Register-AppUserModelId -Id 'example.andon' -DisplayName 'andon' -Root 'NoSuchDrive:\x') $false '書けなければ $false（ID を andon に戻す）'
+
+# ---------------------------------------------------------------------------
+Write-Host '== 版'
+Assert-True ($script:AndonVersion -match '^\d+\.\d+\.\d+$') '版は MAJOR.MINOR.PATCH'
+Assert-Equal (Get-AndonVersion -Path (Join-Path $root 'andon.ps1')) $script:AndonVersion 'install.ps1 は andon.ps1 から版を読める'
+Assert-Equal (Get-AndonVersion -Path (Join-Path $root 'no-such-file.ps1')) $null '読めなければ $null'
+
+# ---------------------------------------------------------------------------
+Write-Host '== install.ps1: 実行ポリシー'
+Assert-True (Test-ExecutionPolicyAllowed -MachinePolicy 'Undefined' -UserPolicy 'Undefined') 'グループ ポリシーがなければ起動できる（-ExecutionPolicy Bypass が効く）'
+Assert-True (Test-ExecutionPolicyAllowed -MachinePolicy 'RemoteSigned' -UserPolicy 'Undefined') 'RemoteSigned なら、印を外したファイルは動く'
+Assert-Equal (Test-ExecutionPolicyAllowed -MachinePolicy 'AllSigned' -UserPolicy 'Undefined') $false 'AllSigned では署名のない andon は動かない'
+Assert-Equal (Test-ExecutionPolicyAllowed -MachinePolicy 'Undefined' -UserPolicy 'Restricted') $false 'ユーザーのポリシーの Restricted でも動かない'
+Assert-True (Test-ExecutionPolicyAllowed -MachinePolicy 'Bypass' -UserPolicy 'AllSigned') 'コンピューターのポリシーがユーザーのポリシーより優先する'
+Assert-True (Test-ExecutionPolicyAllowed -MachinePolicy '' -UserPolicy '') '調べられなければ起動できるものとして進める'
+
+# ---------------------------------------------------------------------------
+Write-Host '== install.ps1: 起動のしかた'
+$launch = Get-AndonLaunch -InstallDir 'C:\Apps\andon' -SystemRoot 'C:\Windows'
+Assert-Equal $launch.FilePath 'C:\Windows\System32\conhost.exe' 'conhost.exe でウィンドウなしに起動する'
+Assert-Equal $launch.Arguments '--headless "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -STA -ExecutionPolicy Bypass -File "C:\Apps\andon\andon.ps1"' 'Windows PowerShell 5.1 の -File に andon.ps1 を渡す'
+$launchArgs = @([regex]::Matches($launch.Arguments, '"[^"]*"|\S+') | ForEach-Object { $_.Value })
+Assert-True (Test-DedicatedProcess -Arguments $launchArgs[1..($launchArgs.Count - 1)] -ScriptName 'andon.ps1') 'この起動のしかたは andon 専用と判定される（アプリ ID を付ける）'
+Assert-True (Test-AndonCommandLine -CommandLine ($launchArgs[1..($launchArgs.Count - 1)] -join ' ')) 'この起動のしかたは、古い版を止めるときにも andon と判定される'
+Assert-True ((Get-AndonLaunch -InstallDir 'C:\Apps\andon' -ExtraArguments '-ScanMs 500' -SystemRoot 'C:\Windows').Arguments.EndsWith('andon.ps1" -ScanMs 500')) 'andon.ps1 の後ろに引数を付けられる'
+
+Assert-Equal (Get-ExtraArguments -Arguments $launch.Arguments) '' '引数を付けていなければ空'
+Assert-Equal (Get-ExtraArguments -Arguments ($launch.Arguments + ' -ScanMs 500 -FallbackSec 60')) '-ScanMs 500 -FallbackSec 60' 'andon.ps1 の後ろの引数を引き継ぐ'
+Assert-Equal (Get-ExtraArguments -Arguments '--headless powershell.exe -File C:\work\andon\andon.ps1 -ScanMs 500') '-ScanMs 500' '引用符のないパスでも引き継ぐ'
+Assert-Equal (Get-ExtraArguments -Arguments $null) '' 'ショートカットがなければ空'
+
+Assert-True (Test-AndonCommandLine -CommandLine 'powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File .\andon\andon.ps1') 'README の起動方法（相対パス）は andon'
+Assert-True (Test-AndonCommandLine -CommandLine 'pwsh -File andon.ps1 -ScanMs 500') 'フォルダのない andon.ps1 も andon'
+Assert-True (Test-AndonCommandLine -CommandLine '"C:\Program Files\PowerShell\7\pwsh.exe" -file "C:\My Apps\andon\ANDON.PS1"') '空白を含むパスと大文字小文字'
+Assert-Equal (Test-AndonCommandLine -CommandLine 'powershell.exe -File C:\work\andon\tests\Test-Andon.ps1') $false 'テストのスクリプトは andon ではない'
+Assert-Equal (Test-AndonCommandLine -CommandLine 'pwsh -Command "Get-Content .\andon.ps1"') $false 'andon.ps1 を読むだけのコマンドは andon ではない'
+Assert-Equal (Test-AndonCommandLine -CommandLine 'powershell.exe -File C:\work\other.ps1 C:\work\andon\andon.ps1') $false 'andon.ps1 を引数に渡しただけのものは andon ではない'
+Assert-Equal (Test-AndonCommandLine -CommandLine '') $false '起動引数が取れなければ andon ではない'
+
+# ---------------------------------------------------------------------------
+Write-Host '== install.ps1: スタートアップ'
+Assert-Equal (Get-StartupAction -NoStartup $false -IsUpdate $false -Exists $false) 'create' '初めて入れるときは作る'
+Assert-Equal (Get-StartupAction -NoStartup $false -IsUpdate $true -Exists $true) 'create' '更新のときに、あれば書き直す'
+Assert-Equal (Get-StartupAction -NoStartup $false -IsUpdate $true -Exists $false) 'none' '更新のときに、なければ（消した人のために）作らない'
+Assert-Equal (Get-StartupAction -NoStartup $true -IsUpdate $false -Exists $false) 'none' '-NoStartup なら作らない'
+Assert-Equal (Get-StartupAction -NoStartup $true -IsUpdate $true -Exists $true) 'remove' '-NoStartup なら、あれば消す'
+
+# ---------------------------------------------------------------------------
+Write-Host '== install.ps1: 動いている andon を終わらせる'
+# 本物の andon（Local\andon）には触れないよう、テスト用の名前を使う
+$suffix = [guid]::NewGuid().ToString('N')
+$mutexName = "Local\andon-test-$suffix"
+$eventName = "Local\andon-test-exit-$suffix"
+Assert-Equal (Test-AndonRunning -MutexName $mutexName) $false '動いていなければ $false'
+Assert-Equal (Send-AndonExit -EventName $eventName) $false '合図を受ける andon がなければ $false'
+Assert-True (Wait-AndonExit -MutexName $mutexName -TimeoutSec 1) '動いていなければ、待たずに $true'
+# andon の代わりに、別のスレッドで合図を待ち、mutex を持つ。合図を受けたら mutex を放す
+$fake = [powershell]::Create()
+[void]$fake.AddScript({
+        param($MutexName, $EventName)
+        $exit = New-Object System.Threading.EventWaitHandle($false, [System.Threading.EventResetMode]::AutoReset, $EventName)
+        $mutex = New-Object System.Threading.Mutex($true, $MutexName)
+        try { [void]$exit.WaitOne(10000) }
+        finally { $mutex.ReleaseMutex(); $mutex.Dispose(); $exit.Dispose() }
+    }).AddArgument($mutexName).AddArgument($eventName)
+$fakeRun = $fake.BeginInvoke()
+try {
+    $deadline = (Get-Date).AddSeconds(5)
+    while (-not (Test-AndonRunning -MutexName $mutexName) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 50 }
+    Assert-True (Test-AndonRunning -MutexName $mutexName) '動いていれば $true'
+    Assert-Equal (Wait-AndonExit -MutexName $mutexName -TimeoutSec 1) $false '合図を送らなければ、時間内に終わらない'
+    Assert-True (Send-AndonExit -EventName $eventName) '合図を送れる'
+    Assert-True (Wait-AndonExit -MutexName $mutexName -TimeoutSec 5) '合図を受けた andon が終わるのを待てる'
+}
+finally {
+    [void]$fake.EndInvoke($fakeRun)
+    $fake.Dispose()
+}
+Assert-Equal (Test-AndonRunning -MutexName $mutexName) $false '調べるために開いた mutex を残さない（残すと、次の andon が二重起動と判断する）'
+$andonText = Get-Content -LiteralPath (Join-Path $root 'andon.ps1') -Raw -Encoding UTF8
+Assert-True ($andonText.Contains("'Local\andon'")) 'andon.ps1 は、install.ps1 が見る mutex（Local\andon）を使う'
+Assert-True ($andonText.Contains("'Local\andon-exit'")) 'andon.ps1 は、install.ps1 が送る合図（Local\andon-exit）を受ける'
+
+# ---------------------------------------------------------------------------
+Write-Host '== install.ps1: レジストリ'
+# 本物のキーは使わず、テスト用のキーに作って消す
+$regBase = 'HKCU:\Software\andon-test-' + [guid]::NewGuid().ToString('N')
+try {
+    $classes = Join-Path $regBase 'AppUserModelId'
+    $notifications = Join-Path $regBase 'Notifications'
+    foreach ($k in @((Join-Path $classes 'tbshiki.andon'), (Join-Path $notifications 'tbshiki.andon'), (Join-Path $notifications 'andon'), (Join-Path $notifications 'example.other'))) {
+        New-Item -Path $k -Force | Out-Null
+    }
+    Assert-Equal @(Remove-AndonRegistry -ClassesRoot $classes -NotificationsRoot $notifications).Count 3 'アプリ ID の表示名と、2 つの ID の通知の設定を消す'
+    Assert-Equal (Test-Path -LiteralPath (Join-Path $notifications 'example.other')) $true 'ほかのアプリの通知の設定は消さない'
+    Assert-Equal @(Remove-AndonRegistry -ClassesRoot $classes -NotificationsRoot $notifications).Count 0 'なければ何もしない'
+}
+finally {
+    if (Test-Path -LiteralPath $regBase) { Remove-Item -LiteralPath $regBase -Recurse -Force }
+}
+
+# ---------------------------------------------------------------------------
+$installTmp = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) ('andon-install-' + [guid]::NewGuid().ToString('N'))))
+try {
+    Write-Host '== install.ps1: ファイルを置く'
+    $src = Join-Path $installTmp 'src'
+    $dst = Join-Path $installTmp 'dst'
+    New-Item -ItemType Directory -Path $src -Force | Out-Null
+    foreach ($n in @('andon.ps1', 'install.ps1', 'LICENSE', 'notes.txt')) { Set-Content -LiteralPath (Join-Path $src $n) -Value "v1 $n" -Encoding UTF8 }
+    # ブラウザで落としてエクスプローラーで展開したときと同じく、ダウンロードした印を付ける
+    Set-Content -LiteralPath (Join-Path $src 'andon.ps1') -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3"
+    Assert-Equal @(Copy-AndonFiles -SourceDir $src -InstallDir $dst).Count 3 '配るファイルを 3 つ置く'
+    Assert-Equal (Test-Path -LiteralPath (Join-Path $dst 'notes.txt')) $false '配るファイルでないものは置かない'
+    Assert-Equal @(Get-Item -LiteralPath (Join-Path $dst 'andon.ps1') -Stream * | Where-Object { $_.Stream -eq 'Zone.Identifier' }).Count 0 'ダウンロードした印を外す'
+    Set-Content -LiteralPath (Join-Path $src 'andon.ps1') -Value 'v2' -Encoding UTF8
+    [void](Copy-AndonFiles -SourceDir $src -InstallDir $dst)
+    Assert-Equal (Get-Content -LiteralPath (Join-Path $dst 'andon.ps1') -Raw -Encoding UTF8).Trim() 'v2' 'もう一度入れると新しいファイルに置き換える'
+    Assert-Equal @(Get-ChildItem -LiteralPath $dst -Filter '*.new').Count 0 '一時ファイルを残さない'
+    Assert-Equal @(Copy-AndonFiles -SourceDir $dst -InstallDir $dst).Count 3 '入れた場所の install.ps1 から実行しても失敗しない'
+    Remove-Item -LiteralPath (Join-Path $src 'andon.ps1')
+    Assert-Throws { Copy-AndonFiles -SourceDir $src -InstallDir $dst } 'andon.ps1 がなければ例外にする'
+
+    Write-Host '== install.ps1: ショートカット'
+    $lnk = Join-Path $installTmp 'links\andon.lnk'
+    $dstLaunch = Get-AndonLaunch -InstallDir $dst
+    New-AndonShortcut -Path $lnk -Launch $dstLaunch
+    Assert-Equal (Get-ShortcutArguments -Path $lnk) $dstLaunch.Arguments 'ショートカットに起動の引数を書く'
+    $wsh = New-Object -ComObject WScript.Shell
+    try { Assert-PathEqual $wsh.CreateShortcut($lnk).TargetPath $dstLaunch.FilePath 'ショートカットのリンク先は conhost.exe' }
+    finally { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($wsh) }
+    Assert-True (Test-AndonShortcut -Path $lnk) 'andon を起動するショートカットと判定する'
+    Assert-True (Remove-AndonShortcut -Path $lnk) 'andon を起動するショートカットを消す'
+    Assert-Equal (Test-Path -LiteralPath $lnk) $false '消した'
+    Assert-Equal (Remove-AndonShortcut -Path $lnk) $false 'ないショートカットは消さない'
+    Assert-Equal (Get-ShortcutArguments -Path $lnk) $null 'ないショートカットの引数は $null'
+    $other = Join-Path $installTmp 'links\other.lnk'
+    New-AndonShortcut -Path $other -Launch ([pscustomobject]@{
+            FilePath = $dstLaunch.FilePath; Arguments = '-File C:\work\Test-Andon.ps1'; WorkingDirectory = $installTmp; PowerShell = $dstLaunch.PowerShell
+        })
+    Assert-Equal (Remove-AndonShortcut -Path $other) $false '別のスクリプトを起動するショートカットは消さない'
+}
+finally {
+    if (Test-Path -LiteralPath $installTmp) { Remove-Item -LiteralPath $installTmp -Recurse -Force }
+}
 
 # ---------------------------------------------------------------------------
 Write-Host '== Format-Elapsed'
