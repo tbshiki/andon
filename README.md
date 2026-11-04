@@ -1,10 +1,14 @@
 # andon
 
+<img src="assets/andon.png" alt="警戒・軽快・リラックスの猫を描いた三色の積層灯" width="96">
+
 複数の VS Code ウィンドウで Claude Code を動かしているときに、**入力を待っているセッションを一覧し、クリック 1 回でそのウィンドウへ移る**ための、Windows 向けの小さなウィンドウです。
 
 全部のウィンドウを巡回して終わったものを目で探す代わりに、許可待ち・質問待ち・完了したセッションが色付きで上に並びます。名前は、工場で各工程の状態を並べて表示し、助けが必要な工程が点灯する表示盤「アンドン」から取りました。
 
 ## 表示
+
+ウィンドウとインストール時のショートカットには積層灯のアイコンを使います。通知領域では、状態を色で示します。
 
 | 状態 | 色 | 意味 |
 |---|---|---|
@@ -55,6 +59,8 @@ gh release verify-asset v<版> .\andon-<版>.zip -R tbshiki/andon
 
 起動すると、画面の右下に、常に手前に表示されるウィンドウが開き、通知領域にアイコンが出ます。二重に起動しても 2 つ目はすぐ終了します（トレイに隠れているときは、トレイのアイコンから表示します）。トレイから「終了」したあとは、スタートメニューの「andon」で起動します。トレイのメニューの先頭に、入っている版が出ます。
 
+タスク マネージャーの「スタートアップ アプリ」では、andon は `conhost.exe`（発行元は Microsoft Corporation）という名前で出ます。タスク マネージャーは、ショートカットの名前ではなく、ショートカットが起動するプログラムから名前を取るためです。andon は PowerShell のスクリプトなので、起動するのは Windows の `conhost.exe` です。ログオン時に起動しないようにするには、そこで無効にするか、`-NoStartup` を付けて `install.ps1` を実行し直します。タスク マネージャーで無効にした状態は、更新しても引き継ぎます。
+
 `-FallbackSec` で、変化がなくても状態を取り直す間隔（既定 30 秒）を変えられます。`-ScanMs` で、変化を見る間隔（既定 1000 ミリ秒、200〜5000）を変えられます。長くすると、待ちに気付くのが遅れます。使うときは、ショートカットのプロパティで、リンク先の末尾に `-ScanMs 500` のように付けます。更新しても引き継ぎます。
 
 ### 更新
@@ -73,6 +79,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Progr
 - `%LOCALAPPDATA%\Programs\andon`
 - `HKCU\Software\Classes\AppUserModelId\tbshiki.andon`（andon が、通知の送り元を `andon` と表示させるため、起動のたびに表示名を書くキー）
 - `HKCU\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings\tbshiki.andon`（最初の通知で Windows が作る、通知の設定）
+- `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder` の値 `andon.lnk`（Windows がショートカットの名前で記録する、スタートアップの有効・無効。残すと、入れ直したときに前の状態を引き継ぐ）
 
 Windows がトレイのアイコンについて覚えている設定（`HKCU\Control Panel\NotifyIconSettings` の `powershell.exe` の項目）は消しません。Windows が管理している場所で、ほかの PowerShell のスクリプトのアイコンと見分けにくいためです。
 

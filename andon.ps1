@@ -678,6 +678,13 @@ $script:Icons = @{
     none    = New-StateIcon ([System.Drawing.Color]::FromArgb(150, 150, 150))
 }
 $form.Icon = $script:Icons['none']
+# アプリの目印は積層灯、トレイは状態の色。画像がなくてもこれまでのアイコンで動く。
+$script:AppIcon = $null
+try {
+    $script:AppIcon = New-Object System.Drawing.Icon((Join-Path $PSScriptRoot 'andon.ico'), [System.Windows.Forms.SystemInformation]::SmallIconSize)
+    $form.Icon = $script:AppIcon
+}
+catch { }
 
 $tray = New-Object System.Windows.Forms.NotifyIcon
 $tray.Icon = $script:Icons['none']
@@ -772,7 +779,10 @@ function Update-ListView {
 
     # 変わったときだけ差し替える（毎回差し替えると、トレイのアイコンがちらつく）
     $icon = $script:Icons[(Get-AlertLevel $entries)]
-    if (-not [object]::ReferenceEquals($tray.Icon, $icon)) { $tray.Icon = $icon; $form.Icon = $icon }
+    if (-not [object]::ReferenceEquals($tray.Icon, $icon)) {
+        $tray.Icon = $icon
+        if (-not $script:AppIcon) { $form.Icon = $icon }
+    }
     if ($tray.Text -ne $form.Text) { $tray.Text = $form.Text }
 }
 
@@ -919,6 +929,7 @@ $form.Add_FormClosed({
         # 消さずに終わると、マウスを重ねるまでトレイにアイコンが残る
         $tray.Visible = $false
         $tray.Dispose()
+        if ($script:AppIcon) { $script:AppIcon.Dispose() }
         if ($script:PollProc -and -not $script:PollProc.HasExited) { try { Stop-ProcessTree -Id $script:PollProc.Id } catch { } }
         $script:Mutex.ReleaseMutex()
         $script:Mutex.Dispose()

@@ -8,7 +8,7 @@
     管理者の権限は要らない。ユーザーや PC の実行ポリシーは変えない（ショートカットは、andon のプロセスだけを Bypass で起動する）。
 
     1. 動いている andon を終わらせる（名前付きのイベント Local\andon-exit で合図し、mutex Local\andon が消えるのを待つ）
-    2. andon.ps1・install.ps1・LICENSE を置き、ダウンロードした印（Mark of the Web）を外す
+    2. andon.ps1・install.ps1・andon.ico・LICENSE を置き、ダウンロードした印（Mark of the Web）を外す
     3. スタートメニューと、スタートアップ（ログオン時に起動）に andon のショートカットを作る
     4. andon を起動する
 
@@ -37,7 +37,7 @@ param(
 
 function Get-AndonPayload {
     <# 配るファイル。andon.ps1 は必須、ほかはあれば置く #>
-    return @('andon.ps1', 'install.ps1', 'LICENSE')
+    return @('andon.ps1', 'install.ps1', 'andon.ico', 'LICENSE')
 }
 
 function Get-AndonLayout {
@@ -188,7 +188,9 @@ function New-AndonShortcut {
         $lnk.TargetPath = $Launch.FilePath
         $lnk.Arguments = $Launch.Arguments
         $lnk.WorkingDirectory = $Launch.WorkingDirectory
-        $lnk.IconLocation = $Launch.PowerShell + ',0'
+        $iconPath = Join-Path $Launch.WorkingDirectory 'andon.ico'
+        if (Test-Path -LiteralPath $iconPath -PathType Leaf) { $lnk.IconLocation = $iconPath + ',0' }
+        else { $lnk.IconLocation = $Launch.PowerShell + ',0' }
         $lnk.Description = 'Claude Code のセッションの待ち・完了を一覧する'
         $lnk.Save()
     }
@@ -219,13 +221,26 @@ function Remove-AndonShortcut {
     return $true
 }
 
+function Test-StartupDisabled {
+    <# タスク マネージャーの「スタートアップ アプリ」で、andon のショートカット（andon.lnk）を無効にしているか。
+       Windows は StartupApproved\StartupFolder に、ショートカットの名前で記録する。確かめた値は、先頭のバイトが
+       02 なら有効、03 なら無効。ほかの値も、先頭のバイトの下位のビットで見分ける #>
+    param([string]$StartupApprovedKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder')
+    if (-not (Test-Path -LiteralPath $StartupApprovedKey)) { return $false }
+    $value = (Get-Item -LiteralPath $StartupApprovedKey).GetValue('andon.lnk')
+    return [bool]($value -is [byte[]] -and $value.Length -gt 0 -and ($value[0] -band 1))
+}
+
 function Remove-AndonRegistry {
-    <# andon と Windows が作ったレジストリのキーを消す。消したキーを返す。
-       アプリ ID の表示名（andon が起動のたびに書く）と、通知の設定（最初の通知で Windows が作る）。
-       表示名を登録できなかったときに andon が使う ID（andon）の通知の設定も消す #>
+    <# andon と Windows が作ったレジストリのキーと値を消す。消したものを返す。
+       - アプリ ID の表示名（andon が起動のたびに書く）と、通知の設定（最初の通知で Windows が作る）。
+         表示名を登録できなかったときに andon が使う ID（andon）の通知の設定も消す
+       - スタートアップのショートカットの有効・無効（Windows がショートカットの名前 andon.lnk で記録する。
+         タスク マネージャーの「スタートアップ アプリ」で切り替えるもの）。残すと、入れ直したときに前の状態を引き継ぐ #>
     param(
         [string]$ClassesRoot = 'HKCU:\Software\Classes\AppUserModelId',
-        [string]$NotificationsRoot = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings'
+        [string]$NotificationsRoot = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings',
+        [string]$StartupApprovedKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder'
     )
     $removed = @()
     foreach ($key in @((Join-Path $ClassesRoot 'tbshiki.andon'), (Join-Path $NotificationsRoot 'tbshiki.andon'), (Join-Path $NotificationsRoot 'andon'))) {
@@ -233,6 +248,10 @@ function Remove-AndonRegistry {
             Remove-Item -LiteralPath $key -Recurse -Force
             $removed += $key
         }
+    }
+    if ((Test-Path -LiteralPath $StartupApprovedKey) -and ((Get-Item -LiteralPath $StartupApprovedKey).GetValueNames() -contains 'andon.lnk')) {
+        Remove-ItemProperty -LiteralPath $StartupApprovedKey -Name 'andon.lnk'
+        $removed += (Join-Path $StartupApprovedKey 'andon.lnk')
     }
     return $removed
 }
@@ -379,7 +398,10 @@ try {
     if ($version) { $name = "andon $version" }
     Write-Host ('{0} を入れて、起動しました: {1}' -f $name, $layout.InstallDir)
     Write-Host 'トレイから「終了」したあとは、スタートメニューの「andon」で起動できます。'
-    if (Test-AndonShortcut -Path $layout.Startup) { Write-Host 'ログオンしたときにも起動します（スタートアップ）。' }
+    if (Test-AndonShortcut -Path $layout.Startup) {
+        if (Test-StartupDisabled) { Write-Host 'スタートアップは、タスク マネージャーで無効にしてあるので、ログオンしたときには起動しません。' }
+        else { Write-Host 'ログオンしたときにも起動します（スタートアップ）。' }
+    }
     Write-Host ('消すときは: powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{0}" -Uninstall' -f (Join-Path $layout.InstallDir 'install.ps1'))
     exit 0
 }

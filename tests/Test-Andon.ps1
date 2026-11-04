@@ -379,12 +379,24 @@ $regBase = 'HKCU:\Software\andon-test-' + [guid]::NewGuid().ToString('N')
 try {
     $classes = Join-Path $regBase 'AppUserModelId'
     $notifications = Join-Path $regBase 'Notifications'
-    foreach ($k in @((Join-Path $classes 'tbshiki.andon'), (Join-Path $notifications 'tbshiki.andon'), (Join-Path $notifications 'andon'), (Join-Path $notifications 'example.other'))) {
+    $approved = Join-Path $regBase 'StartupApproved'
+    foreach ($k in @((Join-Path $classes 'tbshiki.andon'), (Join-Path $notifications 'tbshiki.andon'), (Join-Path $notifications 'andon'), (Join-Path $notifications 'example.other'), $approved)) {
         New-Item -Path $k -Force | Out-Null
     }
-    Assert-Equal @(Remove-AndonRegistry -ClassesRoot $classes -NotificationsRoot $notifications).Count 3 'アプリ ID の表示名と、2 つの ID の通知の設定を消す'
+    # Windows と同じく、先頭のバイトが 02 なら有効、03 なら無効
+    New-ItemProperty -LiteralPath $approved -Name 'andon.lnk' -PropertyType Binary -Value ([byte[]](3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)) | Out-Null
+    New-ItemProperty -LiteralPath $approved -Name 'other.lnk' -PropertyType Binary -Value ([byte[]](2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)) | Out-Null
+    Assert-True (Test-StartupDisabled -StartupApprovedKey $approved) '先頭が 03 なら、タスク マネージャーで無効にしてある'
+    Set-ItemProperty -LiteralPath $approved -Name 'andon.lnk' -Value ([byte[]](2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+    Assert-Equal (Test-StartupDisabled -StartupApprovedKey $approved) $false '先頭が 02 なら有効'
+    Set-ItemProperty -LiteralPath $approved -Name 'andon.lnk' -Value ([byte[]](3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+    Assert-Equal (Test-StartupDisabled -StartupApprovedKey (Join-Path $regBase 'NoSuchKey')) $false '記録がなければ有効（無効にしていない）'
+    # 本物の記録（StartupApproved\StartupFolder）を消さないよう、場所は必ず渡す
+    Assert-Equal @(Remove-AndonRegistry -ClassesRoot $classes -NotificationsRoot $notifications -StartupApprovedKey $approved).Count 4 'アプリ ID の表示名、2 つの ID の通知の設定、スタートアップの有効・無効の記録を消す'
     Assert-Equal (Test-Path -LiteralPath (Join-Path $notifications 'example.other')) $true 'ほかのアプリの通知の設定は消さない'
-    Assert-Equal @(Remove-AndonRegistry -ClassesRoot $classes -NotificationsRoot $notifications).Count 0 'なければ何もしない'
+    Assert-Equal ((Get-Item -LiteralPath $approved).GetValueNames() -join ',') 'other.lnk' 'ほかのショートカットの有効・無効の記録は消さない'
+    Assert-Equal @(Remove-AndonRegistry -ClassesRoot $classes -NotificationsRoot $notifications -StartupApprovedKey $approved).Count 0 'なければ何もしない'
+    Assert-Equal @(Remove-AndonRegistry -ClassesRoot $classes -NotificationsRoot $notifications -StartupApprovedKey (Join-Path $regBase 'NoSuchKey')).Count 0 '記録の場所がなくても失敗しない'
 }
 finally {
     if (Test-Path -LiteralPath $regBase) { Remove-Item -LiteralPath $regBase -Recurse -Force }
@@ -398,16 +410,23 @@ try {
     $dst = Join-Path $installTmp 'dst'
     New-Item -ItemType Directory -Path $src -Force | Out-Null
     foreach ($n in @('andon.ps1', 'install.ps1', 'LICENSE', 'notes.txt')) { Set-Content -LiteralPath (Join-Path $src $n) -Value "v1 $n" -Encoding UTF8 }
+    Copy-Item -LiteralPath (Join-Path $root 'andon.ico') -Destination (Join-Path $src 'andon.ico')
     # ブラウザで落としてエクスプローラーで展開したときと同じく、ダウンロードした印を付ける
     Set-Content -LiteralPath (Join-Path $src 'andon.ps1') -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3"
-    Assert-Equal @(Copy-AndonFiles -SourceDir $src -InstallDir $dst).Count 3 '配るファイルを 3 つ置く'
+    Assert-Equal @(Copy-AndonFiles -SourceDir $src -InstallDir $dst).Count 4 'アイコンを含む配るファイルを 4 つ置く'
+    Add-Type -AssemblyName System.Drawing
+    foreach ($size in @(16, 32, 48, 128)) {
+        $icon = New-Object System.Drawing.Icon((Join-Path $dst 'andon.ico'), $size, $size)
+        try { Assert-Equal $icon.Width $size "配ったアイコンを $size px で読める" }
+        finally { $icon.Dispose() }
+    }
     Assert-Equal (Test-Path -LiteralPath (Join-Path $dst 'notes.txt')) $false '配るファイルでないものは置かない'
     Assert-Equal @(Get-Item -LiteralPath (Join-Path $dst 'andon.ps1') -Stream * | Where-Object { $_.Stream -eq 'Zone.Identifier' }).Count 0 'ダウンロードした印を外す'
     Set-Content -LiteralPath (Join-Path $src 'andon.ps1') -Value 'v2' -Encoding UTF8
     [void](Copy-AndonFiles -SourceDir $src -InstallDir $dst)
     Assert-Equal (Get-Content -LiteralPath (Join-Path $dst 'andon.ps1') -Raw -Encoding UTF8).Trim() 'v2' 'もう一度入れると新しいファイルに置き換える'
     Assert-Equal @(Get-ChildItem -LiteralPath $dst -Filter '*.new').Count 0 '一時ファイルを残さない'
-    Assert-Equal @(Copy-AndonFiles -SourceDir $dst -InstallDir $dst).Count 3 '入れた場所の install.ps1 から実行しても失敗しない'
+    Assert-Equal @(Copy-AndonFiles -SourceDir $dst -InstallDir $dst).Count 4 '入れた場所の install.ps1 から実行しても失敗しない'
     Remove-Item -LiteralPath (Join-Path $src 'andon.ps1')
     Assert-Throws { Copy-AndonFiles -SourceDir $src -InstallDir $dst } 'andon.ps1 がなければ例外にする'
 
@@ -417,7 +436,13 @@ try {
     New-AndonShortcut -Path $lnk -Launch $dstLaunch
     Assert-Equal (Get-ShortcutArguments -Path $lnk) $dstLaunch.Arguments 'ショートカットに起動の引数を書く'
     $wsh = New-Object -ComObject WScript.Shell
-    try { Assert-PathEqual $wsh.CreateShortcut($lnk).TargetPath $dstLaunch.FilePath 'ショートカットのリンク先は conhost.exe' }
+    try {
+        Assert-PathEqual $wsh.CreateShortcut($lnk).TargetPath $dstLaunch.FilePath 'ショートカットのリンク先は conhost.exe'
+        Assert-PathEqual $wsh.CreateShortcut($lnk).IconLocation ((Join-Path $dst 'andon.ico') + ',0') 'ショートカットはインストール先のアイコンを使う'
+        Remove-Item -LiteralPath (Join-Path $dst 'andon.ico')
+        New-AndonShortcut -Path $lnk -Launch $dstLaunch
+        Assert-PathEqual $wsh.CreateShortcut($lnk).IconLocation ($dstLaunch.PowerShell + ',0') 'アイコンがないときは PowerShell のアイコンで起動できる'
+    }
     finally { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($wsh) }
     Assert-True (Test-AndonShortcut -Path $lnk) 'andon を起動するショートカットと判定する'
     Assert-True (Remove-AndonShortcut -Path $lnk) 'andon を起動するショートカットを消す'
