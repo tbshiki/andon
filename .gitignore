@@ -1,0 +1,20 @@
+# OS / editor local files
+.DS_Store
+Thumbs.db
+*.local
+
+# Personal AI settings (never share with the repository)
+/CLAUDE.local.md
+/.claude/settings.local.json
+
+# Logs
+log/
+*.log
+
+# Secrets and credentials
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+secrets.*

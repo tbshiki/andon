@@ -1,0 +1,76 @@
+# andon
+
+複数の VS Code ウィンドウで Claude Code を動かしているときに、**入力を待っているセッションを一覧し、クリック 1 回でそのウィンドウへ移る**ための、Windows 向けの小さなウィンドウです。
+
+全部のウィンドウを巡回して終わったものを目で探す代わりに、許可待ち・質問待ち・完了したセッションが色付きで上に並びます。名前は、工場で各工程の状態を並べて表示し、助けが必要な工程が点灯する表示盤「アンドン」から取りました。
+
+## 表示
+
+| 状態 | 色 | 意味 |
+|---|---|---|
+| 許可待ち / 質問待ち | 赤 | Claude があなたの承認や回答を待っている |
+| 完了 | 黄 | 実行中から待機に変わり、まだ確認していない |
+| 実行中 | 通常 | ツールの実行や応答の生成中 |
+| 待機 | 灰 | 次のプロンプトを待っている（確認済み） |
+
+- 赤と黄の件数をウィンドウのタイトルに出します。新しく待ちが出たとき、andon が前面になければタスクバーが点滅し続けます。
+- 行をクリックすると、そのセッションの VS Code ウィンドウが前面に出ます。
+- 黄は、行をクリックする、右クリックの「既読にする」、「すべて既読」、そのセッションで次のプロンプトを送る、のいずれかで消えます。
+
+## 動作環境
+
+- Windows 10 / 11
+- Windows PowerShell 5.1 または PowerShell 7
+- Claude Code（`claude agents --json` が対話セッションの `status` を返す版。動作確認は 2.1.318）
+- VS Code の `code` コマンド
+
+Claude Code は VS Code の統合ターミナルなどで普通に `claude` を起動していれば対象になります。VS Code 拡張機能のパネルで動かしている会話は確認していません。
+
+## 使い方
+
+```powershell
+git clone https://github.com/tbshiki/andon.git
+powershell.exe -NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File .\andon\andon.ps1
+```
+
+画面の右下に、常に手前に表示されるウィンドウが開きます。二重に起動しても 2 つ目はすぐ終了します。
+
+ログオン時に自動で起動するには、`Win + R` で `shell:startup` を開き、次のショートカットを置きます。
+
+- リンク先: `powershell.exe -NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "<clone した場所>\andon.ps1"`
+
+`-FallbackSec` で、変化がなくても状態を取り直す間隔（既定 30 秒）を変えられます。
+
+## 仕組み
+
+- **状態:** 公式の `claude agents --json` から読みます。対話セッションごとに `status`（`busy` / `waiting` / `idle`）と、`waiting` の理由（`waitingFor`）が返ります。
+- **変化の検知:** `claude agents --json` は 1 回で CPU を 0.3 秒ほど使うので、短い間隔で呼び続けません。Claude Code は状態が変わるたびに `~/.claude/sessions/<pid>.json` を書き換えるので、0.5 秒ごとにそのファイル名と更新時刻だけを見て、変化があったときに呼びます。ファイルの中身は読みません。同じ場所にある `*.key` には触れません。`CLAUDE_CONFIG_DIR` を設定していればその下を見ます。
+- **ウィンドウの特定:** セッションの作業フォルダから、次の順に開く対象を決めて `code <対象>` を実行します。VS Code は、その workspace やフォルダを開いているウィンドウがあれば、新しく開かずにそのウィンドウを前面に出します。
+  1. 作業フォルダから repository の root まで遡り、`*.code-workspace` があればそれ
+  2. 隣のフォルダにある `*.code-workspace` の `folders` に作業フォルダが含まれていれば、それ（multi-root workspace）
+  3. どちらもなければ作業フォルダ
+- Claude Code が作る worktree（`<repo>\.claude\worktrees\<name>`）は、元の repository として扱います。
+
+## 制約
+
+- 前面に出せるのはウィンドウまでです。どのターミナルのタブかまでは選べません。
+- andon を起動した時点で待機中のセッションは、いつ終わったか分からないので「待機」（確認済み）として表示します。
+- 1 秒に満たない短いやり取りは、「完了」を取りこぼすことがあります。
+- `~/.claude/sessions` は Claude Code の内部のディレクトリなので、書き方が変わるかもしれません。その場合も `-FallbackSec` ごとの取得で状態には追従します。
+- background セッション（`claude --bg` など）も一覧に出ますが、クリックで開けるのは作業フォルダの VS Code ウィンドウです。会話そのものは `claude agents` で開いてください。
+- 動作確認は Windows の VS Code でのみ行っています。
+
+## 開発
+
+GUI に依存しない部分のテストを、Windows PowerShell 5.1 と PowerShell 7 の両方で実行します。
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-Andon.ps1
+pwsh -NoProfile -File .\tests\Test-Andon.ps1
+```
+
+`*.ps1` は UTF-8 BOM 付き・CRLF で保存します。BOM がないと、Windows PowerShell 5.1 が日本語を読み違えます。AI で開発するときの規約は [`AGENTS.md`](AGENTS.md) にあります。
+
+## License
+
+[MIT](LICENSE)
