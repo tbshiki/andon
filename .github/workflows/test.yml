@@ -19,7 +19,8 @@ jobs:
       matrix:
         shell: [powershell, pwsh]
     steps:
-      - uses: actions/checkout@v4
+      # action は tag ではなくコミットの SHA で固定する（tag は付け替えられるため）。更新は Dependabot が行う
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # step の shell には matrix を書けないので、pwsh から matrix の PowerShell でテストを起動する

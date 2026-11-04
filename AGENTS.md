@@ -41,6 +41,13 @@
 - tag の作成・プッシュは、通常のブランチプッシュとは別にユーザーへ確認する。
 - コミット前に `git status --short` と対象ファイルを確認し、秘密情報と個人の値が含まれていないことを確かめる。
 
+## GitHub の設定
+
+- `main` は ruleset で保護している（force push と削除の禁止、PR のマージには CI の成功が必須）。admin は規則を迂回できるので、ローカルで `--no-ff` マージした `main` はこれまで通り push できる。
+- GitHub Actions で使える action は GitHub 製のものに限り、コミットの SHA での固定を必須にしている。action を追加・更新するときは `uses: owner/action@<コミットの SHA> # vX.Y.Z` の形で書く。tag で書くと CI が動かない。
+- action の更新は Dependabot が PR で出す。CI の成功を確かめてからマージする。
+- GitHub の設定を変える操作（ruleset、Actions の権限、セキュリティ機能）は外部に影響するので、変える内容を示してユーザーの承認を得てから行う。
+
 ## 実装と検証
 
 - GUI に依存しない処理は、`andon.ps1` のドットソース境界（`if ($MyInvocation.InvocationName -eq '.') { return }`）より前に置き、テストから呼べるようにする。
