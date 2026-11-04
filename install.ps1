@@ -375,7 +375,9 @@ try {
 
     Start-Andon -Launch $launch
 
-    Write-Host ('andon {0} を入れて、起動しました: {1}' -f $version, $layout.InstallDir)
+    $name = 'andon'
+    if ($version) { $name = "andon $version" }
+    Write-Host ('{0} を入れて、起動しました: {1}' -f $name, $layout.InstallDir)
     Write-Host 'トレイから「終了」したあとは、スタートメニューの「andon」で起動できます。'
     if (Test-AndonShortcut -Path $layout.Startup) { Write-Host 'ログオンしたときにも起動します（スタートアップ）。' }
     Write-Host ('消すときは: powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{0}" -Uninstall' -f (Join-Path $layout.InstallDir 'install.ps1'))
