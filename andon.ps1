@@ -389,13 +389,44 @@ $createdNew = $false
 $script:Mutex = New-Object System.Threading.Mutex($true, 'Local\andon', [ref]$createdNew)
 if (-not $createdNew) { return }   # 二重起動しない
 
+$script:ClaudeExe = (Get-Command claude -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+$script:CodeCmd = Find-CodeCmd
+if (-not $script:ClaudeExe) {
+    [void][System.Windows.Forms.MessageBox]::Show('claude が PATH に見つかりません。', 'andon')
+    return
+}
+if (-not $script:CodeCmd) {
+    [void][System.Windows.Forms.MessageBox]::Show('VS Code の code.cmd が見つかりません。', 'andon')
+    return
+}
+$script:CodeExe = Find-CodeExe -CodeCmd $script:CodeCmd
+$script:SessionsDir = Join-Path (Get-ClaudeConfigDir) 'sessions'
+
+# 通知の送り元を、PowerShell ではなく andon と表示させる。Windows はトレイの通知の送り元を、プロセスのアプリ ID
+# （AppUserModelID）から決める。ID は、andon のウィンドウを作る前に付けなければならない。
+# 上のメッセージボックスを出したときは、そのまま終わるので ID は要らない。
+# 付けられなくても、送り元が PowerShell のままになるだけなので続ける。
+# AndonNative とは別の型にする。同じセッションで前の版の andon を動かしていると、前の版の AndonNative が残っていて、
+# 定義し直せないため
+try {
+    if (-not ('AndonAppId' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System.Runtime.InteropServices;
+public static class AndonAppId {
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)] public static extern int SetCurrentProcessExplicitAppUserModelID(string appId);
+}
+'@
+    }
+    [void][AndonAppId]::SetCurrentProcessExplicitAppUserModelID('andon')
+}
+catch { }
+
 if (-not ('AndonNative' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 public static class AndonNative {
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
-    [DllImport("shell32.dll", CharSet = CharSet.Unicode)] public static extern int SetCurrentProcessExplicitAppUserModelID(string appId);
     [StructLayout(LayoutKind.Sequential)]
     public struct FLASHWINFO { public uint cbSize; public IntPtr hwnd; public uint dwFlags; public uint uCount; public uint dwTimeout; }
     [DllImport("user32.dll")] static extern bool FlashWindowEx(ref FLASHWINFO pwfi);
@@ -409,24 +440,6 @@ public static class AndonNative {
 }
 '@
 }
-
-# 通知の送り元を、PowerShell ではなく andon と表示させる。Windows はトレイの通知の送り元を、プロセスのアプリ ID
-# （AppUserModelID）から決める。ID を付けるのは、ウィンドウ（下のメッセージボックスも含む）を作る前でなければならない。
-# 付けられなくても、送り元が PowerShell のままになるだけなので続ける
-try { [void][AndonNative]::SetCurrentProcessExplicitAppUserModelID('andon') } catch { }
-
-$script:ClaudeExe = (Get-Command claude -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
-$script:CodeCmd = Find-CodeCmd
-if (-not $script:ClaudeExe) {
-    [void][System.Windows.Forms.MessageBox]::Show('claude が PATH に見つかりません。', 'andon')
-    return
-}
-if (-not $script:CodeCmd) {
-    [void][System.Windows.Forms.MessageBox]::Show('VS Code の code.cmd が見つかりません。', 'andon')
-    return
-}
-$script:CodeExe = Find-CodeExe -CodeCmd $script:CodeCmd
-$script:SessionsDir = Join-Path (Get-ClaudeConfigDir) 'sessions'
 
 function Start-Poll {
     $psi = New-Object System.Diagnostics.ProcessStartInfo
