@@ -1,6 +1,6 @@
 # andon
 
-<img src="assets/andon.png" alt="工場のアンドンをモチーフにした三色の積層灯" width="96">
+<img src="assets/andon.png" alt="警戒・軽快・リラックスの猫を描いた三色の積層灯" width="96">
 
 複数の VS Code ウィンドウで Claude Code を動かしているときに、**入力を待っているセッションを一覧し、クリック 1 回でそのウィンドウへ移る**ための、Windows 向けの小さなウィンドウです。
 
