@@ -197,6 +197,49 @@ finally {
 }
 
 # ---------------------------------------------------------------------------
+Write-Host '== .claude/hooks/auto-allow-git-tracked-edit.ps1'
+$inWorkTree = $false
+try {
+    $null = & git -C $root rev-parse --is-inside-work-tree 2>$null
+    $inWorkTree = ($LASTEXITCODE -eq 0)
+}
+catch { }
+if (-not $inWorkTree) {
+    Write-Host '[SKIP] git の作業ツリーではないので確かめられない'
+}
+else {
+    $hook = Join-Path $root '.claude\hooks\auto-allow-git-tracked-edit.ps1'
+    $hookTmp = Join-Path ([IO.Path]::GetTempPath()) ('andon-hook-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $hookTmp -Force | Out-Null
+    $savedProjectDir = $env:CLAUDE_PROJECT_DIR
+    function Invoke-EditHook {
+        <# Claude Code と同じく、UTF-8（BOM なし）の JSON を標準入力で渡して、hook の出力を返す #>
+        param([string]$Path)
+        # Windows PowerShell 5.1 の Process.StandardInput は先頭に BOM を書くので、ファイルから渡す
+        $in = Join-Path $hookTmp 'in.json'
+        $out = Join-Path $hookTmp 'out.txt'
+        $json = '{"tool_name":"Edit","tool_input":{"file_path":' + (ConvertTo-Json $Path) + '}}'
+        [IO.File]::WriteAllText($in, $json, (New-Object Text.UTF8Encoding($false)))
+        Start-Process -FilePath 'powershell.exe' -ArgumentList ('-NoLogo -NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $hook) `
+            -RedirectStandardInput $in -RedirectStandardOutput $out -NoNewWindow -Wait
+        return ([IO.File]::ReadAllText($out)).Trim()
+    }
+    try {
+        $env:CLAUDE_PROJECT_DIR = $root
+        Assert-True ((Invoke-EditHook (Join-Path $root 'andon.ps1')) -match '"permissionDecision":"allow"') '追跡済みのファイルは自動許可する'
+        Assert-Equal (Invoke-EditHook (Join-Path $root '.claude\settings.json')) '' '.claude の下は追跡済みでも自動許可しない'
+        Assert-Equal (Invoke-EditHook (Join-Path $root '.claude\hooks\auto-allow-git-tracked-edit.ps1')) '' 'hook 自身を自動許可しない'
+        Assert-Equal (Invoke-EditHook (Join-Path $root '.github\workflows\test.yml')) '' '.github の下は追跡済みでも自動許可しない'
+        Assert-Equal (Invoke-EditHook (Join-Path $root '[a]ndon.ps1')) '' 'パスの [ ] をワイルドカードとして扱わない'
+        Assert-Equal (Invoke-EditHook (Join-Path $root 'untracked-new-file.ps1')) '' '未追跡のファイルは自動許可しない'
+    }
+    finally {
+        $env:CLAUDE_PROJECT_DIR = $savedProjectDir
+        Remove-Item -LiteralPath $hookTmp -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# ---------------------------------------------------------------------------
 $passed = $script:Count - $script:Failures
 Write-Host ''
 Write-Host "$passed / $($script:Count) passed"
