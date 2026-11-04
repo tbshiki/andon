@@ -222,12 +222,15 @@ function Remove-AndonShortcut {
 }
 
 function Remove-AndonRegistry {
-    <# andon と Windows が作ったレジストリのキーを消す。消したキーを返す。
-       アプリ ID の表示名（andon が起動のたびに書く）と、通知の設定（最初の通知で Windows が作る）。
-       表示名を登録できなかったときに andon が使う ID（andon）の通知の設定も消す #>
+    <# andon と Windows が作ったレジストリのキーと値を消す。消したものを返す。
+       - アプリ ID の表示名（andon が起動のたびに書く）と、通知の設定（最初の通知で Windows が作る）。
+         表示名を登録できなかったときに andon が使う ID（andon）の通知の設定も消す
+       - スタートアップのショートカットの有効・無効（Windows がショートカットの名前 andon.lnk で記録する。
+         タスク マネージャーの「スタートアップ アプリ」で切り替えるもの）。残すと、入れ直したときに前の状態を引き継ぐ #>
     param(
         [string]$ClassesRoot = 'HKCU:\Software\Classes\AppUserModelId',
-        [string]$NotificationsRoot = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings'
+        [string]$NotificationsRoot = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings',
+        [string]$StartupApprovedKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder'
     )
     $removed = @()
     foreach ($key in @((Join-Path $ClassesRoot 'tbshiki.andon'), (Join-Path $NotificationsRoot 'tbshiki.andon'), (Join-Path $NotificationsRoot 'andon'))) {
@@ -235,6 +238,10 @@ function Remove-AndonRegistry {
             Remove-Item -LiteralPath $key -Recurse -Force
             $removed += $key
         }
+    }
+    if ((Test-Path -LiteralPath $StartupApprovedKey) -and ((Get-Item -LiteralPath $StartupApprovedKey).GetValueNames() -contains 'andon.lnk')) {
+        Remove-ItemProperty -LiteralPath $StartupApprovedKey -Name 'andon.lnk'
+        $removed += (Join-Path $StartupApprovedKey 'andon.lnk')
     }
     return $removed
 }

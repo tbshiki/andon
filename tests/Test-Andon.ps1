@@ -379,12 +379,19 @@ $regBase = 'HKCU:\Software\andon-test-' + [guid]::NewGuid().ToString('N')
 try {
     $classes = Join-Path $regBase 'AppUserModelId'
     $notifications = Join-Path $regBase 'Notifications'
-    foreach ($k in @((Join-Path $classes 'tbshiki.andon'), (Join-Path $notifications 'tbshiki.andon'), (Join-Path $notifications 'andon'), (Join-Path $notifications 'example.other'))) {
+    $approved = Join-Path $regBase 'StartupApproved'
+    foreach ($k in @((Join-Path $classes 'tbshiki.andon'), (Join-Path $notifications 'tbshiki.andon'), (Join-Path $notifications 'andon'), (Join-Path $notifications 'example.other'), $approved)) {
         New-Item -Path $k -Force | Out-Null
     }
-    Assert-Equal @(Remove-AndonRegistry -ClassesRoot $classes -NotificationsRoot $notifications).Count 3 'アプリ ID の表示名と、2 つの ID の通知の設定を消す'
+    # Windows と同じく、先頭のバイトが 02 なら有効、03 なら無効
+    New-ItemProperty -LiteralPath $approved -Name 'andon.lnk' -PropertyType Binary -Value ([byte[]](3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)) | Out-Null
+    New-ItemProperty -LiteralPath $approved -Name 'other.lnk' -PropertyType Binary -Value ([byte[]](2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)) | Out-Null
+    # 本物の記録（StartupApproved\StartupFolder）を消さないよう、場所は必ず渡す
+    Assert-Equal @(Remove-AndonRegistry -ClassesRoot $classes -NotificationsRoot $notifications -StartupApprovedKey $approved).Count 4 'アプリ ID の表示名、2 つの ID の通知の設定、スタートアップの有効・無効の記録を消す'
     Assert-Equal (Test-Path -LiteralPath (Join-Path $notifications 'example.other')) $true 'ほかのアプリの通知の設定は消さない'
-    Assert-Equal @(Remove-AndonRegistry -ClassesRoot $classes -NotificationsRoot $notifications).Count 0 'なければ何もしない'
+    Assert-Equal ((Get-Item -LiteralPath $approved).GetValueNames() -join ',') 'other.lnk' 'ほかのショートカットの有効・無効の記録は消さない'
+    Assert-Equal @(Remove-AndonRegistry -ClassesRoot $classes -NotificationsRoot $notifications -StartupApprovedKey $approved).Count 0 'なければ何もしない'
+    Assert-Equal @(Remove-AndonRegistry -ClassesRoot $classes -NotificationsRoot $notifications -StartupApprovedKey (Join-Path $regBase 'NoSuchKey')).Count 0 '記録の場所がなくても失敗しない'
 }
 finally {
     if (Test-Path -LiteralPath $regBase) { Remove-Item -LiteralPath $regBase -Recurse -Force }
