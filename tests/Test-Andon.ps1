@@ -443,6 +443,10 @@ try {
     Assert-True (-not (Test-CommandDenied '(Get-AlertNotice -Entries $e -Now $t).Key')) '( ) の後ろの .Key を止めない'
     Assert-True (-not (Test-CommandDenied '$_.Value.Key')) 'プロパティを続けた後ろの .Key を止めない'
     Assert-True (-not (Test-CommandDenied 'cat .env.example')) '.env.example は止めない'
+    Assert-True (Test-CommandDenied 'cat secrets.json') 'secrets.json を読むコマンドを止める'
+    Assert-True (Test-CommandDenied 'Get-Content config/secrets.yaml') 'フォルダの中の secrets.yaml を読むコマンドを止める'
+    Assert-True (-not (Test-CommandDenied 'echo ${{ secrets.GITHUB_TOKEN }}')) 'GitHub Actions の式の secrets.* は止めない'
+    Assert-True (Test-CommandDenied 'echo ${{ secrets.GITHUB_TOKEN }}; cat secrets.json') '式の外に secrets.json があれば止める'
 }
 finally {
     Remove-Item -LiteralPath $denyTmp -Recurse -Force -ErrorAction SilentlyContinue
