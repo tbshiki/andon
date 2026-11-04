@@ -1,0 +1,13 @@
+version: 2
+updates:
+  # GitHub Actions の action を更新する。workflow では SHA で固定しているので、SHA と版のコメントを書き換えた PR が来る
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # 公開されたばかりの版はすぐに取り込まない（乗っ取られた版を避けるため）。セキュリティ更新には効かない
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: chore
+      include: scope

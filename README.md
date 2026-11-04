@@ -73,6 +73,10 @@ pwsh -NoProfile -File .\tests\Test-Andon.ps1
 
 `*.ps1` は UTF-8 BOM 付き・CRLF で保存します。BOM がないと、Windows PowerShell 5.1 が日本語を読み違えます。AI で開発するときの規約は [`AGENTS.md`](AGENTS.md) にあります。
 
+## セキュリティ
+
+脆弱性は公開の Issue に書かず、[SECURITY.md](SECURITY.md) の手順で非公開で報告してください。
+
 ## License
 
 [MIT](LICENSE)
