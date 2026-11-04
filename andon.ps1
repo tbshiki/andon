@@ -700,7 +700,9 @@ $timer.Add_Tick({
                     if ($form.Visible) { [AndonNative]::Flash($form.Handle) }
                     $notice = Get-AlertNotice -Entries @($script:State.Values) -Now $now
                     if ($notice) {
-                        $script:NoticeKey = $notice.Key   # 通知をクリックしたら、このセッションを開く
+                        # 通知をクリックしたら、このセッションを開く。覚えるのは最新の 1 件分でよい。
+                        # Windows は同じアイコンの通知を新しいもので置き換え、通知センターにも最新の 1 件しか残さないため
+                        $script:NoticeKey = $notice.Key
                         $tray.ShowBalloonTip(10000, $notice.Title, $notice.Text, [System.Windows.Forms.ToolTipIcon]::None)
                     }
                 }
