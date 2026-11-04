@@ -22,7 +22,7 @@
     経過時間の表示は 5 秒ごとに更新するので、それより長くはできない。
 
 .EXAMPLE
-    powershell.exe -NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File .\andon.ps1
+    Start-Process conhost.exe '--headless powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File .\andon.ps1'
 #>
 [CmdletBinding()]
 param(

@@ -30,14 +30,16 @@ Claude Code は VS Code の統合ターミナルなどで普通に `claude` を�
 
 ```powershell
 git clone https://github.com/tbshiki/andon.git
-powershell.exe -NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File .\andon\andon.ps1
+Start-Process conhost.exe '--headless powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File .\andon\andon.ps1'
 ```
 
 画面の右下に、常に手前に表示されるウィンドウが開きます。二重に起動しても 2 つ目はすぐ終了します。
 
 ログオン時に自動で起動するには、`Win + R` で `shell:startup` を開き、次のショートカットを置きます。
 
-- リンク先: `powershell.exe -NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "<clone した場所>\andon.ps1"`
+- リンク先: `conhost.exe --headless powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "<clone した場所>\andon.ps1"`
+
+`conhost.exe --headless` は、PowerShell のコンソールをウィンドウなしで動かします。Windows 11 では既定のターミナルが Windows Terminal なので、`powershell.exe -WindowStyle Hidden` で起動すると、コンソールが Windows Terminal に引き渡されて隠れず、andon とは別にタスクバーに残ります。
 
 `-FallbackSec` で、変化がなくても状態を取り直す間隔（既定 30 秒）を変えられます。`-ScanMs` で、変化を見る間隔（既定 1000 ミリ秒、200〜5000）を変えられます。長くすると、待ちに気付くのが遅れます。
 
