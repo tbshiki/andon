@@ -11,7 +11,7 @@
 
     - waiting（許可待ち・質問待ち）を赤、busy から idle に変わった未確認のもの（完了）を黄で上に並べる。
     - 新しい待ちが出たとき、このウィンドウが前面になければタスクバーを点滅させる。
-    - 行をクリックすると、cwd を含む *.code-workspace（なければ repository の root）を `code` で開く。
+    - 行をクリックすると、cwd を含む *.code-workspace（なければ repository の root）を VS Code で開く。
       既に開いているウィンドウがあれば、そのウィンドウが前面に出る。ターミナルのタブまでは選ばない。
 
 .PARAMETER FallbackSec
@@ -31,7 +31,6 @@ param(
 # ---------------------------------------------------------------------------
 
 $script:State = @{}        # pid -> エントリ
-$script:TargetCache = @{}  # cwd -> VS Code で開く対象
 
 function Get-JsonValue {
     param($Object, [string]$Name)
@@ -43,12 +42,20 @@ function Get-JsonValue {
 function ConvertFrom-SessionJson {
     param([string]$Json)
     if ([string]::IsNullOrWhiteSpace($Json)) { throw 'claude agents --json の出力が空です' }
-    $start = $Json.IndexOf('[')
-    $end = $Json.LastIndexOf(']')
-    if ($start -lt 0 -or $end -lt $start) { throw 'claude agents --json の出力が JSON 配列ではありません' }
-    $parsed = ConvertFrom-Json -InputObject $Json.Substring($start, $end - $start + 1)
-    # Windows PowerShell 5.1 は配列を 1 つのオブジェクトとして返すので、ここで展開する
-    return , @(foreach ($x in $parsed) { $x })
+    # 前後に通知などの行が混ざっても読めるよう、行頭の [ と行末の ] の組を順に試し、JSON として読めるものを使う
+    $starts = @([regex]::Matches($Json, '(?m)^[ \t]*\[') | ForEach-Object { $_.Index + $_.Length - 1 })
+    $ends = @([regex]::Matches($Json, '\][ \t]*\r?$', 'Multiline') | ForEach-Object { $_.Index })
+    [array]::Reverse($ends)
+    foreach ($start in $starts) {
+        foreach ($end in $ends) {
+            if ($end -lt $start) { break }
+            try { $parsed = ConvertFrom-Json -InputObject $Json.Substring($start, $end - $start + 1) -ErrorAction Stop }
+            catch { continue }
+            # Windows PowerShell 5.1 は配列を 1 つのオブジェクトとして返すので、ここで展開する
+            return , @(foreach ($x in $parsed) { $x })
+        }
+    }
+    throw 'claude agents --json の出力が JSON 配列ではありません'
 }
 
 function Update-SessionState {
@@ -149,16 +156,33 @@ function Test-PathUnder {
     return ($p -ieq $r) -or $p.StartsWith($r + '\', [StringComparison]::OrdinalIgnoreCase)
 }
 
+function ConvertFrom-Jsonc {
+    <# JSONC（コメントと末尾のカンマを許す JSON。*.code-workspace の形式）を読む。文字列の中は変えない #>
+    param([string]$Text)
+    $keepStrings = {
+        param($m)
+        if ($m.Value.StartsWith('"')) { return $m.Value }
+        return ''
+    }
+    # コメントを先に消す。カンマの後にコメントが続くと、末尾のカンマと判定できないため
+    $json = [regex]::Replace($Text, '"(?:[^"\\]|\\.)*"|//[^\r\n]*|/\*[\s\S]*?\*/', $keepStrings)
+    $json = [regex]::Replace($json, '"(?:[^"\\]|\\.)*"|,(?=\s*[\]}])', $keepStrings)
+    return ConvertFrom-Json -InputObject $json -ErrorAction Stop
+}
+
 function Get-WorkspaceFolders {
-    <# *.code-workspace の folders[].path を絶対パスで返す。JSONC でも読めるよう正規表現で拾う #>
+    <# *.code-workspace の folders[].path を絶対パスで返す。読めなければ空 #>
     param([string]$Path)
     $dir = Split-Path -Parent $Path
     $text = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
     if (-not $text) { return @() }
+    try { $workspace = ConvertFrom-Jsonc $text } catch { return @() }
     $result = @()
-    foreach ($m in [regex]::Matches($text, '"path"\s*:\s*"((?:[^"\\]|\\.)*)"')) {
-        $p = $m.Groups[1].Value -replace '\\\\', '\'
-        try { $result += [IO.Path]::GetFullPath([IO.Path]::Combine($dir, $p)) } catch { }
+    foreach ($folder in @(Get-JsonValue $workspace 'folders')) {
+        if ($null -eq $folder) { continue }
+        $p = Get-JsonValue $folder 'path'   # リモートの uri だけを持つものは扱わない
+        if (-not $p) { continue }
+        try { $result += [IO.Path]::GetFullPath([IO.Path]::Combine($dir, [string]$p)) } catch { }
     }
     return $result
 }
@@ -222,12 +246,10 @@ function Resolve-VSCodeTarget {
 }
 
 function Find-VSCodeTarget {
+    <# クリックのたびに決め直す（後から作った workspace もすぐ反映される） #>
     param([string]$Cwd)
     if (-not $Cwd) { return $null }
-    if (-not $script:TargetCache.ContainsKey($Cwd)) {
-        $script:TargetCache[$Cwd] = Resolve-VSCodeTarget -Cwd $Cwd
-    }
-    return $script:TargetCache[$Cwd]
+    return Resolve-VSCodeTarget -Cwd $Cwd
 }
 
 function Find-CodeCmd {
@@ -239,6 +261,52 @@ function Find-CodeCmd {
         if (Test-Path -LiteralPath $candidate) { return $candidate }
     }
     return $null
+}
+
+function Find-CodeExe {
+    <# code.cmd（<VS Code>\bin\code.cmd）の隣の Code.exe を返す。なければ $null #>
+    param([string]$CodeCmd)
+    if (-not $CodeCmd) { return $null }
+    $exe = Join-Path (Split-Path -Parent (Split-Path -Parent $CodeCmd)) 'Code.exe'
+    if (Test-Path -LiteralPath $exe -PathType Leaf) { return $exe }
+    return $null
+}
+
+function ConvertTo-ArgumentString {
+    <# 1 つの引数を、CommandLineToArgvW の規則で元に戻る形に引用する。
+       Windows のパスは " を含まないので、閉じる " の直前の \ を重ねるだけでよい（"C:\" は C:" になってしまう） #>
+    param([string]$Value)
+    return '"' + ($Value -replace '(\\+)$', '$1$1') + '"'
+}
+
+function Start-VSCode {
+    <# VS Code に workspace かフォルダを開かせる。開いているウィンドウがあれば、VS Code がそれを前面に出す #>
+    param([string]$Target, [string]$CodeExe, [string]$CodeCmd)
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.UseShellExecute = $false
+    $psi.WorkingDirectory = $env:USERPROFILE
+    $psi.Arguments = ConvertTo-ArgumentString $Target
+    if ($CodeExe) {
+        # code.cmd は cmd.exe を通るので、パスの %VAR% が展開されてしまう。Code.exe に直接渡す
+        $psi.FileName = $CodeExe
+        # 引き継ぐと Code.exe が Node として動き、パスをスクリプトとして実行しようとする
+        $psi.EnvironmentVariables.Remove('ELECTRON_RUN_AS_NODE')
+    }
+    else {
+        $psi.FileName = $CodeCmd
+        $psi.CreateNoWindow = $true
+    }
+    $p = [Diagnostics.Process]::Start($psi)
+    if ($p) { $p.Dispose() }
+}
+
+function Stop-ProcessTree {
+    <# プロセスと、その子孫のプロセスを止める。claude が .cmd の場合、cmd.exe だけを止めると node が残るため #>
+    param([int]$Id)
+    foreach ($child in @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$Id" -ErrorAction SilentlyContinue)) {
+        Stop-ProcessTree -Id ([int]$child.ProcessId)
+    }
+    try { (Get-Process -Id $Id -ErrorAction Stop).Kill() } catch { }
 }
 
 # ドットソースされたときは関数の定義だけで止める
@@ -264,6 +332,7 @@ if (-not $script:CodeCmd) {
     [void][System.Windows.Forms.MessageBox]::Show('VS Code の code.cmd が見つかりません。', 'andon')
     return
 }
+$script:CodeExe = Find-CodeExe -CodeCmd $script:CodeCmd
 $script:SessionsDir = Join-Path (Get-ClaudeConfigDir) 'sessions'
 
 if (-not ('AndonNative' -as [type])) {
@@ -306,7 +375,7 @@ function Open-Session {
     param($Entry)
     $target = Find-VSCodeTarget -Cwd $Entry.Cwd
     if (-not $target) { return }
-    Start-Process -FilePath $script:CodeCmd -ArgumentList ('"{0}"' -f $target) -WindowStyle Hidden
+    Start-VSCode -Target $target -CodeExe $script:CodeExe -CodeCmd $script:CodeCmd
     $Entry.Unread = $false
 }
 
@@ -434,8 +503,11 @@ $timer.Add_Tick({
             if ($script:PollTask) {
                 if (-not $script:PollTask.IsCompleted) {
                     if (($now - $script:PollStarted).TotalSeconds -gt 30) {
-                        try { $script:PollProc.Kill() } catch { }
+                        try { Stop-ProcessTree -Id $script:PollProc.Id } catch { }
+                        $script:PollProc.Dispose()
+                        $script:PollProc = $null
                         $script:PollTask = $null
+                        $script:NextPoll = $now.AddSeconds(5)
                         $lblStatus.Text = 'claude agents --json が応答しません'
                     }
                     return
@@ -466,6 +538,10 @@ $timer.Add_Tick({
         }
         catch {
             $script:PollTask = $null
+            if ($script:PollProc) {
+                try { $script:PollProc.Dispose() } catch { }
+                $script:PollProc = $null
+            }
             $script:NextPoll = (Get-Date).AddSeconds(5)
             $lblStatus.Text = 'エラー: ' + $_.Exception.Message
         }
@@ -473,7 +549,7 @@ $timer.Add_Tick({
 
 $form.Add_FormClosed({
         $timer.Stop()
-        if ($script:PollProc -and -not $script:PollProc.HasExited) { try { $script:PollProc.Kill() } catch { } }
+        if ($script:PollProc -and -not $script:PollProc.HasExited) { try { Stop-ProcessTree -Id $script:PollProc.Id } catch { } }
         $script:Mutex.ReleaseMutex()
         $script:Mutex.Dispose()
     })

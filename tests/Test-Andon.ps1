@@ -85,6 +85,9 @@ Assert-Equal $list[0].pid 1 '要素の値を読める'
 Assert-Equal (ConvertFrom-SessionJson '[{"pid":1},{"pid":2}]').Count 2 '2 件の配列'
 Assert-Equal (ConvertFrom-SessionJson '[]').Count 0 '空の配列'
 Assert-Equal (ConvertFrom-SessionJson "notice`n[{`"pid`":3}]").Count 1 '配列の前に余計な行があっても読める'
+Assert-Equal (ConvertFrom-SessionJson "[notice] update available`n[{`"pid`":4}]")[0].pid 4 '[ で始まる通知の行が前にあっても読める'
+Assert-Equal (ConvertFrom-SessionJson "[{`"pid`":5}]`n[done]")[0].pid 5 '] で終わる行が後ろにあっても読める'
+Assert-Equal (ConvertFrom-SessionJson "[`r`n  {`r`n    `"pid`": 6,`r`n    `"tags`": [1, 2]`r`n  }`r`n]`r`n")[0].pid 6 '複数行に整形された JSON'
 Assert-Throws { ConvertFrom-SessionJson '' } '空の出力は例外にする（直前の状態を消さない）'
 Assert-Throws { ConvertFrom-SessionJson 'error' } 'JSON 配列でない出力は例外にする'
 
@@ -171,13 +174,24 @@ try {
 	"folders": [
 		{ "path": "." },
 		{ "path": "../repo-b" },
+		// { "path": "../repo-c" },
+		/* { "path": "../repo-c" }, */
 		{ "path": "$absF" },
-		{ "path": "..\\repo-g" },
+		{ "path": "..\\repo-g" }, // 末尾のカンマの後のコメント
+		/* { "path": "../repo-c" } */
 	],
-	"settings": {}
+	"settings": {
+		"example.url": "https://example.invalid/*keep*/",
+		"example.nested": { "path": "../repo-c" },
+	}
 }
 "@
     [IO.File]::WriteAllText($wsA, $wsText)
+    Assert-Equal @(Get-WorkspaceFolders -Path $wsA).Count 4 'コメントと settings の中の path は folders として数えない'
+    Assert-Equal (ConvertFrom-Jsonc $wsText).settings.'example.url' 'https://example.invalid/*keep*/' '文字列の中の // や /* */ は消さない'
+    $wsBroken = Join-Path $tmp 'broken.code-workspace'
+    [IO.File]::WriteAllText($wsBroken, '{ "folders": [ { "path": ')
+    Assert-Equal @(Get-WorkspaceFolders -Path $wsBroken).Count 0 '読めない workspace は空として扱う'
     $wsD = Join-Path $ws 'repo d\d.code-workspace'
     [IO.File]::WriteAllText($wsD, '{ "folders": [ { "path": "." } ] }')
 
@@ -189,7 +203,7 @@ try {
     Assert-PathEqual (Resolve-VSCodeTarget -Cwd (Join-Path $ws 'repo-f')) $wsA 'folders の絶対パス（/ 区切り）'
     Assert-PathEqual (Resolve-VSCodeTarget -Cwd (Join-Path $ws 'repo-g')) $wsA 'folders のエスケープされた \'
     Assert-PathEqual (Resolve-VSCodeTarget -Cwd (Join-Path $ws 'repo-b2')) (Join-Path $ws 'repo-b2') '前方一致するだけの別フォルダは、そのフォルダを開く'
-    Assert-PathEqual (Resolve-VSCodeTarget -Cwd (Join-Path $ws 'repo-c')) (Join-Path $ws 'repo-c') 'workspace がなければフォルダを開く'
+    Assert-PathEqual (Resolve-VSCodeTarget -Cwd (Join-Path $ws 'repo-c')) (Join-Path $ws 'repo-c') 'workspace がなければフォルダを開く（コメントの中の folders は使わない）'
     Assert-PathEqual (Resolve-VSCodeTarget -Cwd (Join-Path $ws 'repo d')) $wsD '空白を含むパス'
     Assert-PathEqual (Resolve-VSCodeTarget -Cwd (Join-Path $ws 'repo-c\sub')) (Join-Path $ws 'repo-c') 'workspace がなければ、サブフォルダではなく repository の root を開く'
     Assert-PathEqual (Resolve-VSCodeTarget -Cwd (Join-Path $ws 'repo-c\a\b\c\d\e')) (Join-Path $ws 'repo-c') '深い階層からも repository の root まで遡る'
@@ -224,6 +238,61 @@ try {
     else {
         Assert-PathEqual (Resolve-VSCodeTarget -Cwd $outside) $outside 'git の外では上の階層の workspace を使わない'
     }
+
+    Write-Host '== Find-CodeExe'
+    $vsc = Join-Path $tmp 'vsc'
+    New-Item -ItemType Directory -Path (Join-Path $vsc 'bin') -Force | Out-Null
+    $fakeCmd = Join-Path $vsc 'bin\code.cmd'
+    [IO.File]::WriteAllText($fakeCmd, '@echo off')
+    Assert-Equal (Find-CodeExe -CodeCmd $fakeCmd) $null 'Code.exe がなければ $null（code.cmd を使う）'
+    [IO.File]::WriteAllText((Join-Path $vsc 'Code.exe'), '')
+    Assert-PathEqual (Find-CodeExe -CodeCmd $fakeCmd) (Join-Path $vsc 'Code.exe') 'bin\code.cmd の隣の Code.exe'
+
+    Write-Host '== ConvertTo-ArgumentString'
+    Assert-Equal (ConvertTo-ArgumentString 'C:\a b') '"C:\a b"' '空白を含むパスを引用する'
+    Assert-Equal (ConvertTo-ArgumentString 'C:\') '"C:\\"' '閉じる " の直前の \ を重ねる'
+    # 実際にプロセスへ渡し、受け取った引数が元のパスと一致するか（cmd.exe を通さないので %VAR% も展開されない）
+    $dump = Join-Path $tmp 'dump-args.ps1'
+    $dumpOut = Join-Path $tmp 'args.txt'
+    [IO.File]::WriteAllText($dump, '[IO.File]::WriteAllLines($args[0], [string[]]$args[1..($args.Count - 1)], (New-Object Text.UTF8Encoding($true)))', (New-Object Text.UTF8Encoding($true)))
+    $values = @('C:\', 'C:\a b\', 'C:\x\v%USERNAME%v', 'C:\x\a&b', 'C:\x\日本語 フォルダ', '\\server\share\')
+    $psi = New-Object Diagnostics.ProcessStartInfo 'powershell.exe'
+    $psi.Arguments = '-NoProfile -ExecutionPolicy Bypass -File ' + ((@($dump, $dumpOut) + $values | ForEach-Object { ConvertTo-ArgumentString $_ }) -join ' ')
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $p = [Diagnostics.Process]::Start($psi)
+    $p.WaitForExit()
+    $p.Dispose()
+    $got = @([IO.File]::ReadAllLines($dumpOut))
+    Assert-Equal $got.Count $values.Count '引数の数が変わらない'
+    for ($i = 0; $i -lt $values.Count; $i++) {
+        Assert-Equal $got[$i] $values[$i] "引数がそのまま渡る: $($values[$i])"
+    }
+
+    Write-Host '== Stop-ProcessTree'
+    $psi = New-Object Diagnostics.ProcessStartInfo 'cmd.exe', '/c powershell.exe -NoProfile -Command Start-Sleep -Seconds 60'
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $parentProc = [Diagnostics.Process]::Start($psi)
+    $child = $null
+    $deadline = (Get-Date).AddSeconds(10)
+    while (-not $child -and (Get-Date) -lt $deadline) {
+        $child = Get-CimInstance Win32_Process -Filter "ParentProcessId=$($parentProc.Id) AND Name='powershell.exe'" | Select-Object -First 1
+        if (-not $child) { Start-Sleep -Milliseconds 200 }
+    }
+    Assert-True $child '子プロセスが起動した'
+    Stop-ProcessTree -Id $parentProc.Id
+    Assert-True ($parentProc.WaitForExit(5000)) '親プロセスを止める'
+    if ($child) {
+        $childGone = $false
+        $deadline = (Get-Date).AddSeconds(5)
+        while (-not $childGone -and (Get-Date) -lt $deadline) {
+            $childGone = -not (Get-Process -Id $child.ProcessId -ErrorAction SilentlyContinue)
+            if (-not $childGone) { Start-Sleep -Milliseconds 200 }
+        }
+        Assert-True $childGone '子孫のプロセスも止める'
+    }
+    $parentProc.Dispose()
 }
 finally {
     if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Recurse -Force }
