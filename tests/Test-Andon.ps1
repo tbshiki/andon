@@ -454,6 +454,34 @@ try {
             FilePath = $dstLaunch.FilePath; Arguments = '-File C:\work\Test-Andon.ps1'; WorkingDirectory = $installTmp; PowerShell = $dstLaunch.PowerShell
         })
     Assert-Equal (Remove-AndonShortcut -Path $other) $false '別のスクリプトを起動するショートカットは消さない'
+
+    Write-Host '== install.ps1: 配る zip'
+    # リポジトリのファイルから、Release の workflow と同じく zip を作る
+    $zip = New-AndonPackage -SourceDir $root -OutDir (Join-Path $installTmp 'out') -Version $script:AndonVersion
+    Assert-Equal (Split-Path -Leaf $zip) "andon-$($script:AndonVersion).zip" 'zip の名前は andon-<版>.zip'
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [IO.Compression.ZipFile]::OpenRead($zip)
+    try {
+        $entries = @($archive.Entries | ForEach-Object { $_.FullName } | Sort-Object)
+        Assert-Equal ($entries -join ',') ((Get-AndonPayload | Sort-Object) -join ',') 'zip の直下に、配るファイルだけを入れる'
+        $entry = $archive.GetEntry('andon.ps1')
+        $stream = $entry.Open()
+        try {
+            $buffer = New-Object IO.MemoryStream
+            $stream.CopyTo($buffer)
+            $zipped = $buffer.ToArray()
+        }
+        finally { $stream.Dispose() }
+        $original = [IO.File]::ReadAllBytes((Join-Path $root 'andon.ps1'))
+        Assert-True ([Convert]::ToBase64String($zipped) -ceq [Convert]::ToBase64String($original)) 'zip の andon.ps1 はリポジトリのものと同じ（BOM と CRLF を保つ）'
+    }
+    finally { $archive.Dispose() }
+    Assert-Equal (Split-Path -Leaf (New-AndonPackage -SourceDir $root -OutDir (Join-Path $installTmp 'out') -Version $script:AndonVersion)) "andon-$($script:AndonVersion).zip" '同じ版の zip があれば作り直す'
+    Assert-Throws { New-AndonPackage -SourceDir $root -OutDir (Join-Path $installTmp 'out') -Version 'v0.1' } '版の形が違えば例外にする'
+    $partial = Join-Path $installTmp 'partial'
+    New-Item -ItemType Directory -Path $partial -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $root 'andon.ps1') -Destination $partial
+    Assert-Throws { New-AndonPackage -SourceDir $partial -OutDir (Join-Path $installTmp 'out') -Version $script:AndonVersion } '配るファイルが欠けていれば例外にする（欠けた zip を配らない）'
 }
 finally {
     if (Test-Path -LiteralPath $installTmp) { Remove-Item -LiteralPath $installTmp -Recurse -Force }
