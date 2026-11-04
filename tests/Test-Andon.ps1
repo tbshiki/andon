@@ -417,6 +417,38 @@ else {
 }
 
 # ---------------------------------------------------------------------------
+Write-Host '== .claude/hooks/deny-secret-file-access.ps1'
+$denyHook = Join-Path $root '.claude\hooks\deny-secret-file-access.ps1'
+$denyTmp = Join-Path ([IO.Path]::GetTempPath()) ('andon-hook-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $denyTmp -Force | Out-Null
+function Test-CommandDenied {
+    <# シェルのコマンドを、Claude Code と同じく UTF-8（BOM なし）の JSON で hook に渡し、止められたかを返す #>
+    param([string]$Command)
+    $in = Join-Path $denyTmp 'in.json'
+    $out = Join-Path $denyTmp 'out.txt'
+    $json = '{"tool_name":"PowerShell","tool_input":{"command":' + (ConvertTo-Json $Command) + '}}'
+    [IO.File]::WriteAllText($in, $json, (New-Object Text.UTF8Encoding($false)))
+    Start-Process -FilePath 'powershell.exe' -ArgumentList ('-NoLogo -NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $denyHook) `
+        -RedirectStandardInput $in -RedirectStandardOutput $out -NoNewWindow -Wait
+    return ([IO.File]::ReadAllText($out)) -match '"permissionDecision":"deny"'
+}
+try {
+    Assert-True (Test-CommandDenied 'Get-Content ~/.claude/sessions/1234.key') 'sessions の *.key を読むコマンドを止める'
+    Assert-True (Test-CommandDenied 'cat server.pem') '*.pem を読むコマンドを止める'
+    Assert-True (Test-CommandDenied 'cat $name.key') 'bash の $name.key（小文字）はファイル名として止める'
+    Assert-True (Test-CommandDenied 'Get-Content .env') '.env を読むコマンドを止める'
+    Assert-True (-not (Test-CommandDenied '$script:State.Values | % { $_.Key }')) '$_.Key はプロパティ参照なので止めない'
+    Assert-True (-not (Test-CommandDenied "Select-String -Pattern '`$notice.Key' andon.ps1")) '$notice.Key を探すコマンドを止めない'
+    Assert-True (-not (Test-CommandDenied '$script:State[''1''].Key')) '[ ] の後ろの .Key を止めない'
+    Assert-True (-not (Test-CommandDenied '(Get-AlertNotice -Entries $e -Now $t).Key')) '( ) の後ろの .Key を止めない'
+    Assert-True (-not (Test-CommandDenied '$_.Value.Key')) 'プロパティを続けた後ろの .Key を止めない'
+    Assert-True (-not (Test-CommandDenied 'cat .env.example')) '.env.example は止めない'
+}
+finally {
+    Remove-Item -LiteralPath $denyTmp -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# ---------------------------------------------------------------------------
 $passed = $script:Count - $script:Failures
 Write-Host ''
 Write-Host "$passed / $($script:Count) passed"
