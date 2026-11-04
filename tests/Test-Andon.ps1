@@ -125,6 +125,27 @@ Assert-Equal $script:State['3'].Unread $false 'waiting から idle（手元で�
 $null = Update-SessionState -Sessions @([pscustomobject]@{ id = 'bg1'; kind = 'background'; state = 'done' }) -Now $t0.AddSeconds(25)
 Assert-Equal $script:State.Count 0 'プロセスのない background セッションは扱わない'
 
+# PID の使い回し: startedAt が変わったら、同じ PID でも別のセッションとして扱う
+$script:State = @{}
+$old = New-Session 8 'busy'; $old | Add-Member startedAt 1000
+$null = Update-SessionState -Sessions @($old) -Now $t0
+$script:State['8'].Sdk = $true
+$old.status = 'idle'
+$null = Update-SessionState -Sessions @($old) -Now $t0.AddSeconds(5)
+Assert-Equal $script:State['8'].Unread $true '使い回しの前: busy から idle で完了'
+$reused = New-Session 8 'idle'; $reused | Add-Member startedAt 2000
+$alert = Update-SessionState -Sessions @($reused) -Now $t0.AddSeconds(10)
+Assert-Equal $script:State['8'].Unread $false 'PID を使い回した新しいセッションは、前の完了を引き継がない'
+Assert-Equal $script:State['8'].Sdk $null 'PID を使い回した新しいセッションは、拡張機能のパネルかを判定し直す'
+Assert-Equal $script:State['8'].Since $null 'PID を使い回した新しいセッションは、前の経過時間を引き継がない'
+Assert-Equal $alert $false 'PID を使い回した新しいセッションが idle なら通知しない'
+$same = New-Session 8 'busy'; $same | Add-Member startedAt 2000
+$null = Update-SessionState -Sessions @($same) -Now $t0.AddSeconds(15)
+Assert-Equal $script:State['8'].Since $t0.AddSeconds(15) 'startedAt が同じなら同じセッションとして状態の変化を記録する'
+$noStart = New-Session 8 'idle'
+$null = Update-SessionState -Sessions @($noStart) -Now $t0.AddSeconds(20)
+Assert-Equal $script:State['8'].Unread $true 'startedAt がなければ PID だけで見分ける（busy から idle で完了）'
+
 Assert-Equal (Get-Rank ([pscustomobject]@{ Status = 'waiting'; Unread = $false })) 0 '並び順: 待ちが先頭'
 Assert-Equal (Get-Rank ([pscustomobject]@{ Status = 'idle'; Unread = $true })) 1 '並び順: 完了が次'
 Assert-Equal (Get-Rank ([pscustomobject]@{ Status = 'busy'; Unread = $false })) 2 '並び順: 実行中'

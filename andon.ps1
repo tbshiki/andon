@@ -82,14 +82,20 @@ function Update-SessionState {
         $alive[$key] = $true
         $status = Get-JsonValue $s 'status'
         if (-not $status) { $status = 'unknown' }
+        $startedAt = Get-JsonValue $s 'startedAt'
 
         $entry = $script:State[$key]
+        # 終わったセッションの PID を新しいセッションが使い回したときは、前の状態を引き継がない
+        if ($entry -and $null -ne $startedAt -and $null -ne $entry.StartedAt -and $entry.StartedAt -ne $startedAt) {
+            $entry = $null
+        }
         if (-not $entry) {
             # 起動時点で idle のものは、いつ終わったか分からないので既読として扱う
             $entry = [pscustomobject]@{
                 Key = $key; Status = $status; Since = $null; Unread = ($status -eq 'waiting')
                 Name = ''; Cwd = ''; Kind = ''; WaitingFor = ''; AlertAt = $null
                 Sdk = $null   # 拡張機能のパネルなど、ターミナルではなく SDK から動かしているか。$null は未判定
+                StartedAt = $startedAt
             }
             $script:State[$key] = $entry
             if ($entry.Unread) { $entry.AlertAt = $Now; $alert = $true }
@@ -106,6 +112,7 @@ function Update-SessionState {
         $entry.Cwd = [string](Get-JsonValue $s 'cwd')
         $entry.Kind = [string](Get-JsonValue $s 'kind')
         $entry.WaitingFor = [string](Get-JsonValue $s 'waitingFor')
+        if ($null -ne $startedAt) { $entry.StartedAt = $startedAt }
     }
     foreach ($k in @($script:State.Keys)) {
         if (-not $alive.ContainsKey($k)) { $script:State.Remove($k) }
