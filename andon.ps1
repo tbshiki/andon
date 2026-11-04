@@ -15,7 +15,7 @@
     - タスクバーには出さず、通知領域（タスクトレイ）のアイコンの色で状態を示す。
       × で閉じるとトレイに隠れる。終了はトレイの右クリックのメニューから行う。
     - 新しい待ちや完了が出たとき、このウィンドウが前面になければ Windows の通知を出す。
-      通知をクリックすると、そのセッションを開く。
+      通知をクリックすると、そのセッションを開く。送り元は、プロセスのアプリ ID を andon にして「andon」と表示させる。
     - 行をクリックすると、cwd を含む *.code-workspace（なければ repository の root）を VS Code で開く。
       既に開いているウィンドウがあれば、そのウィンドウが前面に出る。ターミナルのタブまでは選ばない。
 
@@ -401,6 +401,25 @@ if (-not $script:CodeCmd) {
 }
 $script:CodeExe = Find-CodeExe -CodeCmd $script:CodeCmd
 $script:SessionsDir = Join-Path (Get-ClaudeConfigDir) 'sessions'
+
+# 通知の送り元を、PowerShell ではなく andon と表示させる。Windows はトレイの通知の送り元を、プロセスのアプリ ID
+# （AppUserModelID）から決める。ID は、andon のウィンドウを作る前に付けなければならない。
+# 上のメッセージボックスを出したときは、そのまま終わるので ID は要らない。
+# 付けられなくても、送り元が PowerShell のままになるだけなので続ける。
+# AndonNative とは別の型にする。同じセッションで前の版の andon を動かしていると、前の版の AndonNative が残っていて、
+# 定義し直せないため
+try {
+    if (-not ('AndonAppId' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System.Runtime.InteropServices;
+public static class AndonAppId {
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)] public static extern int SetCurrentProcessExplicitAppUserModelID(string appId);
+}
+'@
+    }
+    [void][AndonAppId]::SetCurrentProcessExplicitAppUserModelID('andon')
+}
+catch { }
 
 if (-not ('AndonNative' -as [type])) {
     Add-Type -TypeDefinition @'
