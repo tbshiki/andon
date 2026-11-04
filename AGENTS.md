@@ -51,6 +51,15 @@
 - 1 回の Release に、配るファイルの追加（または削除）と更新の両方があれば、MINOR を上げる。
 - 配らないファイル（テスト、CI、README など）だけを変えたときは、Release を出さず、版も上げない。
 
+## Release
+
+1. 前の Release からの、配るファイルの変更を見て、上の規則で版を決め、`andon.ps1` の `$script:AndonVersion` を上げてコミットする。
+2. 作業用ブランチを `main` へ `--no-ff` でマージし、`main` を push して CI の成功を確かめる。
+3. tag `v<版>` を作る前に、ユーザーに確認する。確認を得たら、`main` のそのコミットに `git tag -a v<版> -m "andon <版>"` で tag を付けて push する。
+4. workflow `release`（`.github/workflows/release.yml`）が、tag のコミットでテストし、tag と `$script:AndonVersion` が一致するか、tag のコミットが `main` にあるかを確かめて、`andon-<版>.zip` を付けた下書きの Release を作る。zip の中身は `install.ps1` の `Get-AndonPayload`。
+5. 下書きは AI が公開しない。ユーザーが GitHub で中身を確かめて公開する。公開すると、asset と tag は変えられなくなる。
+6. workflow が失敗したときや、下書きのうちに誤りに気付いたときは、下書きと tag を消して（ruleset で admin だけができる）、直してから付け直す。公開したあとに誤りに気付いたときは、同じ版を作り直せないので、次の版を出す。
+
 ## GitHub の設定
 
 - `main` は ruleset で保護している（force push と削除の禁止、PR のマージには CI の成功が必須）。admin は規則を迂回できるので、ローカルで `--no-ff` マージした `main` はこれまで通り push できる。

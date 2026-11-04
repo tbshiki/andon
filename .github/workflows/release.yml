@@ -1,0 +1,87 @@
+name: release
+
+# v<版> の tag を push すると、tag のコミットでテストし、配る zip（andon-<版>.zip）を付けた下書きの Release を作る。
+# 公開は、ユーザーが GitHub で下書きを確かめてから行う。公開すると、immutable releases で asset と tag が固定される
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    # 境界の判定を誤って GUI が起動しても、既定の 6 時間待ち続けないようにする
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        shell: [powershell, pwsh]
+    steps:
+      # test.yml と同じ手順。action は tag ではなくコミットの SHA で固定する。更新は Dependabot が行う
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test (${{ matrix.shell }})
+        shell: pwsh
+        run: |
+          ${{ matrix.shell }} -NoProfile -ExecutionPolicy Bypass -File ./tests/Test-Andon.ps1
+          exit $LASTEXITCODE
+
+  draft:
+    needs: test
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write   # 下書きの Release を作るため。tag は作らない（--verify-tag）
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0   # tag のコミットが main にあるかを確かめるため、main の履歴も取る
+      - name: Check tag and version
+        shell: pwsh
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          . ./install.ps1
+          if ($env:TAG -notmatch '^v(\d+\.\d+\.\d+)$') { throw "tag が v<MAJOR.MINOR.PATCH> の形ではありません: $env:TAG" }
+          $version = $Matches[1]
+          $inFile = Get-AndonVersion -Path ./andon.ps1
+          if ($version -ne $inFile) { throw "tag の版（$version）と andon.ps1 の版（$inFile）が違います" }
+          # 作業用ブランチのコミットから Release を作らない
+          git merge-base --is-ancestor HEAD origin/main
+          if ($LASTEXITCODE -ne 0) { throw 'tag のコミットが main にありません' }
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "VERSION=$version"
+      - name: Create draft release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          . ./install.ps1
+          $zip = New-AndonPackage -SourceDir . -OutDir $env:RUNNER_TEMP -Version $env:VERSION
+          Get-FileHash -Algorithm SHA256 -LiteralPath $zip | Format-List Algorithm, Hash, Path
+          $notes = @'
+          ## インストールと更新
+
+          1. 下の Assets から `andon-{version}.zip` を落として、展開します。
+          2. PowerShell で次を実行します。更新も同じ手順です。
+
+          ```powershell
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<展開したフォルダ>\install.ps1"
+          ```
+
+          アンインストールと、動かないときのことは [README](https://github.com/tbshiki/andon/blob/v{version}/README.md#インストール) にあります。
+
+          ## 落とした zip を確かめる
+
+          ```powershell
+          gh release verify-asset v{version} .\andon-{version}.zip -R tbshiki/andon
+          ```
+          '@
+          $notesFile = Join-Path $env:RUNNER_TEMP 'notes.md'
+          Set-Content -LiteralPath $notesFile -Value $notes.Replace('{version}', $env:VERSION) -Encoding utf8
+          gh release create $env:TAG $zip --draft --verify-tag --title "andon $env:VERSION" --notes-file $notesFile
+          if ($LASTEXITCODE -ne 0) { throw 'gh release create に失敗しました' }

@@ -36,8 +36,26 @@ param(
 # ---------------------------------------------------------------------------
 
 function Get-AndonPayload {
-    <# 配るファイル。andon.ps1 は必須、ほかはあれば置く #>
+    <# 配るファイル。Release の zip に入れるもの。入れるときは、andon.ps1 は必須、ほかはあれば置く #>
     return @('andon.ps1', 'install.ps1', 'andon.ico', 'LICENSE')
+}
+
+function New-AndonPackage {
+    <# 配るファイルを zip（andon-<版>.zip）にまとめ、zip のパスを返す。Release の workflow が使う。
+       入れるときと違い、配るファイルが 1 つでも欠けていれば例外にする（欠けた zip を配らない） #>
+    param([string]$SourceDir, [string]$OutDir, [string]$Version)
+    if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw "版の形が MAJOR.MINOR.PATCH ではありません: $Version" }
+    $files = foreach ($name in Get-AndonPayload) {
+        $path = Join-Path $SourceDir $name
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "配るファイルがありません: $name" }
+        $path
+    }
+    if (-not (Test-Path -LiteralPath $OutDir)) { New-Item -ItemType Directory -Path $OutDir -Force | Out-Null }
+    $zip = Join-Path $OutDir "andon-$Version.zip"
+    if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
+    # zip の直下に置く。エクスプローラーの「すべて展開」は、zip の名前のフォルダを作ってそこに展開する
+    Compress-Archive -LiteralPath $files -DestinationPath $zip
+    return $zip
 }
 
 function Get-AndonLayout {

@@ -14,7 +14,7 @@
 
 ## 対象
 
-最新の `main` だけを対象にします。
+最新の [Release](https://github.com/tbshiki/andon/releases/latest) だけを対象にします。Release の zip が本物かは、README の「インストール」にある `gh release verify-asset` で確かめられます。
 
 ## andon が行うこと
 
