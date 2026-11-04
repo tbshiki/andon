@@ -15,7 +15,8 @@
     - タスクバーには出さず、通知領域（タスクトレイ）のアイコンの色で状態を示す。
       × で閉じるとトレイに隠れる。終了はトレイの右クリックのメニューから行う。
     - 新しい待ちや完了が出たとき、このウィンドウが前面になければ Windows の通知を出す。
-      通知をクリックすると、そのセッションを開く。送り元は、プロセスのアプリ ID を andon にして「andon」と表示させる。
+      通知をクリックすると、そのセッションを開く。送り元は、プロセスにアプリ ID（tbshiki.andon）を付け、
+      その表示名を HKCU に登録して「andon」と表示させる。
       ID はプロセス全体に付くので、andon のためだけに起動した PowerShell で動かしたときだけ付ける。
     - 行をクリックすると、cwd を含む *.code-workspace（なければ repository の root）を VS Code で開く。
       既に開いているウィンドウがあれば、そのウィンドウが前面に出る。ターミナルのタブまでは選ばない。
@@ -387,6 +388,19 @@ function Test-DedicatedProcess {
     return $false
 }
 
+function Register-AppUserModelId {
+    <# アプリ ID に、通知の送り元として出す表示名を登録する（HKCU なので管理者の権限は要らない）。登録できたら $true。
+       登録しないと、Windows は ID の文字列をそのまま送り元に出す #>
+    param([string]$Id, [string]$DisplayName, [string]$Root = 'HKCU:\Software\Classes\AppUserModelId')
+    try {
+        $key = Join-Path $Root $Id
+        if (-not (Test-Path -LiteralPath $key)) { New-Item -Path $key -Force -ErrorAction Stop | Out-Null }
+        Set-ItemProperty -LiteralPath $key -Name DisplayName -Value $DisplayName -ErrorAction Stop
+        return $true
+    }
+    catch { return $false }
+}
+
 function Stop-ProcessTree {
     <# プロセスと、その子孫のプロセスを止める。claude が .cmd の場合、cmd.exe だけを止めると node が残るため #>
     param([int]$Id)
@@ -427,9 +441,13 @@ $script:SessionsDir = Join-Path (Get-ClaudeConfigDir) 'sessions'
 # 上のメッセージボックスを出したときは、そのまま終わるので ID は要らない。
 # 付けられなくても、送り元が PowerShell のままになるだけなので続ける。
 # ID はプロセス全体に付き、外せない。対話で使っているシェルで直接動かしたときは、andon を終えたあともシェルに残るので付けない。
+# ID は、ほかのアプリと通知の設定が混ざらないよう tbshiki.andon にし、送り元に andon と出るよう表示名を登録する。
+# 登録できなければ、ID の文字列がそのまま送り元に出るので、ID を andon にする。
 # AndonNative とは別の型にする。同じセッションで前の版の andon を動かしていると、前の版の AndonNative が残っていて、
 # 定義し直せないため
 if (Test-DedicatedProcess -Arguments ([Environment]::GetCommandLineArgs()) -ScriptName ([IO.Path]::GetFileName($PSCommandPath))) {
+    $appId = 'andon'
+    if (Register-AppUserModelId -Id 'tbshiki.andon' -DisplayName 'andon') { $appId = 'tbshiki.andon' }
     try {
         if (-not ('AndonAppId' -as [type])) {
             Add-Type -TypeDefinition @'
@@ -439,7 +457,7 @@ public static class AndonAppId {
 }
 '@
         }
-        [void][AndonAppId]::SetCurrentProcessExplicitAppUserModelID('andon')
+        [void][AndonAppId]::SetCurrentProcessExplicitAppUserModelID($appId)
     }
     catch { }
 }

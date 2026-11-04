@@ -47,6 +47,12 @@ Start-Process conhost.exe '--headless powershell.exe -NoProfile -STA -ExecutionP
 
 `-FallbackSec` で、変化がなくても状態を取り直す間隔（既定 30 秒）を変えられます。`-ScanMs` で、変化を見る間隔（既定 1000 ミリ秒、200〜5000）を変えられます。長くすると、待ちに気付くのが遅れます。
 
+andon は、通知の送り元を `andon` と表示させるため、起動のたびに `HKCU\Software\Classes\AppUserModelId\tbshiki.andon` に表示名を書きます（管理者の権限は要りません）。andon を使わなくなったら、次で消せます。
+
+```powershell
+Remove-Item -Recurse HKCU:\Software\Classes\AppUserModelId\tbshiki.andon
+```
+
 ## 仕組み
 
 - **状態:** 公式の `claude agents --json` から読みます。対話セッションごとに `status`（`busy` / `waiting` / `idle`）と、`waiting` の理由（`waitingFor`）が返ります。
