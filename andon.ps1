@@ -23,6 +23,7 @@
       そのセッションが待ちでも完了でもなくなったときに止める。
     - 行をクリックすると、cwd を含む *.code-workspace（なければ repository の root）を VS Code で開く。
       既に開いているウィンドウがあれば、そのウィンドウが前面に出る。ターミナルのタブまでは選ばない。
+    - install.ps1 が更新や削除の前に終わらせられるよう、名前付きのイベント（Local\andon-exit）の合図を受けたら終わる。
 
 .PARAMETER FallbackSec
     更新時刻に変化がなくても `claude agents --json` を呼ぶ間隔（秒）。
@@ -42,6 +43,9 @@ param(
     [ValidateRange(200, 5000)]
     [int]$ScanMs = 1000
 )
+
+# 版（MAJOR.MINOR.PATCH）。Release の tag（v<版>）と同じにする。install.ps1 はこの行から版を読む
+$script:AndonVersion = '0.1.0'
 
 # ---------------------------------------------------------------------------
 # 状態の管理（GUI に依存しない部分。ドットソースして単体で確かめられる）
@@ -466,6 +470,12 @@ $createdNew = $false
 $script:Mutex = New-Object System.Threading.Mutex($true, 'Local\andon', [ref]$createdNew)
 if (-not $createdNew) { return }   # 二重起動しない
 
+# install.ps1 が、ファイルを置き換える前や消す前に andon を終わらせるための合図。timer で見る。
+# 作れなくても、install.ps1 がプロセスを止めるだけなので続ける
+$script:ExitEvent = $null
+try { $script:ExitEvent = New-Object System.Threading.EventWaitHandle($false, [System.Threading.EventResetMode]::AutoReset, 'Local\andon-exit') }
+catch { }
+
 $script:ClaudeExe = (Get-Command claude -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
 $script:CodeCmd = Find-CodeCmd
 if (-not $script:ClaudeExe) {
@@ -673,6 +683,10 @@ $tray = New-Object System.Windows.Forms.NotifyIcon
 $tray.Icon = $script:Icons['none']
 $tray.Text = 'andon'
 $trayMenu = New-Object System.Windows.Forms.ContextMenuStrip
+# どの PC にどの版が入っているか分かるよう、版を出す
+$miVersion = $trayMenu.Items.Add("andon $script:AndonVersion")
+$miVersion.Enabled = $false
+[void]$trayMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
 $miShow = $trayMenu.Items.Add('表示')
 $miTrayRead = $trayMenu.Items.Add('すべて既読')
 [void]$trayMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
@@ -831,6 +845,12 @@ $script:NextRender = Get-Date
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = $ScanMs
 $timer.Add_Tick({
+        # install.ps1 の合図。トレイの「終了」と同じく終わる
+        if ($script:ExitEvent -and $script:ExitEvent.WaitOne(0)) {
+            $script:Exiting = $true
+            $form.Close()
+            return
+        }
         try {
             $now = Get-Date
             Update-Flash
@@ -902,6 +922,7 @@ $form.Add_FormClosed({
         if ($script:PollProc -and -not $script:PollProc.HasExited) { try { Stop-ProcessTree -Id $script:PollProc.Id } catch { } }
         $script:Mutex.ReleaseMutex()
         $script:Mutex.Dispose()
+        if ($script:ExitEvent) { $script:ExitEvent.Dispose() }
     })
 
 $tray.Visible = $true

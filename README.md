@@ -17,7 +17,7 @@
 - 黄は、行をクリックする、右クリックの「既読にする」、「すべて既読」、そのセッションで次のプロンプトを送る、のいずれかで消えます。
 - VS Code の Claude Code 拡張機能（パネル）のセッションは、待機中は表示しません。拡張機能は、パネルを閉じても `claude` を終了させずに待機中のまま残すためです。実行中・待ち・完了のときは表示します。完了は、ターミナルのセッションと同じく、確認するまで残ります。
 - andon はタスクバーには出ず、通知領域（タスクトレイ）にアイコンを置きます。アイコンは、赤があれば赤、黄があれば黄、どちらもなければ灰になります。赤と黄の件数は、ウィンドウのタイトルとアイコンのツールチップに出ます。
-- 新しく待ちや完了が出たとき、andon が前面になければ Windows の通知を出し、ウィンドウのタイトルバーを点滅させます。通知をクリックすると、そのセッションの VS Code ウィンドウが前面に出ます。通知の送り元は `andon` と表示されます（下の「使い方」の方法で起動したとき。対話で使っている PowerShell で直接 `.\andon.ps1` を動かしたときは、andon を終えたあともそのシェルに andon の名前が残らないよう、送り元は PowerShell のままにします）。通知を止めたり、バナーを出さないようにしたりするときは、Windows の「設定 → システム → 通知」で `andon` を選びます。
+- 新しく待ちや完了が出たとき、andon が前面になければ Windows の通知を出し、ウィンドウのタイトルバーを点滅させます。通知をクリックすると、そのセッションの VS Code ウィンドウが前面に出ます。通知の送り元は `andon` と表示されます（下の「インストール」で入れたショートカットや、「clone して動かす」の方法で起動したとき。対話で使っている PowerShell で直接 `.\andon.ps1` を動かしたときは、andon を終えたあともそのシェルに andon の名前が残らないよう、送り元は PowerShell のままにします）。通知を止めたり、バナーを出さないようにしたりするときは、Windows の「設定 → システム → 通知」で `andon` を選びます。
 - 点滅は、andon を前面に出したときのほか、そのセッションの VS Code ウィンドウを前面に出したとき（通知のクリックでも、直接でも）や、そのセッションが待ちでも完了でもなくなったとき（VS Code で答えた、次のプロンプトを送った、既読にした）に止まります。完了の黄色は、確認するまで残ります。VS Code ウィンドウは、題名に入るフォルダ名や workspace 名で見分けるので、VS Code の設定 `window.title` を変えていると見分けられません。そのセッションの VS Code ウィンドウがすでに前面にあるときは、点滅しません。
 - ウィンドウの × や最小化では、終了せずにトレイに隠れます。トレイのアイコンをクリックすると、表示と非表示が切り替わります。終了は、トレイのアイコンの右クリックのメニューから行います。
 - Windows 11 では、新しいアイコンは最初、通知領域の `^` の中に隠れています。常に見えるようにするには、`^` の中からアイコンをタスクバーへドラッグします。
@@ -31,28 +31,70 @@
 
 Claude Code は VS Code の統合ターミナルなどで普通に `claude` を起動していれば対象になります。VS Code 拡張機能のパネルで会話したときも、実行中・待ち（許可・質問）・完了と表示されることを確認しています。
 
-## 使い方
+## インストール
+
+[Releases](https://github.com/tbshiki/andon/releases) の最新の版から `andon-<版>.zip` を落として展開し、PowerShell で、展開したフォルダの `install.ps1` を実行します。管理者の権限は要りません。
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<展開したフォルダ>\install.ps1"
+```
+
+`install.ps1` は次のことをします。ネットワークからは何も落としません。
+
+- andon を `%LOCALAPPDATA%\Programs\andon` に置き、ダウンロードした印（Mark of the Web）を外す
+- スタートメニューと、スタートアップ（ログオン時に起動）に `andon` のショートカットを作る。スタートアップに作らないときは、`-NoStartup` を付けて実行する
+- andon を起動する
+
+エクスプローラーの右クリックの「PowerShell で実行」は使わないでください。実行ポリシーを指定せずに PowerShell を起動するので、ダウンロードした印の付いた `install.ps1` は止められることがあります。上のコマンドの `-ExecutionPolicy Bypass` は、その PowerShell のプロセスにだけ効き、PC の実行ポリシーは変えません。andon のショートカットも、同じく andon のプロセスにだけ `Bypass` を付けて起動します。
+
+落とした zip が Release のものと同じかは、[GitHub CLI](https://cli.github.com/) で確かめられます。Release は、公開したあとに中身を変えられない設定（immutable releases）にしています。
+
+```powershell
+gh release verify-asset v<版> .\andon-<版>.zip -R tbshiki/andon
+```
+
+起動すると、画面の右下に、常に手前に表示されるウィンドウが開き、通知領域にアイコンが出ます。二重に起動しても 2 つ目はすぐ終了します（トレイに隠れているときは、トレイのアイコンから表示します）。トレイから「終了」したあとは、スタートメニューの「andon」で起動します。トレイのメニューの先頭に、入っている版が出ます。
+
+`-FallbackSec` で、変化がなくても状態を取り直す間隔（既定 30 秒）を変えられます。`-ScanMs` で、変化を見る間隔（既定 1000 ミリ秒、200〜5000）を変えられます。長くすると、待ちに気付くのが遅れます。使うときは、ショートカットのプロパティで、リンク先の末尾に `-ScanMs 500` のように付けます。更新しても引き継ぎます。
+
+### 更新
+
+新しい版の zip を落として、同じ手順で `install.ps1` を実行します。動いている andon を終わらせてからファイルを置き換え、起動し直します。スタートアップのショートカットを消していれば、作り直しません。
+
+### アンインストール
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\andon\install.ps1" -Uninstall
+```
+
+動いている andon を終わらせて、次のものを消します。
+
+- スタートメニューとスタートアップの `andon` のショートカット
+- `%LOCALAPPDATA%\Programs\andon`
+- `HKCU\Software\Classes\AppUserModelId\tbshiki.andon`（andon が、通知の送り元を `andon` と表示させるため、起動のたびに表示名を書くキー）
+- `HKCU\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings\tbshiki.andon`（最初の通知で Windows が作る、通知の設定）
+
+Windows がトレイのアイコンについて覚えている設定（`HKCU\Control Panel\NotifyIconSettings` の `powershell.exe` の項目）は消しません。Windows が管理している場所で、ほかの PowerShell のスクリプトのアイコンと見分けにくいためです。
+
+### 動かないとき
+
+- グループ ポリシーで実行ポリシーが `AllSigned` か `Restricted` に決められている PC では、署名のない andon は動きません。`install.ps1` は、これを見つけると何もせずに終わります。
+- App Control などで、PowerShell が制限された言語モード（Constrained Language Mode）で動く PC では、andon は動きません。`install.ps1` は、これを見つけると何もせずに終わります。
+
+## clone して動かす（開発）
 
 ```powershell
 git clone https://github.com/tbshiki/andon.git
 Start-Process conhost.exe '--headless powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File .\andon\andon.ps1'
 ```
 
-画面の右下に、常に手前に表示されるウィンドウが開き、通知領域にアイコンが出ます。二重に起動しても 2 つ目はすぐ終了します（トレイに隠れているときは、トレイのアイコンから表示します）。
+`conhost.exe --headless` は、PowerShell のコンソールをウィンドウなしで動かします。Windows 11 では既定のターミナルが Windows Terminal なので、`powershell.exe -WindowStyle Hidden` で起動すると、コンソールが Windows Terminal に引き渡されて隠れず、andon とは別にタスクバーに残ります。
 
-ログオン時に自動で起動するには、`Win + R` で `shell:startup` を開き、次のショートカットを置きます。
+clone から直接動かすときに、ログオン時に自動で起動するには、`Win + R` で `shell:startup` を開き、次のショートカットを置きます。インストールした andon と両方を置くと、どちらが起動するか決まらないので、どちらか一方にします。
 
 - リンク先: `conhost.exe --headless powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "<clone した場所>\andon.ps1"`
 
-`conhost.exe --headless` は、PowerShell のコンソールをウィンドウなしで動かします。Windows 11 では既定のターミナルが Windows Terminal なので、`powershell.exe -WindowStyle Hidden` で起動すると、コンソールが Windows Terminal に引き渡されて隠れず、andon とは別にタスクバーに残ります。
-
-`-FallbackSec` で、変化がなくても状態を取り直す間隔（既定 30 秒）を変えられます。`-ScanMs` で、変化を見る間隔（既定 1000 ミリ秒、200〜5000）を変えられます。長くすると、待ちに気付くのが遅れます。
-
-andon は、通知の送り元を `andon` と表示させるため、起動のたびに `HKCU\Software\Classes\AppUserModelId\tbshiki.andon` に表示名を書きます（管理者の権限は要りません）。andon を使わなくなったら、次で消せます。
-
-```powershell
-Remove-Item -Recurse HKCU:\Software\Classes\AppUserModelId\tbshiki.andon
-```
+clone で `install.ps1` を実行すると、clone の `andon.ps1` を `%LOCALAPPDATA%\Programs\andon` に入れます。clone で `install.ps1 -Uninstall` を実行すると、レジストリのキーと、インストールした andon（あれば）を消します。手で置いたショートカットは、名前が `andon` で `andon.ps1` を起動するものなら消します。clone そのものは消しません。
 
 ## 仕組み
 
@@ -65,6 +107,7 @@ Remove-Item -Recurse HKCU:\Software\Classes\AppUserModelId\tbshiki.andon
   3. どちらもなければ repository の root（git の外なら作業フォルダ）
 - 無関係な workspace を開かないよう、repository の root より上の階層の `*.code-workspace` は、`folders` で repository を挙げていない限り使いません。`folders` に親フォルダ全体（`..` など）を挙げているだけの workspace も使いません。
 - Claude Code が作る worktree（`<repo>\.claude\worktrees\<name>`）は、元の repository として扱います。
+- **更新と削除の前の終了:** `install.ps1` は、名前付きのイベント `Local\andon-exit` で andon に終わるよう合図し、二重起動を防ぐ mutex `Local\andon` が消えるのを待ってから、ファイルを置き換えます。待たずに起動し直すと、新しい andon が二重起動と判断して終わってしまうためです。合図を受けられない古い版は、`andon.ps1` を `-File` で動かしている PowerShell のプロセスを止めます（トレイのアイコンは、マウスを重ねるまで残ります）。
 
 ## 制約
 
@@ -78,7 +121,7 @@ Remove-Item -Recurse HKCU:\Software\Classes\AppUserModelId\tbshiki.andon
 
 ## 開発
 
-GUI に依存しない部分のテストを、Windows PowerShell 5.1 と PowerShell 7 の両方で実行します。
+GUI に依存しない部分のテストを、Windows PowerShell 5.1 と PowerShell 7 の両方で実行します。`install.ps1` は、実際の場所（`%LOCALAPPDATA%`、スタートメニュー、スタートアップ、`HKCU`）に書き込み、動いている andon を終わらせるので、テストでは、場所を引数で変えられる部分だけを確かめます。
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-Andon.ps1
