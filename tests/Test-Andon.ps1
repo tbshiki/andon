@@ -377,8 +377,23 @@ Assert-Equal (Get-UpdateInfo -Release $null -CurrentVersion '0.1.0') $null '応�
 Write-Host '== 更新の確認: 更新するかを尋ねる画面の文（Get-UpdatePrompt）'
 $prompt = Get-UpdatePrompt -Version '0.2.0' -CurrentVersion '0.1.1'
 Assert-True ($prompt.StartsWith('andon v0.2.0 があります（今のバージョンは v0.1.1）。')) '新しい版と今の版を出す'
-Assert-True ($prompt.EndsWith('アップデートすると、andon を終わらせて新しいバージョンをインストールし、起動し直します。')) 'アップデートすると何が起きるかを書く'
+Assert-True ($prompt.EndsWith('アップデートは、いま起動している andon を終了して新しいバージョンをインストールして起動しなおします。')) 'アップデートすると何が起きるかを書く'
 Assert-Equal ($prompt -match '更新|版|入れ') $false '状態の「更新」と分けるため、「アップデート」「バージョン」と書く。「入れる」ではなく「インストール」と書く'
+
+Write-Host '== 利用者が読む文の表記: andon を「終わらせる」ではなく「終了する」と書く'
+$endPattern = 'andon\s*(を|は|が|に)終わ'
+foreach ($doc in 'README.md', 'README.txt', 'SECURITY.md') {
+    $docText = Get-Content -LiteralPath (Join-Path $root $doc) -Raw -Encoding UTF8
+    Assert-Equal ([regex]::IsMatch($docText, $endPattern)) $false "$doc は、andon が終わることを「終了」と書く"
+}
+foreach ($scriptName in 'andon.ps1', 'install.ps1') {
+    # コメントは開発者向けなので見ない。画面とコンソールに出る文字列だけを見る
+    $scriptAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root $scriptName), [ref]$null, [ref]$null)
+    $strings = @($scriptAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or
+                $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst] }, $true) | ForEach-Object { [string]$_.Value })
+    Assert-True ($strings.Count -gt 0) "$scriptName の文字列を読めた"
+    Assert-Equal (@($strings | Where-Object { [regex]::IsMatch($_, $endPattern) }) -join ' / ') '' "$scriptName の文字列は、andon が終わることを「終了」と書く"
+}
 
 Write-Host '== 更新の確認: 新しい版の install.ps1 を起動するコマンド（Get-UpdateCommand）'
 $updateCmd = Get-UpdateCommand -InstallScript "C:\Users\o'neil\AppData\Local\Temp\andon-update-0.2.0-x\install.ps1" -SystemRoot 'C:\Windows'
