@@ -23,10 +23,10 @@
       そのセッションが待ちでも完了でもなくなったときに止める。
     - 行をクリックすると、cwd を含む *.code-workspace（なければ repository の root）を VS Code で開く。
       既に開いているウィンドウがあれば、そのウィンドウが前面に出る。ターミナルのタブまでは選ばない。
-    - install.ps1 が更新や削除の前に終わらせられるよう、名前付きのイベント（Local\andon-exit）の合図を受けたら終わる。
+    - install.ps1 がアップデートや削除の前に終わらせられるよう、名前付きのイベント（Local\andon-exit）の合図を受けたら終わる。
     - 起動して少し後と、その後 1 日 1 回、GitHub の Release（releases/latest）に新しい版があるかを確かめる。
-      あれば、トレイのメニューに「更新（v<版>）」を出し、起動ごとに 1 回だけ通知する。自動では入れ替えない。
-      通知のクリックとトレイの「更新」は、どちらも更新するかを尋ねる画面を出す。「更新する」を選んだときだけ
+      あれば、トレイのメニューに「アップデート（v<版>）」を出し、起動ごとに 1 回だけ通知する。自動では入れ替えない。
+      通知のクリックとトレイの「アップデート」は、どちらもアップデートするかを尋ねる画面を出す。「アップデートする」を選んだときだけ
       zip を落とし、Release が示す sha256 と照らして展開し、新しい版の install.ps1 を見えるコンソールで起動して終わる。-NoUpdateCheck を付けたときと、andon.ps1 の隣に .git があるとき
       （clone で開発しているとき）は確かめない。
 
@@ -470,7 +470,7 @@ function Stop-ProcessTree {
 }
 
 # ---------------------------------------------------------------------------
-# 更新の確認（GitHub の Release）
+# アップデートの確認（GitHub の Release）
 # ---------------------------------------------------------------------------
 
 function Test-NewerVersion {
@@ -516,12 +516,12 @@ function Get-UpdateInfo {
 }
 
 function Get-UpdatePrompt {
-    <# 更新するかを尋ねる画面の文。通知のクリックとトレイの「更新」の両方で、同じ画面を出す #>
+    <# アップデートするかを尋ねる画面の文。通知のクリックとトレイの「アップデート」の両方で、同じ画面を出す #>
     param([string]$Version, [string]$CurrentVersion)
     return (@(
             "andon v$Version があります（今のバージョンは v$CurrentVersion）。"
             ''
-            '更新すると、andon を終わらせて新しいバージョンを入れ、起動し直します。'
+            'アップデートすると、andon を終わらせて新しいバージョンを入れ、起動し直します。'
         ) -join "`r`n")
 }
 
@@ -534,8 +534,8 @@ function Test-UpdateCheckEnabled {
 }
 
 function New-UpdateWorkDir {
-    <# 更新の zip を展開するフォルダ（<一時フォルダ>\andon-update-<版>-<乱数>）を作る。
-       前の更新で残ったフォルダ（andon-update-*）は、消せれば消す #>
+    <# アップデートの zip を展開するフォルダ（<一時フォルダ>\andon-update-<版>-<乱数>）を作る。
+       前のアップデートで残ったフォルダ（andon-update-*）は、消せれば消す #>
     param([string]$Version, [string]$TempDir = [IO.Path]::GetTempPath())
     foreach ($old in @(Get-ChildItem -LiteralPath $TempDir -Directory -Filter 'andon-update-*' -ErrorAction SilentlyContinue)) {
         try { Remove-Item -LiteralPath $old.FullName -Recurse -Force -ErrorAction Stop } catch { }
@@ -589,17 +589,17 @@ function Expand-UpdatePackage {
 
 function Get-UpdateCommand {
     <# 展開した新しい版の install.ps1 を、見えるコンソールで実行するコマンド。andon はこれを起動して終わる。
-       - 引数は付けない。どの版の install.ps1 も、引数なしで実行すれば更新になる（ショートカットの引数とスタートアップは引き継ぐ）
+       - 引数は付けない。どの版の install.ps1 も、引数なしで実行すればアップデートになる（ショートカットの引数とスタートアップは引き継ぐ）
        - install.ps1 が失敗したら（終了コードが 0 でなければ）、理由を読めるよう、Enter キーを押すまで閉じない。
          成功したら、結果を読めるよう少し待ってから閉じる
        - パスの引用を誤らないよう、-EncodedCommand で渡す。単一引用符の中では、U+2018 や U+2019 なども ' として扱われるので重ねる #>
     param([string]$InstallScript, [string]$SystemRoot = $env:SystemRoot)
     $quoted = $InstallScript -replace '([''\u2018\u2019\u201A\u201B])', '$1$1'
     $command = @"
-`$Host.UI.RawUI.WindowTitle = 'andon の更新'
+`$Host.UI.RawUI.WindowTitle = 'andon のアップデート'
 try { & '$quoted'; `$code = `$LASTEXITCODE } catch { Write-Host (`$_.Exception.Message) -ForegroundColor Red; `$code = 1 }
 if (`$null -eq `$code) { `$code = 0 }
-if (`$code -ne 0) { [void](Read-Host '更新できませんでした。Enter キーで閉じます') } else { Start-Sleep -Seconds 3 }
+if (`$code -ne 0) { [void](Read-Host 'アップデートできませんでした。Enter キーで閉じます') } else { Start-Sleep -Seconds 3 }
 exit `$code
 "@
     return [pscustomobject]@{
@@ -845,7 +845,7 @@ $trayMenu = New-Object System.Windows.Forms.ContextMenuStrip
 $miVersion = $trayMenu.Items.Add("andon $script:AndonVersion")
 $miVersion.Enabled = $false
 # 新しい版が見つかったときだけ出す
-$miUpdate = $trayMenu.Items.Add('更新')
+$miUpdate = $trayMenu.Items.Add('アップデート')
 $miUpdate.Visible = $false
 [void]$trayMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
 $miShow = $trayMenu.Items.Add('表示')
@@ -855,7 +855,7 @@ $miExit = $trayMenu.Items.Add('終了')
 $tray.ContextMenuStrip = $trayMenu
 $script:Exiting = $false
 $script:NoticeKey = $null
-$script:NoticeUpdate = $false   # 最後に出した通知が、新しい版の知らせか（クリックで、更新するかを尋ねる）
+$script:NoticeUpdate = $false   # 最後に出した通知が、新しい版の知らせか（クリックで、アップデートするかを尋ねる）
 
 $lv = New-Object System.Windows.Forms.ListView
 $lv.Dock = 'Fill'
@@ -958,7 +958,7 @@ function Set-AllRead {
     Update-ListView
 }
 
-# 新しい版の確認と、更新の zip の取得。claude agents --json と同じく、timer で終わったかだけを見て、待たない
+# 新しい版の確認と、アップデートの zip の取得。claude agents --json と同じく、timer で終わったかだけを見て、待たない
 $script:UpdateEnabled = Test-UpdateCheckEnabled -ScriptDir $PSScriptRoot -Disabled $NoUpdateCheck.IsPresent
 $script:NextUpdateCheck = (Get-Date).AddSeconds(30)   # ログオンの直後は、ネットワークがまだつながっていないことがある
 $script:CheckClient = $null
@@ -994,7 +994,7 @@ function Show-UpdateAvailable {
     param($Info)
     $script:Update = $Info
     if (-not $script:DownloadTask) {
-        $miUpdate.Text = "更新（v$($Info.Version)）"
+        $miUpdate.Text = "アップデート（v$($Info.Version)）"
         $miUpdate.Enabled = $true
         $miUpdate.Visible = $true
     }
@@ -1003,17 +1003,17 @@ function Show-UpdateAvailable {
         $script:NoticeKey = $null
         $script:NoticeUpdate = $true
         $tray.ShowBalloonTip(10000, 'andon の新しいバージョンがあります',
-            ('クリックすると、v{0} に更新するかを選べます。あとで更新するときは、トレイのメニューの「更新（v{0}）」を選びます。' -f $Info.Version),
+            ('クリックすると、v{0} にアップデートするかを選べます。あとでアップデートするときは、トレイのメニューの「アップデート（v{0}）」を選びます。' -f $Info.Version),
             [System.Windows.Forms.ToolTipIcon]::None)
     }
 }
 
 function Confirm-AndonUpdate {
-    <# 新しい版に更新するかを尋ねる。「更新する」なら $true。Enter で「更新する」、Esc で「しない」 #>
+    <# 新しい版にアップデートするかを尋ねる。「アップデートする」なら $true。Enter で「アップデートする」、Esc で「しない」 #>
     param($Info)
     $dlg = New-Object System.Windows.Forms.Form
     try {
-        $dlg.Text = 'andon の更新'
+        $dlg.Text = 'andon のアップデート'
         $dlg.Font = $form.Font
         $dlg.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
         $dlg.MaximizeBox = $false
@@ -1044,10 +1044,10 @@ function Confirm-AndonUpdate {
         $no.AutoSize = $true
         $no.DialogResult = [System.Windows.Forms.DialogResult]::No
         $yes = New-Object System.Windows.Forms.Button
-        $yes.Text = '更新する'
+        $yes.Text = 'アップデートする'
         $yes.AutoSize = $true
         $yes.DialogResult = [System.Windows.Forms.DialogResult]::Yes
-        $buttons.Controls.AddRange(@($no, $yes))   # 右から並ぶので、「更新する」が左、「しない」が右
+        $buttons.Controls.AddRange(@($no, $yes))   # 右から並ぶので、「アップデートする」が左、「しない」が右
         $layout.Controls.Add($text)
         $layout.Controls.Add($buttons)
         $dlg.Controls.Add($layout)
@@ -1061,7 +1061,7 @@ function Confirm-AndonUpdate {
 
 $script:Confirming = $false
 function Request-AndonUpdate {
-    <# 通知のクリックとトレイの「更新」。更新するかを尋ね、「更新する」なら zip を落とし始める。
+    <# 通知のクリックとトレイの「アップデート」。アップデートするかを尋ね、「アップデートする」なら zip を落とし始める。
        尋ねている間は、もう 1 つの画面を出さない（トレイのメニューは、画面を出している間も開ける） #>
     if (-not $script:Update -or $script:DownloadTask -or $script:Confirming) { return }
     $script:Confirming = $true
@@ -1072,11 +1072,11 @@ function Request-AndonUpdate {
 }
 
 function Start-AndonUpdate {
-    <# トレイの「更新」。新しい版の zip を落とし始める。続きは Complete-AndonUpdate #>
+    <# トレイの「アップデート」。新しい版の zip を落とし始める。続きは Complete-AndonUpdate #>
     if (-not $script:Update -or $script:DownloadTask) { return }
     $info = $script:Update
     $miUpdate.Enabled = $false
-    $miUpdate.Text = "更新（v$($info.Version)）を準備しています…"
+    $miUpdate.Text = "アップデート（v$($info.Version)）を準備しています…"
     try {
         $script:DownloadInfo = $info
         $script:DownloadClient = New-UpdateClient
@@ -1091,11 +1091,11 @@ function Start-AndonUpdate {
 
 function Show-UpdateFailure {
     param($Info, [string]$Message)
-    $miUpdate.Text = "更新（v$($Info.Version)）"
+    $miUpdate.Text = "アップデート（v$($Info.Version)）"
     $miUpdate.Enabled = $true
     $script:NoticeKey = $null
     $script:NoticeUpdate = $false
-    $tray.ShowBalloonTip(10000, 'andon を更新できませんでした', $Message, [System.Windows.Forms.ToolTipIcon]::Warning)
+    $tray.ShowBalloonTip(10000, 'andon をアップデートできませんでした', $Message, [System.Windows.Forms.ToolTipIcon]::Warning)
 }
 
 function Complete-AndonUpdate {
@@ -1134,7 +1134,7 @@ function Complete-AndonUpdate {
 }
 
 function Update-UpdateCheck {
-    <# timer から呼ぶ。更新の zip を落とし終えていれば続きを行い、新しい版の確認を始めるか、終わったかを見る。
+    <# timer から呼ぶ。アップデートの zip を落とし終えていれば続きを行い、新しい版の確認を始めるか、終わったかを見る。
        確認できなければ 1 時間後に、確認できれば 1 日後にもう一度確かめる。確認の失敗は知らせない #>
     param([datetime]$Now)
     if ($script:DownloadTask -and $script:DownloadTask.IsCompleted) { Complete-AndonUpdate; return }
@@ -1185,7 +1185,7 @@ $tray.Add_MouseClick({
     })
 $tray.Add_BalloonTipClicked({
         if ($script:NoticeUpdate) {
-            # 新しい版の知らせは、トレイの「更新」と同じく、更新するかを尋ねる
+            # 新しい版の知らせは、トレイの「アップデート」と同じく、アップデートするかを尋ねる
             Request-AndonUpdate
             return
         }

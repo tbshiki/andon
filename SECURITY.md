@@ -8,7 +8,7 @@
 
 - 影響（何ができてしまうか）
 - 再現の手順
-- 確認した環境（Windows、PowerShell、Claude Code、VS Code の版）
+- 確認した環境（Windows、PowerShell、Claude Code、VS Code のバージョン）
 
 個人で開発しているため、返信や修正の時期は約束できませんが、確認して対応します。
 
@@ -25,8 +25,8 @@
 - セッションの作業フォルダとその周辺の `*.code-workspace` を読み、開く対象を VS Code（`Code.exe`）に渡す
 - 通知の送り元を `andon` と表示させるため、`HKCU\Software\Classes\AppUserModelId\tbshiki.andon` に表示名を書く
 - 名前付きのイベント `Local\andon-exit` の合図を受けたら終わる（同じ Windows のセッションのプロセスなら、andon を終わらせられる）
-- 起動して少し後と、その後 1 日 1 回、`https://api.github.com/repos/tbshiki/andon/releases/latest` を取得して、新しい版があるかを確かめる。送るのは普通の HTTP の要求（User-Agent は `andon/<版>`）だけで、セッションやファイルの情報は送らない。`-NoUpdateCheck` を付けたときと、`andon.ps1` の隣に `.git` があるときは確かめない
-- 更新するかを尋ねる画面（通知のクリックか、トレイの「更新」で出る）で「更新する」を選んだときだけ、その版の `andon-<版>.zip` を、このリポジトリの Release から落とす。使うのは、公開済みで immutable の Release だけ。zip が、Release が示す sha256 と同じかを確かめてから一時フォルダ（`%TEMP%\andon-update-*`）に展開し、新しい版の `install.ps1` を実行するコンソールを開いて、andon は終わる
+- 起動して少し後と、その後 1 日 1 回、`https://api.github.com/repos/tbshiki/andon/releases/latest` を取得して、新しいバージョンがあるかを確かめる。送るのは普通の HTTP の要求（User-Agent は `andon/<バージョン>`）だけで、セッションやファイルの情報は送らない。`-NoUpdateCheck` を付けたときと、`andon.ps1` の隣に `.git` があるときは確かめない
+- アップデートするかを尋ねる画面（通知のクリックか、トレイの「アップデート」で出る）で「アップデートする」を選んだときだけ、そのバージョンの `andon-<バージョン>.zip` を、このリポジトリの Release から落とす。使うのは、公開済みで immutable の Release だけ。zip が、Release が示す sha256 と同じかを確かめてから一時フォルダ（`%TEMP%\andon-update-*`）に展開し、新しいバージョンの `install.ps1` を実行するコンソールを開いて、andon は終わる
 
 andon が通信するのは、上の GitHub だけです。GitHub にはログインせずに問い合わせ、認証情報は読みません。
 
@@ -34,5 +34,5 @@ andon が通信するのは、上の GitHub だけです。GitHub にはログ�
 
 - 同じフォルダにある `andon.ps1`・`install.ps1`・`andon.ico`・`LICENSE` を `%LOCALAPPDATA%\Programs\andon` に置き、ダウンロードした印（Mark of the Web）を外す
 - スタートメニューとスタートアップに、andon を起動するショートカットを作る
-- 動いている andon を終わらせる。合図を受けられない古い版は、`andon.ps1` を `-File` で動かしている PowerShell のプロセスを止める
+- 動いている andon を終わらせる。合図を受けられない古いバージョンは、`andon.ps1` を `-File` で動かしている PowerShell のプロセスを止める
 - `-Uninstall` を付けたときは、これらと、andon と Windows が作ったレジストリのキーと値（`AppUserModelId\tbshiki.andon`、`Notifications\Settings\tbshiki.andon`、`StartupApproved\StartupFolder` の `andon.lnk`）を消す
