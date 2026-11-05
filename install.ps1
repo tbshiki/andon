@@ -480,7 +480,7 @@ try {
 
     $name = 'andon'
     if ($version) { $name = "andon $version" }
-    Write-Host ('{0} を入れて、起動しました: {1}' -f $name, $layout.InstallDir)
+    Write-Host ('{0} をインストールして、起動しました: {1}' -f $name, $layout.InstallDir)
     Write-Host 'トレイから「終了」したあとは、スタートメニューの「andon」で起動できます。'
     if (Test-AndonShortcut -Path $layout.Startup) {
         if (Test-StartupDisabled) { Write-Host 'スタートアップは、タスク マネージャーで無効にしてあるので、ログオンしたときには起動しません。' }

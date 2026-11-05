@@ -21,7 +21,7 @@
 - 黄は、行をクリックする、右クリックの「既読にする」、「すべて既読」、そのセッションで次のプロンプトを送る、のいずれかで消えます。
 - VS Code の Claude Code 拡張機能（パネル）のセッションは、待機中は表示しません。拡張機能は、パネルを閉じても `claude` を終了させずに待機中のまま残すためです。実行中・待ち・完了のときは表示します。完了は、ターミナルのセッションと同じく、確認するまで残ります。
 - andon はタスクバーには出ず、通知領域（タスクトレイ）にアイコンを置きます。アイコンは、赤があれば赤、黄があれば黄、どちらもなければ灰になります。赤と黄の件数は、ウィンドウのタイトルとアイコンのツールチップに出ます。
-- 新しく待ちや完了が出たとき、andon が前面になければ Windows の通知を出し、ウィンドウのタイトルバーを点滅させます。通知をクリックすると、そのセッションの VS Code ウィンドウが前面に出ます。通知の送り元は `andon` と表示されます（下の「インストール」で入れたショートカットや、「clone して動かす」の方法で起動したとき。対話で使っている PowerShell で直接 `.\andon.ps1` を動かしたときは、andon を終えたあともそのシェルに andon の名前が残らないよう、送り元は PowerShell のままにします）。通知を止めたり、バナーを出さないようにしたりするときは、Windows の「設定 → システム → 通知」で `andon` を選びます。
+- 新しく待ちや完了が出たとき、andon が前面になければ Windows の通知を出し、ウィンドウのタイトルバーを点滅させます。通知をクリックすると、そのセッションの VS Code ウィンドウが前面に出ます。通知の送り元は `andon` と表示されます（下の「インストール」で作られるショートカットや、「clone して動かす」の方法で起動したとき。対話で使っている PowerShell で直接 `.\andon.ps1` を動かしたときは、andon を終えたあともそのシェルに andon の名前が残らないよう、送り元は PowerShell のままにします）。通知を止めたり、バナーを出さないようにしたりするときは、Windows の「設定 → システム → 通知」で `andon` を選びます。
 - 点滅は、andon を前面に出したときのほか、そのセッションの VS Code ウィンドウを前面に出したとき（通知のクリックでも、直接でも）や、そのセッションが待ちでも完了でもなくなったとき（VS Code で答えた、次のプロンプトを送った、既読にした）に止まります。完了の黄色は、確認するまで残ります。VS Code ウィンドウは、題名に入るフォルダ名や workspace 名で見分けるので、VS Code の設定 `window.title` を変えていると見分けられません。そのセッションの VS Code ウィンドウがすでに前面にあるときは、点滅しません。
 - ウィンドウの × や最小化では、終了せずにトレイに隠れます。トレイのアイコンをクリックすると、表示と非表示が切り替わります。終了は、トレイのアイコンの右クリックのメニューから行います。
 - Windows 11 では、新しいアイコンは最初、通知領域の `^` の中に隠れています。常に見えるようにするには、`^` の中からアイコンをタスクバーへドラッグします。
@@ -39,7 +39,7 @@ Claude Code は VS Code の統合ターミナルなどで普通に `claude` を�
 
 管理者の権限は要りません。
 
-1. [Releases](https://github.com/tbshiki/andon/releases) の最新のバージョンから `andon-<バージョン>.zip` を落とします。andon は、このリポジトリの Release からだけ落としてください。ダブルクリックで入れられるので、ほかの場所から落とした偽物の zip でも動いてしまいます。
+1. [Releases](https://github.com/tbshiki/andon/releases) の最新のバージョンから `andon-<バージョン>.zip` を落とします。andon は、このリポジトリの Release からだけ落としてください。ダブルクリックでインストールできるので、ほかの場所から落とした偽物の zip でも動いてしまいます。
 2. 展開する前に、落とした zip が Release のものと同じかを、[GitHub CLI](https://cli.github.com/) で確かめられます。Release は、公開したあとに中身を変えられない設定（immutable releases）にしています。
 
    ```powershell
@@ -49,9 +49,9 @@ Claude Code は VS Code の統合ターミナルなどで普通に `claude` を�
 3. zip を右クリックして「すべて展開」を選び、展開します。
 4. 展開したフォルダの `install.cmd` をダブルクリックします。「開いているファイル - セキュリティの警告」が出たら、「実行」を押します（インターネットから落としたファイルを開くときに、Windows が出す確認です）。
 
-andon が起動すれば、入っています。失敗したときは、コンソールに理由が出て、キーを押すまで閉じません。展開したフォルダと zip は、入れたあと消してかまいません。andon は、入れた場所（`%LOCALAPPDATA%\Programs\andon`）から動きます。zip には、入れ方を短くまとめた `README.txt` も入っています。
+andon が起動すれば、インストールできています。失敗したときは、コンソールに理由が出て、キーを押すまで閉じません。展開したフォルダと zip は、インストールしたあと消してかまいません。andon は、インストールした場所（`%LOCALAPPDATA%\Programs\andon`）から動きます。zip には、インストール・アップデートの手順を短くまとめた `README.txt` も入っています。
 
-`install.cmd` は、同じフォルダの `install.ps1` を Windows PowerShell 5.1 で実行するだけです。PowerShell から入れるときは、次を実行します。
+`install.cmd` は、同じフォルダの `install.ps1` を Windows PowerShell 5.1 で実行するだけです。PowerShell からインストールするときは、次を実行します。
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<展開したフォルダ>\install.ps1"
@@ -66,7 +66,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<展開したフォル�
 
 `install.ps1` を、エクスプローラーの右クリックの「PowerShell で実行」で動かさないでください。実行ポリシーを指定せずに PowerShell を起動するので、ダウンロードした印の付いた `install.ps1` は止められることがあります。`install.cmd` と上のコマンドの `-ExecutionPolicy Bypass` は、その PowerShell のプロセスにだけ効き、PC の実行ポリシーは変えません。andon のショートカットも、同じく andon のプロセスにだけ `Bypass` を付けて起動します。
 
-起動すると、画面の右下に、常に手前に表示されるウィンドウが開き、通知領域にアイコンが出ます。二重に起動しても 2 つ目はすぐ終了します（トレイに隠れているときは、トレイのアイコンから表示します）。トレイから「終了」したあとは、スタートメニューの「andon」で起動します。トレイのメニューの先頭に、入っているバージョンが出ます。
+起動すると、画面の右下に、常に手前に表示されるウィンドウが開き、通知領域にアイコンが出ます。二重に起動しても 2 つ目はすぐ終了します（トレイに隠れているときは、トレイのアイコンから表示します）。トレイから「終了」したあとは、スタートメニューの「andon」で起動します。トレイのメニューの先頭に、インストールされているバージョンが出ます。
 
 タスク マネージャーの「スタートアップ アプリ」では、andon は `conhost.exe`（発行元は Microsoft Corporation）という名前で出ます。タスク マネージャーは、ショートカットの名前ではなく、ショートカットが起動するプログラムから名前を取るためです。andon は PowerShell のスクリプトなので、起動するのは Windows の `conhost.exe` です。ログオン時に起動しないようにするには、そこで無効にするか、`-NoStartup` を付けて `install.ps1` を実行し直します。タスク マネージャーで無効にした状態は、アップデートしても引き継ぎます。
 
@@ -76,7 +76,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<展開したフォル�
 
 新しいバージョンが出ると、andon が知らせます。andon は、起動して少し後と、その後 1 日 1 回、GitHub の最新の Release を確かめます。新しいバージョンがあれば、トレイのメニューに「アップデート（v<バージョン>）」を出し、通知を 1 回出します（andon を起動し直すと、アップデートするまでまた 1 回出します）。
 
-通知をクリックするか、トレイのメニューの「アップデート（v<バージョン>）」を選ぶと、アップデートするかを尋ねる画面が出ます。「しない」を選んでも、メニューの「アップデート」は残るので、あとでアップデートできます。自動では入れ替えません。
+通知をクリックするか、トレイのメニューの「アップデート（v<バージョン>）」を選ぶと、アップデートするかを尋ねる画面が出ます。「しない」を選んでも、メニューの「アップデート」は残るので、あとでアップデートできます。自動ではアップデートしません。
 
 「アップデートする」を選ぶと、andon は次のことをして終わります。
 
@@ -107,7 +107,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Progr
 - `%LOCALAPPDATA%\Programs\andon`
 - `HKCU\Software\Classes\AppUserModelId\tbshiki.andon`（andon が、通知の送り元を `andon` と表示させるため、起動のたびに表示名を書くキー）
 - `HKCU\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings\tbshiki.andon`（最初の通知で Windows が作る、通知の設定）
-- `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder` の値 `andon.lnk`（Windows がショートカットの名前で記録する、スタートアップの有効・無効。残すと、入れ直したときに前の状態を引き継ぐ）
+- `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder` の値 `andon.lnk`（Windows がショートカットの名前で記録する、スタートアップの有効・無効。残すと、インストールし直したときに前の状態を引き継ぐ）
 
 Windows がトレイのアイコンについて覚えている設定（`HKCU\Control Panel\NotifyIconSettings` の `powershell.exe` の項目）は消しません。Windows が管理している場所で、ほかの PowerShell のスクリプトのアイコンと見分けにくいためです。
 
@@ -129,7 +129,7 @@ clone から直接動かすときに、ログオン時に自動で起動する�
 
 - リンク先: `conhost.exe --headless powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "<clone した場所>\andon.ps1"`
 
-clone で `install.ps1` を実行すると、clone の `andon.ps1` を `%LOCALAPPDATA%\Programs\andon` に入れます。clone で `install.ps1 -Uninstall` を実行すると、レジストリのキーと、インストールした andon（あれば）を消します。手で置いたショートカットは、名前が `andon` で `andon.ps1` を起動するものなら消します。clone そのものは消しません。
+clone で `install.ps1` を実行すると、clone の `andon.ps1` を `%LOCALAPPDATA%\Programs\andon` にインストールします。clone で `install.ps1 -Uninstall` を実行すると、レジストリのキーと、インストールした andon（あれば）を消します。手で置いたショートカットは、名前が `andon` で `andon.ps1` を起動するものなら消します。clone そのものは消しません。
 
 ## 仕組み
 
@@ -150,7 +150,7 @@ clone で `install.ps1` を実行すると、clone の `andon.ps1` を `%LOCALAP
 - **zip の確かめ方:** 落とすのは `andon-<バージョン>.zip` だけで、このリポジトリのその tag の Release から落とします。
   - Release が示す sha256 と同じかを確かめます。
   - zip の直下に `andon.ps1` と `install.ps1` があるか、フォルダやパスを含む項目がないかを確かめます。
-  - 配るファイルの一覧とは照らしません。配るファイルを足したバージョンも入れられるようにするためです。余分なファイルがあっても、新しい `install.ps1` は自分の一覧にあるものしか置きません。
+  - 配るファイルの一覧とは照らしません。配るファイルを足したバージョンにも、アップデートできるようにするためです。余分なファイルがあっても、新しい `install.ps1` は自分の一覧にあるものしか置きません。
 
 ## 制約
 
