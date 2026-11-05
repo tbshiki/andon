@@ -495,9 +495,11 @@ try {
     $notifications = Join-Path $regBase 'Notifications'
     $uninstallRoot = Join-Path $regBase 'Uninstall'
     $approved = Join-Path $regBase 'StartupApproved'
-    foreach ($k in @((Join-Path $classes 'tbshiki.andon'), (Join-Path $notifications 'tbshiki.andon'), (Join-Path $notifications 'andon'), (Join-Path $notifications 'example.other'), (Join-Path $uninstallRoot 'example.other'), $approved)) {
+    $settingsRoot = Join-Path $regBase 'tbshiki'
+    foreach ($k in @((Join-Path $classes 'tbshiki.andon'), (Join-Path $notifications 'tbshiki.andon'), (Join-Path $notifications 'andon'), (Join-Path $notifications 'example.other'), (Join-Path $uninstallRoot 'example.other'), $approved, (Join-Path $settingsRoot 'andon'))) {
         New-Item -Path $k -Force | Out-Null
     }
+    New-ItemProperty -LiteralPath (Join-Path $settingsRoot 'andon') -Name 'Width' -PropertyType DWord -Value 640 | Out-Null
 
     Write-Host '== install.ps1: 「インストールされているアプリ」への登録'
     $layoutKey = (Get-AndonLayout).UninstallKey
@@ -536,18 +538,87 @@ try {
     Assert-Equal (Test-StartupDisabled -StartupApprovedKey $approved) $false '先頭が 02 なら有効'
     Set-ItemProperty -LiteralPath $approved -Name 'andon.lnk' -Value ([byte[]](3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
     Assert-Equal (Test-StartupDisabled -StartupApprovedKey (Join-Path $regBase 'NoSuchKey')) $false '記録がなければ有効（無効にしていない）'
-    # 本物の記録（StartupApproved\StartupFolder、Uninstall\tbshiki.andon）を消さないよう、場所は必ず渡す
-    Assert-Equal @(Remove-AndonRegistry -ClassesRoot $classes -NotificationsRoot $notifications -UninstallRoot $uninstallRoot -StartupApprovedKey $approved).Count 5 'アプリ ID の表示名、2 つの ID の通知の設定、「インストールされているアプリ」への登録、スタートアップの有効・無効の記録を消す'
+    # 本物の記録（StartupApproved\StartupFolder、Uninstall\tbshiki.andon、設定）を消さないよう、場所は必ず全部渡す
+    Assert-Equal @(Remove-AndonRegistry -ClassesRoot $classes -NotificationsRoot $notifications -UninstallRoot $uninstallRoot -StartupApprovedKey $approved -SettingsRoot $settingsRoot).Count 7 'アプリ ID の表示名、2 つの ID の通知の設定、「インストールされているアプリ」への登録、設定とその親（空なら）、スタートアップの有効・無効の記録を消す'
     Assert-Equal (Test-Path -LiteralPath $testKey) $false '「インストールされているアプリ」への登録を消した'
+    Assert-Equal (Test-Path -LiteralPath $settingsRoot) $false '設定を消し、空になった親（tbshiki）も消した'
     Assert-Equal (Test-Path -LiteralPath (Join-Path $uninstallRoot 'example.other')) $true 'ほかのアプリの登録は消さない'
     Assert-Equal (Test-Path -LiteralPath (Join-Path $notifications 'example.other')) $true 'ほかのアプリの通知の設定は消さない'
     Assert-Equal ((Get-Item -LiteralPath $approved).GetValueNames() -join ',') 'other.lnk' 'ほかのショートカットの有効・無効の記録は消さない'
-    Assert-Equal @(Remove-AndonRegistry -ClassesRoot $classes -NotificationsRoot $notifications -UninstallRoot $uninstallRoot -StartupApprovedKey $approved).Count 0 'なければ何もしない'
-    Assert-Equal @(Remove-AndonRegistry -ClassesRoot $classes -NotificationsRoot $notifications -UninstallRoot $uninstallRoot -StartupApprovedKey (Join-Path $regBase 'NoSuchKey')).Count 0 '記録の場所がなくても失敗しない'
+    Assert-Equal @(Remove-AndonRegistry -ClassesRoot $classes -NotificationsRoot $notifications -UninstallRoot $uninstallRoot -StartupApprovedKey $approved -SettingsRoot $settingsRoot).Count 0 'なければ何もしない'
+    Assert-Equal @(Remove-AndonRegistry -ClassesRoot $classes -NotificationsRoot $notifications -UninstallRoot $uninstallRoot -StartupApprovedKey (Join-Path $regBase 'NoSuchKey') -SettingsRoot (Join-Path $regBase 'NoSuchRoot')).Count 0 '記録の場所がなくても失敗しない'
+    New-Item -Path (Join-Path $settingsRoot 'andon') -Force | Out-Null
+    New-Item -Path (Join-Path $settingsRoot 'other') -Force | Out-Null
+    $removedCount = -1   # 例外で止まらず、FAIL として数える
+    try { $removedCount = @(Remove-AndonRegistry -ClassesRoot $classes -NotificationsRoot $notifications -UninstallRoot $uninstallRoot -StartupApprovedKey $approved -SettingsRoot $settingsRoot).Count } catch { }
+    Assert-Equal $removedCount 1 '親（tbshiki）にほかのものがあれば、andon の設定だけを消す'
+    Assert-Equal (Test-Path -LiteralPath (Join-Path $settingsRoot 'other')) $true '親（tbshiki）のほかのものは消さない'
 }
 finally {
     if (Test-Path -LiteralPath $regBase) { Remove-Item -LiteralPath $regBase -Recurse -Force }
 }
+
+# ---------------------------------------------------------------------------
+Write-Host '== andon.ps1: 設定（Read-AndonSettings / Write-AndonSettings）'
+Assert-Equal (Get-AndonSettingsKey) 'HKCU:\Software\tbshiki\andon' '設定は HKCU\Software\tbshiki\andon に置く'
+$settingsDefault = ((Get-Command Remove-AndonRegistry).ScriptBlock.Ast.Body.ParamBlock.Parameters |
+        Where-Object { $_.Name.VariablePath.UserPath -eq 'SettingsRoot' }).DefaultValue.Value
+Assert-Equal (Join-Path $settingsDefault 'andon') (Get-AndonSettingsKey) 'アンインストールでは、andon が書くのと同じキーを消す'
+foreach ($fn in 'Read-AndonSettings', 'Write-AndonSettings') {
+    $keyParam = (Get-Command $fn).ScriptBlock.Ast.Body.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'Key' }
+    Assert-True ($keyParam -and $null -eq $keyParam.DefaultValue) "$fn はキーの既定を持たない（テストが本物の設定に触れない）"
+}
+# 本物のキーは使わず、テスト用のキーで確かめる
+$settingsBase = 'HKCU:\Software\andon-test-' + [guid]::NewGuid().ToString('N')
+$settingsKey = Join-Path $settingsBase 'andon'
+try {
+    $s = Read-AndonSettings -Key $settingsKey
+    Assert-Equal @(@($s.Left, $s.Top, $s.Width, $s.Height, $s.TopMost) | Where-Object { $null -ne $_ }).Count 0 'キーがなければ、どれも覚えていない（既定を使う）'
+    Write-AndonSettings -Key $settingsKey -Values ([ordered]@{ Left = -1500; Top = -200; Width = 700; Height = 300; TopMost = 0 })
+    $s = Read-AndonSettings -Key $settingsKey
+    Assert-Equal "$($s.Left),$($s.Top),$($s.Width),$($s.Height)" '-1500,-200,700,300' '書いた位置と大きさを読める（主画面の左や上の、マイナスの位置も）'
+    Assert-Equal $s.TopMost $false '「常に手前」を外したことを覚える'
+    Assert-Equal (Get-Item -LiteralPath $settingsKey).GetValueKind('Left').ToString() 'DWord' '値は DWORD で書く'
+    Write-AndonSettings -Key $settingsKey -Values ([ordered]@{ TopMost = 1 })
+    $s = Read-AndonSettings -Key $settingsKey
+    Assert-True ($s.TopMost -eq $true -and $s.Width -eq 700) '一部だけ書いても、ほかの値は残る'
+
+    Remove-ItemProperty -LiteralPath $settingsKey -Name 'Width'
+    New-ItemProperty -LiteralPath $settingsKey -Name 'Width' -PropertyType String -Value '700' | Out-Null
+    $s = Read-AndonSettings -Key $settingsKey
+    Assert-Equal "$($s.Width),$($s.Height)" ',' 'DWORD でない大きさは使わない（大きさの組ごと既定にする）'
+    Assert-Equal "$($s.Left),$($s.Top)" '-1500,-200' '大きさが読めなくても、位置は使う'
+    Write-AndonSettings -Key $settingsKey -Values ([ordered]@{ Width = 700 })
+    Assert-Equal (Get-Item -LiteralPath $settingsKey).GetValueKind('Width').ToString() 'DWord' '型の違う値も、書き直すと DWORD になる'
+    Write-AndonSettings -Key $settingsKey -Values ([ordered]@{ Width = 50 })
+    Assert-Equal (Read-AndonSettings -Key $settingsKey).Width $null '小さすぎる大きさは使わない'
+    Write-AndonSettings -Key $settingsKey -Values ([ordered]@{ Width = 700; Left = 200000 })
+    $s = Read-AndonSettings -Key $settingsKey
+    Assert-True ($null -eq $s.Left -and $null -eq $s.Top -and $s.Width -eq 700) 'ありえない位置は使わない（位置の組ごと既定にする）'
+    Write-AndonSettings -Key $settingsKey -Values ([ordered]@{ TopMost = 2 })
+    Assert-Equal (Read-AndonSettings -Key $settingsKey).TopMost $null '「常に手前」が 0 か 1 でなければ使わない'
+}
+finally {
+    if (Test-Path -LiteralPath $settingsBase) { Remove-Item -LiteralPath $settingsBase -Recurse -Force }
+}
+
+Write-Host '== andon.ps1: ウィンドウの位置（Get-WindowPlacement）'
+# 主画面と、その左に置いた画面（作業領域。タスクバーの分だけ高さが短い）
+$primaryArea = [pscustomobject]@{ Left = 0; Top = 0; Width = 1920; Height = 1040 }
+$leftArea = [pscustomobject]@{ Left = -1280; Top = 0; Width = 1280; Height = 984 }
+$areas = @($primaryArea, $leftArea)
+function Format-Placement { param($P) return '{0},{1},{2},{3}' -f $P.Left, $P.Top, $P.Width, $P.Height }
+function New-Saved { param($Left, $Top, $Width, $Height) return [pscustomobject]@{ Left = $Left; Top = $Top; Width = $Width; Height = $Height; TopMost = $null } }
+Assert-Equal (Format-Placement (Get-WindowPlacement -Saved (New-Saved) -Screens $areas -DefaultWidth 656 -DefaultHeight 269)) '1256,763,656,269' '覚えていなければ、主画面の右下（端から 8）。これまでと同じ'
+Assert-Equal (Format-Placement (Get-WindowPlacement -Saved $null -Screens $areas -DefaultWidth 656 -DefaultHeight 269)) '1256,763,656,269' '設定を読めなくても、主画面の右下'
+Assert-Equal (Format-Placement (Get-WindowPlacement -Saved (New-Saved -Width 800 -Height 400) -Screens $areas -DefaultWidth 656 -DefaultHeight 269)) '1112,632,800,400' '大きさだけ覚えていれば、その大きさで主画面の右下'
+Assert-Equal (Format-Placement (Get-WindowPlacement -Saved (New-Saved -1000 100 600 300) -Screens $areas -DefaultWidth 656 -DefaultHeight 269)) '-1000,100,600,300' '左の画面の中なら、そのまま戻す'
+Assert-Equal (Format-Placement (Get-WindowPlacement -Saved (New-Saved 1700 500 600 300) -Screens $areas -DefaultWidth 656 -DefaultHeight 269)) '1320,500,600,300' '右にはみ出していれば、画面の中に動かす'
+Assert-Equal (Format-Placement (Get-WindowPlacement -Saved (New-Saved 100 -50 600 300) -Screens $areas -DefaultWidth 656 -DefaultHeight 269)) '100,0,600,300' '上にはみ出していれば、画面の中に動かす'
+Assert-Equal (Format-Placement (Get-WindowPlacement -Saved (New-Saved 3000 200 600 300) -Screens $areas -DefaultWidth 656 -DefaultHeight 269)) '1320,200,600,300' 'どの画面とも重ならなければ（モニターを外したなど）、一番近い画面に収める'
+Assert-Equal (Format-Placement (Get-WindowPlacement -Saved (New-Saved -400 100 600 300) -Screens $areas -DefaultWidth 656 -DefaultHeight 269)) '-600,100,600,300' '2 つの画面にまたがっていれば、重なりの大きい画面に寄せる'
+Assert-Equal (Format-Placement (Get-WindowPlacement -Saved (New-Saved -1280 0 2000 1200) -Screens $areas -DefaultWidth 656 -DefaultHeight 269)) '-1280,0,1280,984' '画面より大きければ、画面に合わせて縮める'
+Assert-Equal (Format-Placement (Get-WindowPlacement -Saved (New-Saved -Width 3000 -Height 2000) -Screens $areas -DefaultWidth 656 -DefaultHeight 269)) '0,0,1920,1040' '位置を覚えていなくても、主画面より大きければ縮める'
 
 # ---------------------------------------------------------------------------
 $installTmp = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) ('andon-install-' + [guid]::NewGuid().ToString('N'))))
@@ -688,7 +759,12 @@ try {
     $readmeTxt = Get-Content -LiteralPath (Join-Path $root 'README.txt') -Raw -Encoding UTF8
     Assert-Equal ([regex]::IsMatch($readmeTxt, '入れ|入る|入り')) $false 'README.txt は「入れる」ではなく「インストール」「アップデート」と書く'
     $removeCalls = @([regex]::Matches((Get-Content -LiteralPath $PSCommandPath -Raw -Encoding UTF8), '(?m)^(?!\s*#).*\bRemove-AndonRegistry\s+-.*$') | ForEach-Object { $_.Value })
-    Assert-True ($removeCalls.Count -gt 0 -and @($removeCalls | Where-Object { $_ -notmatch '-UninstallRoot\s' }).Count -eq 0) 'テストは Remove-AndonRegistry に必ずテスト用の場所を渡す（本物の登録を消さない）'
+    # 場所の引数は、関数の定義から取る（引数を足したときに、ここを直し忘れても漏れない）
+    $removeParams = @((Get-Command Remove-AndonRegistry).ScriptBlock.Ast.Body.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
+    Assert-True ($removeParams.Count -ge 5) 'Remove-AndonRegistry の場所の引数を読めた'
+    foreach ($param in $removeParams) {
+        Assert-True ($removeCalls.Count -gt 0 -and @($removeCalls | Where-Object { $_ -notmatch ('-' + $param + '\s') }).Count -eq 0) "テストは Remove-AndonRegistry に必ず -$param を渡す（本物の登録や設定を消さない）"
+    }
     # リポジトリのファイルから、Release の workflow と同じく zip を作る
     $zip = New-AndonPackage -SourceDir $root -OutDir (Join-Path $installTmp 'out') -Version $script:AndonVersion
     Assert-Equal (Split-Path -Leaf $zip) "andon-$($script:AndonVersion).zip" 'zip の名前は andon-<版>.zip'
