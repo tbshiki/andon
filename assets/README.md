@@ -6,10 +6,17 @@
 
 シルエットはレンズの曲面に沿わせ、光沢と各色の透過光を重ねて、レンズに印刷された質感にしています。
 
-- `andon.png`: 生成された原画像（1254 × 1254、RGBA）。README などの表示用。
-- `../andon.ico`: Windows 用。16・20・24・32・40・48・64・96・128・256 px を収録。ウィンドウとショートカットで使用。
+- `source/andon.png`: 生成された原画像（1254 × 1254、RGBA）。下の 2 つの元。表示には使わない。
+- `andon-192.png`: README の表示用（192 × 192）。README では幅 96 px で表示し、高 DPI の画面のために 2 倍の大きさにしている。
+- `../andon.ico`: Windows 用。16・20・24・32・40・48・64・96・128・256 px を収録。ウィンドウとショートカットで使用。配るファイルで、`andon.ps1` が同じフォルダから読むので、ルートに置く。
 
-ICO は原画像を Pillow で各サイズへ縮小して作成しました。通知領域の状態表示には、従来の赤・黄・灰の丸を使います。
+ICO と `andon-192.png` は、原画像を Pillow で縮小して作成しました。通知領域の状態表示には、従来の赤・黄・灰の丸を使います。
+
+`andon-192.png` は、透明な縁に色がにじまないよう、アルファを掛けた状態で縮小しています。作り直すときは、リポジトリのルートで次を実行します。
+
+```powershell
+python -c "from PIL import Image; Image.open('assets/source/andon.png').convert('RGBa').resize((192, 192), Image.Resampling.LANCZOS).convert('RGBA').save('assets/andon-192.png', optimize=True)"
+```
 
 ## 生成プロンプト
 
