@@ -444,7 +444,7 @@ Assert-Equal (Test-AndonCommandLine -CommandLine '') $false '起動引数が取�
 
 # ---------------------------------------------------------------------------
 Write-Host '== install.ps1: スタートアップ'
-Assert-Equal (Get-StartupAction -NoStartup $false -IsUpdate $false -Exists $false) 'create' '初めて入れるときは作る'
+Assert-Equal (Get-StartupAction -NoStartup $false -IsUpdate $false -Exists $false) 'none' '初めて入れるときは作らない（トレイのメニューの「ログオン時に起動」で作る）'
 Assert-Equal (Get-StartupAction -NoStartup $false -IsUpdate $true -Exists $true) 'create' '更新のときに、あれば書き直す'
 Assert-Equal (Get-StartupAction -NoStartup $false -IsUpdate $true -Exists $false) 'none' '更新のときに、なければ（消した人のために）作らない'
 Assert-Equal (Get-StartupAction -NoStartup $true -IsUpdate $false -Exists $false) 'none' '-NoStartup なら作らない'
@@ -601,6 +601,77 @@ try {
             FilePath = $dstLaunch.FilePath; Arguments = '-File C:\work\Test-Andon.ps1'; WorkingDirectory = $installTmp; PowerShell = $dstLaunch.PowerShell
         })
     Assert-Equal (Remove-AndonShortcut -Path $other) $false '別のスクリプトを起動するショートカットは消さない'
+
+    Write-Host '== andon.ps1: ログオン時に起動（トレイのメニュー）'
+    $logonLayout = Get-LogonStartupLayout
+    $installLayout = Get-AndonLayout
+    Assert-PathEqual $logonLayout.InstallDir $installLayout.InstallDir 'インストール先は install.ps1 と同じ'
+    Assert-PathEqual $logonLayout.StartMenu $installLayout.StartMenu 'スタートメニューのショートカットは install.ps1 と同じ'
+    Assert-PathEqual $logonLayout.Startup $installLayout.Startup 'スタートアップのショートカットは install.ps1 と同じ'
+    $approvedDefault = ((Get-Command Remove-AndonRegistry).ScriptBlock.Ast.Body.ParamBlock.Parameters |
+            Where-Object { $_.Name.VariablePath.UserPath -eq 'StartupApprovedKey' }).DefaultValue.Value
+    Assert-Equal $logonLayout.ApprovedKey $approvedDefault 'タスク マネージャーの記録は、アンインストールで消すのと同じキー'
+    foreach ($fn in 'Set-LogonStartup', 'Get-LogonStartup', 'Test-LogonStartupDisabled') {
+        $defaults = @((Get-Command $fn).ScriptBlock.Ast.Body.ParamBlock.Parameters | Where-Object { $_.DefaultValue })
+        Assert-Equal $defaults.Count 0 "$fn は場所の既定を持たない（テストが本物のスタートアップとレジストリに触れない）"
+    }
+
+    # 本物のスタートアップとキーは使わず、テスト用の場所で確かめる
+    $menuLnk = Join-Path $installTmp 'menu\andon.lnk'
+    $startLnk = Join-Path $installTmp 'startup\andon.lnk'
+    $logonKey = 'HKCU:\Software\andon-test-' + [guid]::NewGuid().ToString('N')
+    $disabled = [byte[]](3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    $enabled = [byte[]](2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    try {
+        New-AndonShortcut -Path $menuLnk -Launch (Get-AndonLaunch -InstallDir $dst -ExtraArguments '-ScanMs 500')
+        Assert-True (Test-LogonStartupAvailable -ScriptDir $dst -InstallDir $dst -StartMenu $menuLnk) 'インストール先の andon なら出す'
+        Assert-True (Test-LogonStartupAvailable -ScriptDir ($dst + '\') -InstallDir $dst.ToUpperInvariant() -StartMenu $menuLnk) '末尾の区切りと大文字小文字は問わない'
+        Assert-Equal (Test-LogonStartupAvailable -ScriptDir $src -InstallDir $dst -StartMenu $menuLnk) $false 'clone など、インストール先でない andon では出さない'
+        Assert-Equal (Test-LogonStartupAvailable -ScriptDir $dst -InstallDir $dst -StartMenu (Join-Path $installTmp 'menu\none.lnk')) $false 'スタートメニューのショートカットがなければ出さない'
+        Assert-Equal (Test-LogonStartupAvailable -ScriptDir $dst -InstallDir $dst -StartMenu $other) $false 'スタートメニューのショートカットが andon を起動しなければ出さない'
+
+        Assert-Equal (Get-LogonStartup -Startup $startLnk -ApprovedKey $logonKey) $false 'ショートカットがなければ、チェックしない'
+        Set-LogonStartup -Enabled $true -StartMenu $menuLnk -Startup $startLnk -ApprovedKey $logonKey
+        Assert-Equal (Get-ShortcutArguments -Path $startLnk) (Get-ShortcutArguments -Path $menuLnk) '入れると、スタートメニューのショートカットを写す（末尾の引数も揃う）'
+        Assert-True (Get-LogonStartup -Startup $startLnk -ApprovedKey $logonKey) '入れたら、チェックする'
+
+        New-Item -Path $logonKey -Force | Out-Null
+        New-ItemProperty -LiteralPath $logonKey -Name 'andon.lnk' -PropertyType Binary -Value $disabled -Force | Out-Null
+        New-ItemProperty -LiteralPath $logonKey -Name 'other.lnk' -PropertyType Binary -Value $disabled -Force | Out-Null
+        Assert-Equal (Get-LogonStartup -Startup $startLnk -ApprovedKey $logonKey) $false 'タスク マネージャーで無効にしてあれば、チェックしない'
+        Set-LogonStartup -Enabled $true -StartMenu $menuLnk -Startup $startLnk -ApprovedKey $logonKey
+        Assert-True (Get-LogonStartup -Startup $startLnk -ApprovedKey $logonKey) '入れ直すと、無効の記録を消して有効に戻す'
+        Assert-Equal ((Get-Item -LiteralPath $logonKey).GetValueNames() -join ',') 'other.lnk' 'ほかのショートカットの記録は消さない'
+
+        New-ItemProperty -LiteralPath $logonKey -Name 'andon.lnk' -PropertyType Binary -Value $enabled -Force | Out-Null
+        Set-LogonStartup -Enabled $false -StartMenu $menuLnk -Startup $startLnk -ApprovedKey $logonKey
+        Assert-Equal (Test-Path -LiteralPath $startLnk) $false '外すと、ショートカットを消す'
+        Assert-Equal ((Get-Item -LiteralPath $logonKey).GetValueNames() -join ',') 'other.lnk' '外すと、有効・無効の記録も消す'
+        Assert-Equal (Get-LogonStartup -Startup $startLnk -ApprovedKey $logonKey) $false '外したら、チェックしない'
+        Set-LogonStartup -Enabled $false -StartMenu $menuLnk -Startup $startLnk -ApprovedKey $logonKey
+        Assert-Equal (Test-Path -LiteralPath $startLnk) $false 'ないときに外しても失敗しない'
+
+        # Windows は、ショートカットを消しても記録を残す。前に無効にした記録が残っていても、入れたら有効にする
+        New-ItemProperty -LiteralPath $logonKey -Name 'andon.lnk' -PropertyType Binary -Value $disabled -Force | Out-Null
+        Set-LogonStartup -Enabled $true -StartMenu $menuLnk -Startup $startLnk -ApprovedKey $logonKey
+        Assert-True (Get-LogonStartup -Startup $startLnk -ApprovedKey $logonKey) 'ショートカットを作るとき、残っていた無効の記録を消す'
+
+        # 同じ名前でも、andon を起動しないショートカットは andon のものとして扱わない
+        Remove-Item -LiteralPath $startLnk -Force
+        Copy-Item -LiteralPath $other -Destination $startLnk
+        New-ItemProperty -LiteralPath $logonKey -Name 'andon.lnk' -PropertyType Binary -Value $disabled -Force | Out-Null
+        Assert-Equal (Get-LogonStartup -Startup $startLnk -ApprovedKey $logonKey) $false 'andon を起動しない andon.lnk なら、チェックしない'
+        Set-LogonStartup -Enabled $false -StartMenu $menuLnk -Startup $startLnk -ApprovedKey $logonKey
+        Assert-True (Test-Path -LiteralPath $startLnk) '外しても、andon を起動しない andon.lnk は消さない'
+        Assert-True ((Get-Item -LiteralPath $logonKey).GetValueNames() -contains 'andon.lnk') '外しても、andon を起動しない andon.lnk の記録には触れない'
+
+        Remove-Item -LiteralPath $startLnk -Force
+        Assert-Throws { Set-LogonStartup -Enabled $true -StartMenu (Join-Path $installTmp 'menu\none.lnk') -Startup $startLnk -ApprovedKey $logonKey } 'スタートメニューのショートカットがなければ、入れられない（例外にする）'
+        Assert-Equal (Test-Path -LiteralPath $startLnk) $false '入れられなかったときは、何も作らない'
+    }
+    finally {
+        if (Test-Path -LiteralPath $logonKey) { Remove-Item -LiteralPath $logonKey -Recurse -Force }
+    }
 
     Write-Host '== install.ps1: 配る zip'
     foreach ($name in Get-AndonPayload) {

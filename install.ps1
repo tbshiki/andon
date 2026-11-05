@@ -10,7 +10,8 @@
 
     1. 動いている andon を終わらせる（名前付きのイベント Local\andon-exit で合図し、mutex Local\andon が消えるのを待つ）
     2. 配るファイル（Get-AndonPayload）を置き、ダウンロードした印（Mark of the Web）を外す
-    3. スタートメニューと、スタートアップ（ログオン時に起動）に andon のショートカットを作る
+    3. スタートメニューに andon のショートカットを作る。スタートアップ（ログオン時に起動）のショートカットは、
+       新しくインストールするときは作らない（andon のトレイのメニューの「ログオン時に起動」で作る）。アップデートのときは、あれば書き直す
     4. Windows の「インストールされているアプリ」に andon を登録する（HKCU の Uninstall\tbshiki.andon）
     5. andon を起動する
 
@@ -18,8 +19,8 @@
     andon を終わらせ、ショートカット、andon と Windows が作ったレジストリのキー、入れたファイルを消す。
 
 .PARAMETER NoStartup
-    ログオン時に起動するショートカットを作らない（あれば消す）。
-    アップデートのときにこれを付けなければ、前の状態（スタートアップのショートカットがあるかないか）を引き継ぐ。
+    ログオン時に起動するショートカットを、あれば消す。
+    付けなければ、新しくインストールするときは作らず、アップデートのときは前の状態（スタートアップのショートカットがあるかないか）を引き継ぐ。
 
 .PARAMETER PauseOnError
     失敗したときに、理由を読めるよう、Enter キーを押すまで閉じない。
@@ -168,14 +169,15 @@ function Wait-AndonExit {
 }
 
 function Get-StartupAction {
-    <# スタートアップのショートカットをどうするか。create（作る・書き直す）、remove（消す）、none（何もしない）。
-       更新のときは、前の状態を引き継ぐ。消した人のために、更新のたびに作り直さない #>
+    <# スタートアップのショートカットをどうするか。create（書き直す）、remove（消す）、none（何もしない）。
+       新しく入れるときは作らない（andon のトレイのメニューの「ログオン時に起動」で作る）。
+       更新のときは、前の状態を引き継ぐ。あれば、新しい起動のコマンドで書き直す。消した人のために、作り直さない #>
     param([bool]$NoStartup, [bool]$IsUpdate, [bool]$Exists)
     if ($NoStartup) {
         if ($Exists) { return 'remove' }
         return 'none'
     }
-    if (-not $IsUpdate -or $Exists) { return 'create' }
+    if ($IsUpdate -and $Exists) { return 'create' }
     return 'none'
 }
 
@@ -483,9 +485,10 @@ try {
     Write-Host ('{0} をインストールして、起動しました: {1}' -f $name, $layout.InstallDir)
     Write-Host 'トレイから「終了」したあとは、スタートメニューの「andon」で起動できます。'
     if (Test-AndonShortcut -Path $layout.Startup) {
-        if (Test-StartupDisabled) { Write-Host 'スタートアップは、タスク マネージャーで無効にしてあるので、ログオンしたときには起動しません。' }
+        if (Test-StartupDisabled) { Write-Host 'スタートアップは、タスク マネージャーで無効にしてあるので、ログオンしたときには起動しません。トレイのアイコンを右クリックして「ログオン時に起動」を選ぶと、有効に戻ります。' }
         else { Write-Host 'ログオンしたときにも起動します（スタートアップ）。' }
     }
+    else { Write-Host 'ログオンしたときにも起動するには、トレイのアイコンを右クリックして「ログオン時に起動」を選びます。' }
     Write-Host '消すときは、Windows の「設定」→「アプリ」→「インストールされているアプリ」で andon を選びます。'
     Write-Host ('PowerShell から消すときは: powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{0}" -Uninstall' -f (Join-Path $layout.InstallDir 'install.ps1'))
     Exit-Install 0
