@@ -6,6 +6,9 @@
 # CI を決めるファイルなので、確認なしで書き換えさせない。
 # AGENTS.md と CLAUDE.md(サブフォルダのものも)も自動許可しない。AI への決まりを書いたファイルで、
 # 書き換えると次のセッションからも効くため。
+# -Root で、追跡済みかを確かめるリポジトリを指定できる(既定は Claude Code のプロジェクトの root)。
+# このリポジトリを別のリポジトリの中に置き、外側を root にして開くときに、内側のリポジトリにも使えるようにする。
+param([string]$Root)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
@@ -20,7 +23,8 @@ try {
     $filePath = [string]$payload.tool_input.file_path
     if ([string]::IsNullOrWhiteSpace($filePath)) { exit 0 }
 
-    $root = $env:CLAUDE_PROJECT_DIR
+    $root = $Root
+    if ([string]::IsNullOrWhiteSpace($root)) { $root = $env:CLAUDE_PROJECT_DIR }
     if ([string]::IsNullOrWhiteSpace($root)) {
         $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
     }

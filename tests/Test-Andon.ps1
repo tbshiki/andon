@@ -865,13 +865,15 @@ else {
     $savedProjectDir = $env:CLAUDE_PROJECT_DIR
     function Invoke-EditHook {
         <# Claude Code と同じく、UTF-8（BOM なし）の JSON を標準入力で渡して、hook の出力を返す #>
-        param([string]$Path)
+        param([string]$Path, [string]$Root)
         # Windows PowerShell 5.1 の Process.StandardInput は先頭に BOM を書くので、ファイルから渡す
         $in = Join-Path $hookTmp 'in.json'
         $out = Join-Path $hookTmp 'out.txt'
         $json = '{"tool_name":"Edit","tool_input":{"file_path":' + (ConvertTo-Json $Path) + '}}'
         [IO.File]::WriteAllText($in, $json, (New-Object Text.UTF8Encoding($false)))
-        Start-Process -FilePath 'powershell.exe' -ArgumentList ('-NoLogo -NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $hook) `
+        $hookArgs = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $hook
+        if ($Root) { $hookArgs += ' -Root "{0}"' -f $Root }
+        Start-Process -FilePath 'powershell.exe' -ArgumentList $hookArgs `
             -RedirectStandardInput $in -RedirectStandardOutput $out -NoNewWindow -Wait
         return ([IO.File]::ReadAllText($out)).Trim()
     }
@@ -886,6 +888,22 @@ else {
         Assert-True ((Invoke-EditHook (Join-Path $root 'README.md')) -match '"permissionDecision":"allow"') 'ほかの追跡済みの文書は自動許可する'
         Assert-Equal (Invoke-EditHook (Join-Path $root '[a]ndon.ps1')) '' 'パスの [ ] をワイルドカードとして扱わない'
         Assert-Equal (Invoke-EditHook (Join-Path $root 'untracked-new-file.ps1')) '' '未追跡のファイルは自動許可しない'
+
+        # このリポジトリを別のリポジトリ（外側）の中に置き、外側を root にして開いたとき。
+        # 外側の settings から、外側用と、このリポジトリ用（-Root）の 2 回、hook を呼ぶ
+        $outer = Join-Path $hookTmp 'outer'
+        New-Item -ItemType Directory -Path $outer -Force | Out-Null
+        foreach ($n in @('notes.md', 'AGENTS.md')) { [IO.File]::WriteAllText((Join-Path $outer $n), 'x') }
+        $null = & git -C $outer init -q 2>&1
+        $null = & git -C $outer add -- notes.md AGENTS.md 2>&1
+        $env:CLAUDE_PROJECT_DIR = $outer
+        Assert-Equal (Invoke-EditHook (Join-Path $root 'andon.ps1')) '' '-Root がなければ、外側で追跡していないファイルは自動許可しない'
+        Assert-True ((Invoke-EditHook (Join-Path $root 'andon.ps1') -Root $root) -match '"permissionDecision":"allow"') '-Root で指定したリポジトリで追跡済みなら自動許可する'
+        Assert-Equal (Invoke-EditHook (Join-Path $root 'AGENTS.md') -Root $root) '' '-Root で指定しても、AGENTS.md は自動許可しない'
+        Assert-Equal (Invoke-EditHook (Join-Path $root '.claude\settings.json') -Root $root) '' '-Root で指定しても、.claude の下は自動許可しない'
+        Assert-True ((Invoke-EditHook (Join-Path $outer 'notes.md')) -match '"permissionDecision":"allow"') '外側で追跡済みのファイルは自動許可する'
+        Assert-Equal (Invoke-EditHook (Join-Path $outer 'AGENTS.md')) '' '外側の AGENTS.md も自動許可しない'
+        Assert-Equal (Invoke-EditHook (Join-Path $outer 'notes.md') -Root $root) '' '-Root で指定したリポジトリの外のファイルは自動許可しない'
     }
     finally {
         $env:CLAUDE_PROJECT_DIR = $savedProjectDir
