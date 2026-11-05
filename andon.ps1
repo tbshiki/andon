@@ -21,6 +21,8 @@
     - ウィンドウの位置と大きさ、「常に手前」を HKCU\Software\tbshiki\andon に覚え、次に起動したときに戻す。
       動かし終えたとき、大きさを変え終えたとき、「常に手前」を切り替えたとき、終わるときに保存する。
       覚えた位置が画面の外なら、一番近い画面に収める。読めなければ既定（主画面の右下）。
+    - トレイのメニューの「テーマ」で、ライト・ダーク・Windows に合わせる（既定）を選ぶ。選んだものも同じ場所に覚える。
+      Windows に合わせるときは、Windows のアプリ モードが変わったら、すぐに塗り直す。ライトは、これまでと同じ見た目。
     - 新しい待ちや完了が出たとき、このウィンドウが前面になければ Windows の通知を出す。
       通知をクリックすると、そのセッションを開く。送り元は、プロセスにアプリ ID（tbshiki.andon）を付け、
       その表示名を HKCU に登録して「andon」と表示させる。
@@ -709,7 +711,7 @@ function Get-AndonSettingsKey {
 }
 
 function Read-AndonSettings {
-    <# 覚えた設定を読む。値がない、DWORD でない、ありえない値なら、その組（位置、大きさ、常に手前）を $null にし、既定を使わせる。
+    <# 覚えた設定を読む。値がない、DWORD でない、ありえない値なら、その組（位置、大きさ、常に手前、テーマ）を $null にし、既定を使わせる。
        位置はマイナスもありうる（主画面の左や上の画面）。小さすぎる大きさは、戻すと操作しにくいので使わない。
        キーが読めなくても失敗しない #>
     param([string]$Key, [int]$MinWidth = 160, [int]$MinHeight = 80, [int]$Limit = 100000)
@@ -718,7 +720,7 @@ function Read-AndonSettings {
         if ($Key -and (Test-Path -LiteralPath $Key)) {
             $item = Get-Item -LiteralPath $Key
             $names = $item.GetValueNames()
-            foreach ($name in 'Left', 'Top', 'Width', 'Height', 'TopMost') {
+            foreach ($name in 'Left', 'Top', 'Width', 'Height', 'TopMost', 'Theme') {
                 if ($names -notcontains $name) { continue }
                 if ($item.GetValueKind($name) -ne [Microsoft.Win32.RegistryValueKind]::DWord) { continue }
                 $raw[$name] = [int]$item.GetValue($name)
@@ -726,7 +728,7 @@ function Read-AndonSettings {
         }
     }
     catch { $raw = @{} }
-    $s = [pscustomobject]@{ Left = $null; Top = $null; Width = $null; Height = $null; TopMost = $null }
+    $s = [pscustomobject]@{ Left = $null; Top = $null; Width = $null; Height = $null; TopMost = $null; Theme = $null }
     if ($raw.ContainsKey('Left') -and $raw.ContainsKey('Top') -and
         [Math]::Abs($raw['Left']) -le $Limit -and [Math]::Abs($raw['Top']) -le $Limit) {
         $s.Left = $raw['Left']; $s.Top = $raw['Top']
@@ -736,7 +738,89 @@ function Read-AndonSettings {
         $s.Width = $raw['Width']; $s.Height = $raw['Height']
     }
     if ($raw.ContainsKey('TopMost') -and ($raw['TopMost'] -eq 0 -or $raw['TopMost'] -eq 1)) { $s.TopMost = ($raw['TopMost'] -eq 1) }
+    if ($raw.ContainsKey('Theme') -and $raw['Theme'] -ge 0 -and $raw['Theme'] -lt $script:ThemeChoices.Count) { $s.Theme = $script:ThemeChoices[$raw['Theme']] }
     return $s
+}
+
+# ---------------------------------------------------------------------------
+# テーマ（Windows に合わせる・ライト・ダーク）。設定の Theme には、$script:ThemeChoices の番号を書く。
+# 色は R, G, B の配列で持ち、GUI の部分で Color に直す。ライトのウィンドウの色は $null（Windows の既定のまま。これまでと同じ見た目）
+# ---------------------------------------------------------------------------
+
+$script:ThemeChoices = @('System', 'Light', 'Dark')   # 0: Windows に合わせる（既定）、1: ライト、2: ダーク
+
+function Get-SystemAppsTheme {
+    <# Windows の「アプリ モード」。AppsUseLightTheme が 0 なら Dark、それ以外（1、値がない、読めない）は Light #>
+    param([string]$Key)
+    try {
+        if ($Key -and (Test-Path -LiteralPath $Key)) {
+            $item = Get-Item -LiteralPath $Key
+            if ($item.GetValueNames() -contains 'AppsUseLightTheme' -and
+                $item.GetValueKind('AppsUseLightTheme') -eq [Microsoft.Win32.RegistryValueKind]::DWord -and
+                [int]$item.GetValue('AppsUseLightTheme') -eq 0) { return 'Dark' }
+        }
+    }
+    catch { }
+    return 'Light'
+}
+
+function Resolve-AndonTheme {
+    <# 選んだテーマ（System、Light、Dark。それ以外と $null は System）と、Windows のアプリ モードから、使う色の組（Light か Dark）を決める #>
+    param([string]$Choice, [string]$SystemTheme)
+    if ($Choice -eq 'Light' -or $Choice -eq 'Dark') { return $Choice }
+    if ($SystemTheme -eq 'Dark') { return 'Dark' }
+    return 'Light'
+}
+
+function Get-ThemePalette {
+    <# 色の組。Rows は、並び順（Get-Rank）ごとの行の背景（Back）、字（Fore）、太字（Bold）。$null の色は既定のまま #>
+    param([string]$Theme)
+    if ($Theme -eq 'Dark') {
+        return [pscustomobject]@{
+            Name = 'Dark'
+            Back = @(32, 32, 32); Text = @(235, 235, 235); SubText = @(160, 160, 160)
+            List = @(25, 25, 25); ListText = @(235, 235, 235)
+            Header = @(43, 43, 43); HeaderText = @(235, 235, 235); HeaderLine = @(70, 70, 70)
+            Button = @(55, 55, 55); ButtonHover = @(70, 70, 70); ButtonBorder = @(90, 90, 90)
+            Menu = @(43, 43, 43); MenuText = @(235, 235, 235); MenuDisabled = @(130, 130, 130); MenuSelected = @(65, 65, 65); MenuBorder = @(70, 70, 70)
+            Rows = @{
+                0 = [pscustomobject]@{ Back = @(110, 38, 38); Fore = @(255, 255, 255); Bold = $true }    # 待ち: 暗い赤
+                1 = [pscustomobject]@{ Back = @(105, 85, 20); Fore = @(255, 255, 255); Bold = $true }    # 完了: 暗い黄
+                2 = [pscustomobject]@{ Back = @(30, 64, 38); Fore = @(235, 235, 235); Bold = $false }    # 実行中: 暗い緑
+                3 = [pscustomobject]@{ Back = @(25, 25, 25); Fore = @(140, 140, 140); Bold = $false }    # 待機
+            }
+        }
+    }
+    return [pscustomobject]@{
+        Name = 'Light'
+        Back = $null; Text = $null; SubText = @(105, 105, 105)   # 状態の表示は DimGray（これまでと同じ）
+        List = $null; ListText = $null
+        Header = $null; HeaderText = $null; HeaderLine = $null
+        Button = $null; ButtonHover = $null; ButtonBorder = $null
+        Menu = $null; MenuText = $null; MenuDisabled = $null; MenuSelected = $null; MenuBorder = $null
+        Rows = @{
+            0 = [pscustomobject]@{ Back = @(255, 210, 210); Fore = $null; Bold = $true }
+            1 = [pscustomobject]@{ Back = @(255, 240, 180); Fore = $null; Bold = $true }
+            2 = [pscustomobject]@{ Back = @(228, 248, 230); Fore = $null; Bold = $false }
+            3 = [pscustomobject]@{ Back = $null; Fore = @(128, 128, 128); Bold = $false }      # Gray
+        }
+    }
+}
+
+function Get-ContrastRatio {
+    <# 2 つの色（R, G, B）のコントラスト比（WCAG 2）。読みやすさを確かめるのに使う #>
+    param([int[]]$Fore, [int[]]$Back)
+    $lum = {
+        param([int[]]$c)
+        $v = foreach ($x in $c) {
+            $s = $x / 255.0
+            if ($s -le 0.03928) { $s / 12.92 } else { [Math]::Pow(($s + 0.055) / 1.055, 2.4) }
+        }
+        0.2126 * $v[0] + 0.7152 * $v[1] + 0.0722 * $v[2]
+    }
+    $a = & $lum $Fore
+    $b = & $lum $Back
+    return ([Math]::Max($a, $b) + 0.05) / ([Math]::Min($a, $b) + 0.05)
 }
 
 function Write-AndonSettings {
@@ -907,6 +991,31 @@ public static class AndonWindow {
 '@
 }
 
+# ダークのとき、タイトルバーと、一覧のスクロールバー・見出しを暗くする。AndonNative と別の型にするのは、AndonAppId と同じ理由
+if (-not ('AndonThemeNative' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class AndonThemeNative {
+    [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+    [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)] static extern int SetWindowTheme(IntPtr hwnd, string appName, string idList);
+    [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
+    // DWMWA_USE_IMMERSIVE_DARK_MODE は、Windows 10 20H1 から 20、それより前は 19
+    public static void SetDarkTitleBar(IntPtr hwnd, bool dark) {
+        int value = dark ? 1 : 0;
+        if (DwmSetWindowAttribute(hwnd, 20, ref value, 4) != 0) DwmSetWindowAttribute(hwnd, 19, ref value, 4);
+        // 枠を描き直させる（SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED）
+        SetWindowPos(hwnd, IntPtr.Zero, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020);
+    }
+    // theme が null なら、既定の見た目に戻す
+    public static void SetTheme(IntPtr hwnd, string theme) { SetWindowTheme(hwnd, theme, null); }
+    // 一覧（ListView）の見出しのウィンドウ（LVM_GETHEADER）
+    public static IntPtr GetListViewHeader(IntPtr listView) { return SendMessage(listView, 0x101F, IntPtr.Zero, IntPtr.Zero); }
+}
+'@
+}
+
 function Start-Poll {
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $script:ClaudeExe
@@ -1049,11 +1158,20 @@ $miUpdate.Visible = $false
 [void]$trayMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
 $miShow = $trayMenu.Items.Add('表示')
 $miTrayRead = $trayMenu.Items.Add('すべて既読')
-# 設定の組。インストールした andon だけで出す（clone から動かしているときは出さない）
+# 設定の組。「ログオン時に起動」は、インストールした andon だけで出す（clone から動かしているときは出さない）
 $sepSettings = New-Object System.Windows.Forms.ToolStripSeparator
 [void]$trayMenu.Items.Add($sepSettings)
 $miLogon = New-Object System.Windows.Forms.ToolStripMenuItem('ログオン時に起動')
 [void]$trayMenu.Items.Add($miLogon)
+$miTheme = New-Object System.Windows.Forms.ToolStripMenuItem('テーマ')
+$miThemeItems = @()
+foreach ($choice in @(@{ Text = 'ライト'; Name = 'Light' }, @{ Text = 'ダーク'; Name = 'Dark' }, @{ Text = 'Windows に合わせる'; Name = 'System' })) {
+    $mi = New-Object System.Windows.Forms.ToolStripMenuItem($choice.Text)
+    $mi.Tag = $choice.Name   # クリックでどれを選んだかを Tag で見分ける
+    [void]$miTheme.DropDownItems.Add($mi)
+    $miThemeItems += $mi
+}
+[void]$trayMenu.Items.Add($miTheme)
 [void]$trayMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
 $miExit = $trayMenu.Items.Add('終了')
 $script:LogonLayout = Get-LogonStartupLayout
@@ -1107,6 +1225,188 @@ $miOpen = $menu.Items.Add('VS Code で開く')
 $miRead = $menu.Items.Add('既読にする')
 $lv.ContextMenuStrip = $menu
 
+# ---------------------------------------------------------------------------
+# テーマの塗り分け。ライトは Windows の既定の見た目のまま（これまでと同じ）。ダークは色の組（Get-ThemePalette）で塗る
+# ---------------------------------------------------------------------------
+
+$script:PersonalizeKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize'
+$script:ThemeChoice = 'System'
+if ($script:Settings.Theme) { $script:ThemeChoice = $script:Settings.Theme }
+$script:Palette = Get-ThemePalette -Theme 'Light'   # Update-AndonTheme で決め直す
+$script:ThemeApplied = $false
+$script:DarkMenuRenderer = $null
+$script:DarkMenuFailed = $false
+$script:NextThemeCheck = Get-Date
+
+function ConvertTo-ThemeColor {
+    param([int[]]$Rgb)
+    return [System.Drawing.Color]::FromArgb($Rgb[0], $Rgb[1], $Rgb[2])
+}
+
+function Set-ThemeColors {
+    <# 背景と字の色を塗る。$null なら Windows の既定に戻す #>
+    param($Control, [int[]]$Back, [int[]]$Fore)
+    if ($Back) { $Control.BackColor = ConvertTo-ThemeColor $Back } else { $Control.ResetBackColor() }
+    if ($Fore) { $Control.ForeColor = ConvertTo-ThemeColor $Fore } else { $Control.ResetForeColor() }
+}
+
+function Set-ThemeButton {
+    <# ボタンを塗る。ダークでは平らなボタンにする（Windows の標準のボタンは、背景の色を変えても明るく描かれる） #>
+    param($Button, $Palette)
+    if ($Palette.Button) {
+        $Button.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+        $Button.BackColor = ConvertTo-ThemeColor $Palette.Button
+        $Button.ForeColor = ConvertTo-ThemeColor $Palette.Text
+        $Button.FlatAppearance.BorderColor = ConvertTo-ThemeColor $Palette.ButtonBorder
+        $Button.FlatAppearance.MouseOverBackColor = ConvertTo-ThemeColor $Palette.ButtonHover
+        $Button.FlatAppearance.MouseDownBackColor = ConvertTo-ThemeColor $Palette.ButtonBorder
+    }
+    else {
+        $Button.FlatStyle = [System.Windows.Forms.FlatStyle]::Standard
+        $Button.ResetBackColor()
+        $Button.ResetForeColor()
+        $Button.UseVisualStyleBackColor = $true
+    }
+}
+
+function Get-DarkMenuRenderer {
+    <# ダークのメニューを描くもの。初めて使うときに組み立てる。組み立てられなければ $null（メニューは明るいまま） #>
+    if ($script:DarkMenuRenderer) { return $script:DarkMenuRenderer }
+    if ($script:DarkMenuFailed) { return $null }
+    try {
+        if (-not ('AndonMenuRenderer' -as [type])) {
+            # PowerShell 7（.NET）では、Windows Forms の型が別のアセンブリに分かれているので、それも参照に加える
+            $refs = @([System.Windows.Forms.Form].Assembly.Location, [System.Drawing.Color].Assembly.Location, [System.Drawing.Graphics].Assembly.Location,
+                [System.ComponentModel.Component].Assembly.Location)
+            foreach ($n in 'System.Windows.Forms.Primitives', 'System.Drawing.Primitives', 'System.ComponentModel.Primitives', 'System.Runtime', 'netstandard', 'System.Private.Windows.Core') {
+                $a = [AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.GetName().Name -eq $n } | Select-Object -First 1
+                if ($a -and $a.Location) { $refs += $a.Location }
+            }
+            Add-Type -ReferencedAssemblies @($refs | Sort-Object -Unique) -ErrorAction Stop -TypeDefinition @'
+using System;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Windows.Forms;
+public class AndonMenuColors : ProfessionalColorTable {
+    private readonly Color back, selected, border;
+    public AndonMenuColors(Color back, Color selected, Color border) { this.back = back; this.selected = selected; this.border = border; UseSystemColors = false; }
+    public override Color ToolStripDropDownBackground { get { return back; } }
+    public override Color ImageMarginGradientBegin { get { return back; } }
+    public override Color ImageMarginGradientMiddle { get { return back; } }
+    public override Color ImageMarginGradientEnd { get { return back; } }
+    public override Color MenuBorder { get { return border; } }
+    public override Color MenuItemBorder { get { return selected; } }
+    public override Color MenuItemSelected { get { return selected; } }
+    public override Color MenuItemSelectedGradientBegin { get { return selected; } }
+    public override Color MenuItemSelectedGradientEnd { get { return selected; } }
+    public override Color MenuItemPressedGradientBegin { get { return selected; } }
+    public override Color MenuItemPressedGradientMiddle { get { return selected; } }
+    public override Color MenuItemPressedGradientEnd { get { return selected; } }
+    public override Color SeparatorDark { get { return border; } }
+    public override Color SeparatorLight { get { return border; } }
+    public override Color CheckBackground { get { return back; } }
+    public override Color CheckSelectedBackground { get { return selected; } }
+    public override Color CheckPressedBackground { get { return selected; } }
+}
+public class AndonMenuRenderer : ToolStripProfessionalRenderer {
+    private readonly Color text, disabled;
+    public AndonMenuRenderer(AndonMenuColors colors, Color text, Color disabled) : base(colors) { this.text = text; this.disabled = disabled; RoundedEdges = false; }
+    protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e) { e.TextColor = e.Item.Enabled ? text : disabled; base.OnRenderItemText(e); }
+    protected override void OnRenderArrow(ToolStripArrowRenderEventArgs e) { e.ArrowColor = text; base.OnRenderArrow(e); }
+    // 既定のチェックの印は黒い画像なので、暗い背景では見えない。明るい線で描く
+    protected override void OnRenderItemCheck(ToolStripItemImageRenderEventArgs e) {
+        Rectangle r = e.ImageRectangle;
+        float w = r.Width, h = r.Height;
+        PointF[] points = { new PointF(r.Left + w * 0.2f, r.Top + h * 0.52f), new PointF(r.Left + w * 0.42f, r.Top + h * 0.74f), new PointF(r.Left + w * 0.8f, r.Top + h * 0.28f) };
+        SmoothingMode saved = e.Graphics.SmoothingMode;
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        using (Pen pen = new Pen(text, Math.Max(1.5f, w / 8f))) { e.Graphics.DrawLines(pen, points); }
+        e.Graphics.SmoothingMode = saved;
+    }
+}
+'@
+        }
+        $p = Get-ThemePalette -Theme 'Dark'
+        $colors = New-Object AndonMenuColors((ConvertTo-ThemeColor $p.Menu), (ConvertTo-ThemeColor $p.MenuSelected), (ConvertTo-ThemeColor $p.MenuBorder))
+        $script:DarkMenuRenderer = New-Object AndonMenuRenderer($colors, (ConvertTo-ThemeColor $p.MenuText), (ConvertTo-ThemeColor $p.MenuDisabled))
+    }
+    catch { $script:DarkMenuFailed = $true; return $null }
+    return $script:DarkMenuRenderer
+}
+
+function Set-DialogTheme {
+    <# アップデートを尋ねる画面などを、今の色の組で塗る（ライトなら何もしない） #>
+    param($Dialog, [object[]]$Buttons)
+    $p = $script:Palette
+    if ($p.Name -ne 'Dark') { return }
+    try {
+        Set-ThemeColors -Control $Dialog -Back $p.Back -Fore $p.Text
+        foreach ($b in $Buttons) { Set-ThemeButton -Button $b -Palette $p }
+        [AndonThemeNative]::SetDarkTitleBar($Dialog.Handle, $true)
+    }
+    catch { }   # 塗れなくても、尋ねる画面は使える
+}
+
+function Update-AndonTheme {
+    <# 選んだテーマと Windows のアプリ モードから色の組を決め、変わったときだけ塗り直す。-Force なら必ず塗り直す #>
+    param([switch]$Force)
+    $name = Resolve-AndonTheme -Choice $script:ThemeChoice -SystemTheme (Get-SystemAppsTheme -Key $script:PersonalizeKey)
+    if (-not $Force -and $script:ThemeApplied -and $script:Palette.Name -eq $name) { return }
+    $p = Get-ThemePalette -Theme $name
+    $script:Palette = $p
+    $script:ThemeApplied = $true
+    $dark = $name -eq 'Dark'
+    Set-ThemeColors -Control $form -Back $p.Back -Fore $p.Text
+    Set-ThemeColors -Control $panel -Back $p.Back -Fore $p.Text
+    Set-ThemeColors -Control $chkTop -Back $p.Back -Fore $p.Text
+    Set-ThemeButton -Button $btnRead -Palette $p
+    $lblStatus.ForeColor = ConvertTo-ThemeColor $p.SubText
+    Set-ThemeColors -Control $lv -Back $p.List -Fore $p.ListText
+    $lv.OwnerDraw = $dark   # ダークでは見出しを自分で描く（ライトは Windows の描き方のまま）
+    try {
+        # スクロールバーと、見出しの右の余白を暗くする。$null で既定の見た目に戻す
+        $listTheme = $null
+        $headerTheme = $null
+        if ($dark) { $listTheme = 'DarkMode_Explorer'; $headerTheme = 'DarkMode_ItemsView' }
+        [AndonThemeNative]::SetTheme($lv.Handle, $listTheme)
+        $header = [AndonThemeNative]::GetListViewHeader($lv.Handle)
+        if ($header -ne [IntPtr]::Zero) { [AndonThemeNative]::SetTheme($header, $headerTheme) }
+        [AndonThemeNative]::SetDarkTitleBar($form.Handle, $dark)
+    }
+    catch { }   # 古い Windows で効かなくても、色は塗れている
+    $renderer = $null
+    if ($dark) { $renderer = Get-DarkMenuRenderer }
+    foreach ($m in @($trayMenu, $menu, $miTheme.DropDown)) {
+        if ($renderer) { $m.Renderer = $renderer }
+        else { $m.RenderMode = [System.Windows.Forms.ToolStripRenderMode]::ManagerRenderMode }
+    }
+    Update-ListView
+    $lv.Invalidate()
+}
+
+# ダークのときだけ、見出しを自分で描く。行は Windows の描き方のまま（行の色は Update-ListView で付ける）
+$lv.Add_DrawColumnHeader({
+        param($source, $e)
+        $p = $script:Palette
+        if ($p.Name -ne 'Dark') { $e.DrawDefault = $true; return }
+        $back = New-Object System.Drawing.SolidBrush((ConvertTo-ThemeColor $p.Header))
+        $line = New-Object System.Drawing.Pen((ConvertTo-ThemeColor $p.HeaderLine))
+        try {
+            $b = $e.Bounds
+            $e.Graphics.FillRectangle($back, $b)
+            $e.Graphics.DrawLine($line, $b.Right - 1, $b.Top + 3, $b.Right - 1, $b.Bottom - 4)
+            $e.Graphics.DrawLine($line, $b.Left, $b.Bottom - 1, $b.Right, $b.Bottom - 1)
+            $pad = [int](6 * $scale)
+            $rect = New-Object System.Drawing.Rectangle(($b.Left + $pad), $b.Top, [Math]::Max(0, $b.Width - $pad - 2), $b.Height)
+            $flags = [System.Windows.Forms.TextFormatFlags]::Left -bor [System.Windows.Forms.TextFormatFlags]::VerticalCenter -bor
+            [System.Windows.Forms.TextFormatFlags]::EndEllipsis -bor [System.Windows.Forms.TextFormatFlags]::SingleLine
+            [System.Windows.Forms.TextRenderer]::DrawText($e.Graphics, $e.Header.Text, $lv.Font, $rect, (ConvertTo-ThemeColor $p.HeaderText), $flags)
+        }
+        finally { $back.Dispose(); $line.Dispose() }
+    })
+$lv.Add_DrawItem({ param($source, $e) $e.DrawDefault = $true })
+$lv.Add_DrawSubItem({ param($source, $e) $e.DrawDefault = $true })
+
 function Get-SelectedEntry {
     if ($lv.SelectedItems.Count -eq 0) { return $null }
     return $script:State[[string]$lv.SelectedItems[0].Tag]
@@ -1130,12 +1430,11 @@ function Update-ListView {
         [void]$item.SubItems.Add($e.Name)
         [void]$item.SubItems.Add($e.Cwd)
         $item.Tag = $e.Key
-        switch (Get-Rank $e) {
-            0 { $item.BackColor = [System.Drawing.Color]::FromArgb(255, 210, 210); $item.Font = $boldFont }
-            1 { $item.BackColor = [System.Drawing.Color]::FromArgb(255, 240, 180); $item.Font = $boldFont }
-            2 { $item.BackColor = [System.Drawing.Color]::FromArgb(228, 248, 230) }   # 実行中は見てほしい行ではないので、太字にしない
-            3 { $item.ForeColor = [System.Drawing.Color]::Gray }
-        }
+        # 行の色はテーマの色の組（Get-ThemePalette）から。実行中は見てほしい行ではないので、太字にしない
+        $style = $script:Palette.Rows[(Get-Rank $e)]
+        if ($style.Back) { $item.BackColor = ConvertTo-ThemeColor $style.Back }
+        if ($style.Fore) { $item.ForeColor = ConvertTo-ThemeColor $style.Fore }
+        if ($style.Bold) { $item.Font = $boldFont }
         [void]$lv.Items.Add($item)
         if ($e.Key -eq $selectedKey) { $item.Selected = $true }
     }
@@ -1282,6 +1581,7 @@ function Confirm-AndonUpdate {
         $dlg.Controls.Add($layout)
         $dlg.AcceptButton = $yes
         $dlg.CancelButton = $no
+        Set-DialogTheme -Dialog $dlg -Buttons @($yes, $no)
         $dlg.Add_Shown({ param($source) $source.Activate() })   # 通知から開いたときも、前面に出して操作できるように
         return ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::Yes)
     }
@@ -1439,10 +1739,20 @@ $trayMenu.Add_Opening({
             if ($available) { $checked = Get-LogonStartup -Startup $l.Startup -ApprovedKey $l.ApprovedKey }
         }
         catch { $available = $false }   # 調べられなければ出さない
-        $sepSettings.Visible = $available
         $miLogon.Visible = $available
         $miLogon.Checked = $checked
+        foreach ($mi in $miThemeItems) { $mi.Checked = ([string]$mi.Tag -eq $script:ThemeChoice) }
     })
+# テーマを選んだら、覚えて塗り直す
+foreach ($mi in $miThemeItems) {
+    $mi.Add_Click({
+            param($source)
+            $script:ThemeChoice = [string]$source.Tag
+            try { Write-AndonSettings -Key $script:SettingsKey -Values ([ordered]@{ Theme = [array]::IndexOf($script:ThemeChoices, $script:ThemeChoice) }) }
+            catch { }   # 覚えられなくても、今の andon の色は変える
+            Update-AndonTheme
+        })
+}
 $miLogon.Add_Click({
         $l = $script:LogonLayout
         $enable = -not $miLogon.Checked
@@ -1494,6 +1804,11 @@ $timer.Add_Tick({
         if ($script:UpdateEnabled) {
             try { Update-UpdateCheck -Now (Get-Date) } catch { }
             if ($script:Exiting) { return }   # 新しい版の install.ps1 を起動して、終わるところ
+        }
+        # 「Windows に合わせる」なら、Windows のアプリ モードが変わったかを 2 秒ごとに見る。失敗しても状態の表示は続ける
+        if ($script:ThemeChoice -eq 'System' -and (Get-Date) -ge $script:NextThemeCheck) {
+            $script:NextThemeCheck = (Get-Date).AddSeconds(2)
+            try { Update-AndonTheme } catch { }
         }
         try {
             $now = Get-Date
@@ -1572,6 +1887,8 @@ $form.Add_FormClosed({
         if ($script:ExitEvent) { $script:ExitEvent.Dispose() }
     })
 
+# 覚えたテーマで塗る。塗れなくても、既定の見た目で動く
+try { Update-AndonTheme -Force } catch { }
 $tray.Visible = $true
 $timer.Start()
 # ShowDialog はウィンドウを隠すと終わってしまうので、トレイに隠せるよう Application.Run で動かす

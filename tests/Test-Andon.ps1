@@ -621,6 +621,77 @@ Assert-Equal (Format-Placement (Get-WindowPlacement -Saved (New-Saved -1280 0 20
 Assert-Equal (Format-Placement (Get-WindowPlacement -Saved (New-Saved -Width 3000 -Height 2000) -Screens $areas -DefaultWidth 656 -DefaultHeight 269)) '0,0,1920,1040' '位置を覚えていなくても、主画面より大きければ縮める'
 
 # ---------------------------------------------------------------------------
+Write-Host '== andon.ps1: テーマ（Get-SystemAppsTheme / Resolve-AndonTheme / Get-ThemePalette）'
+Assert-Equal ($script:ThemeChoices -join ',') 'System,Light,Dark' '設定の Theme は 0: Windows に合わせる、1: ライト、2: ダーク'
+Assert-True ($andonText.Contains("'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize'")) 'Windows のアプリ モードは Themes\Personalize から読む'
+$themeBase = 'HKCU:\Software\andon-test-' + [guid]::NewGuid().ToString('N')
+try {
+    Assert-Equal (Get-SystemAppsTheme -Key $themeBase) 'Light' 'キーがなければ Light'
+    New-Item -Path $themeBase -Force | Out-Null
+    Assert-Equal (Get-SystemAppsTheme -Key $themeBase) 'Light' 'AppsUseLightTheme がなければ Light'
+    New-ItemProperty -LiteralPath $themeBase -Name 'AppsUseLightTheme' -PropertyType DWord -Value 0 -Force | Out-Null
+    Assert-Equal (Get-SystemAppsTheme -Key $themeBase) 'Dark' 'AppsUseLightTheme が 0 なら Dark'
+    New-ItemProperty -LiteralPath $themeBase -Name 'AppsUseLightTheme' -PropertyType DWord -Value 1 -Force | Out-Null
+    Assert-Equal (Get-SystemAppsTheme -Key $themeBase) 'Light' 'AppsUseLightTheme が 1 なら Light'
+    Remove-ItemProperty -LiteralPath $themeBase -Name 'AppsUseLightTheme'
+    New-ItemProperty -LiteralPath $themeBase -Name 'AppsUseLightTheme' -PropertyType String -Value '0' | Out-Null
+    Assert-Equal (Get-SystemAppsTheme -Key $themeBase) 'Light' 'DWORD でなければ Light（読めないものとして扱う）'
+
+    # テーマを覚える（設定のキーと同じ場所）
+    $themeKey = Join-Path $themeBase 'andon'
+    Assert-Equal (Read-AndonSettings -Key $themeKey).Theme $null 'テーマを覚えていなければ $null（Windows に合わせる）'
+    foreach ($i in 0..2) {
+        Write-AndonSettings -Key $themeKey -Values ([ordered]@{ Theme = $i })
+        Assert-Equal (Read-AndonSettings -Key $themeKey).Theme $script:ThemeChoices[$i] "Theme が $i なら $($script:ThemeChoices[$i])"
+    }
+    Write-AndonSettings -Key $themeKey -Values ([ordered]@{ Theme = 3 })
+    Assert-Equal (Read-AndonSettings -Key $themeKey).Theme $null 'Theme がありえない値なら $null（Windows に合わせる）'
+    # PowerShell の配列は、-1 で最後の要素（Dark）を返してしまう
+    Write-AndonSettings -Key $themeKey -Values ([ordered]@{ Theme = -1 })
+    Assert-Equal (Read-AndonSettings -Key $themeKey).Theme $null 'Theme がマイナスなら $null（配列の後ろから読まない）'
+}
+finally {
+    if (Test-Path -LiteralPath $themeBase) { Remove-Item -LiteralPath $themeBase -Recurse -Force }
+}
+
+Assert-Equal (Resolve-AndonTheme -Choice 'Light' -SystemTheme 'Dark') 'Light' 'ライトを選べば、Windows がダークでもライト'
+Assert-Equal (Resolve-AndonTheme -Choice 'Dark' -SystemTheme 'Light') 'Dark' 'ダークを選べば、Windows がライトでもダーク'
+Assert-Equal (Resolve-AndonTheme -Choice 'System' -SystemTheme 'Dark') 'Dark' 'Windows に合わせるなら、Windows のダークに従う'
+Assert-Equal (Resolve-AndonTheme -Choice 'System' -SystemTheme 'Light') 'Light' 'Windows に合わせるなら、Windows のライトに従う'
+Assert-Equal (Resolve-AndonTheme -Choice $null -SystemTheme 'Dark') 'Dark' '選んでいなければ（既定）、Windows に合わせる'
+
+$light = Get-ThemePalette -Theme 'Light'
+$dark = Get-ThemePalette -Theme 'Dark'
+Assert-Equal ((Get-ThemePalette -Theme 'Other').Name) 'Light' '知らない名前ならライト'
+Assert-Equal (@($light.PSObject.Properties.Name) -join ',') (@($dark.PSObject.Properties.Name) -join ',') 'ライトとダークは、同じ名前の色を持つ'
+function Format-Rgb { param($Rgb) if ($null -eq $Rgb) { return 'default' } return ($Rgb -join ',') }
+# ライトは、これまでの見た目と同じ（行の色、待機の灰色の字、状態の表示の DimGray。ほかは Windows の既定）
+Assert-Equal ('{0}|{1}|{2}' -f (Format-Rgb $light.Rows[0].Back), (Format-Rgb $light.Rows[0].Fore), $light.Rows[0].Bold) '255,210,210|default|True' 'ライトの待ちの行は、これまでと同じ（薄い赤、太字）'
+Assert-Equal ('{0}|{1}|{2}' -f (Format-Rgb $light.Rows[1].Back), (Format-Rgb $light.Rows[1].Fore), $light.Rows[1].Bold) '255,240,180|default|True' 'ライトの完了の行は、これまでと同じ（薄い黄、太字）'
+Assert-Equal ('{0}|{1}|{2}' -f (Format-Rgb $light.Rows[2].Back), (Format-Rgb $light.Rows[2].Fore), $light.Rows[2].Bold) '228,248,230|default|False' 'ライトの実行中の行は、これまでと同じ（薄い緑、太字にしない。D-54）'
+Assert-Equal ('{0}|{1}|{2}' -f (Format-Rgb $light.Rows[3].Back), (Format-Rgb $light.Rows[3].Fore), $light.Rows[3].Bold) 'default|128,128,128|False' 'ライトの待機の行は、これまでと同じ（灰色の字）'
+Assert-Equal (Format-Rgb $light.SubText) '105,105,105' 'ライトの状態の表示は、これまでと同じ DimGray'
+Assert-Equal (@('Back', 'Text', 'List', 'ListText', 'Header', 'Button', 'Menu') | Where-Object { $null -ne $light.$_ }).Count 0 'ライトのウィンドウとメニューは、Windows の既定のまま'
+# ダークは、行の背景で状態を示す（D-72）。待ちと完了は太字、実行中は太字にしない（ライトと同じ）
+Assert-Equal (@(0..3 | ForEach-Object { $dark.Rows[$_].Bold }) -join ',') (@(0..3 | ForEach-Object { $light.Rows[$_].Bold }) -join ',') 'ダークでも、太字にする行はライトと同じ'
+Assert-Equal (@(0..2 | ForEach-Object { Format-Rgb $dark.Rows[$_].Back } | Sort-Object -Unique).Count) 3 'ダークの待ち・完了・実行中の行は、それぞれ違う背景'
+foreach ($rank in 0..3) {
+    $ratio = Get-ContrastRatio -Fore $dark.Rows[$rank].Fore -Back $dark.Rows[$rank].Back
+    Assert-True ($ratio -ge 4.5) ("ダークの行（{0}）の字は読める（コントラスト比 {1:0.0} が 4.5 以上）" -f $rank, $ratio)
+}
+foreach ($pair in @(@('Text', 'Back'), @('ListText', 'List'), @('HeaderText', 'Header'), @('Text', 'Button'), @('MenuText', 'Menu'), @('MenuText', 'MenuSelected'), @('SubText', 'Back'))) {
+    $ratio = Get-ContrastRatio -Fore $dark.($pair[0]) -Back $dark.($pair[1])
+    Assert-True ($ratio -ge 4.5) ("ダークの {0} は {1} の上で読める（コントラスト比 {2:0.0} が 4.5 以上）" -f $pair[0], $pair[1], $ratio)
+}
+Assert-True ((Get-ContrastRatio -Fore $dark.MenuDisabled -Back $dark.Menu) -ge 3) 'ダークの選べないメニュー（版の表示）も、3 以上で読める'
+foreach ($p in @($light, $dark)) {
+    $colors = @(foreach ($prop in $p.PSObject.Properties) { if ($prop.Value -is [array]) { , $prop.Value } })
+    $colors += @(foreach ($rank in 0..3) { foreach ($c in @($p.Rows[$rank].Back, $p.Rows[$rank].Fore)) { if ($c) { , $c } } })
+    Assert-Equal @($colors | Where-Object { $_.Count -ne 3 -or @($_ | Where-Object { $_ -lt 0 -or $_ -gt 255 }).Count -gt 0 }).Count 0 "$($p.Name) の色は、どれも 0〜255 の R, G, B"
+}
+Assert-Equal ('{0:0.00}' -f (Get-ContrastRatio -Fore @(0, 0, 0) -Back @(255, 255, 255))) '21.00' 'コントラスト比の計算: 黒と白は 21'
+
+# ---------------------------------------------------------------------------
 $installTmp = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) ('andon-install-' + [guid]::NewGuid().ToString('N'))))
 try {
     Write-Host '== install.ps1: ファイルを置く'
