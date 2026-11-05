@@ -9,8 +9,8 @@ https://github.com/tbshiki/andon
 ■ 入れ方
 
 1. zip を右クリックして「すべて展開」を選び、展開します。
-   zip を開いただけで中の install.cmd をダブルクリックすると、
-   「install.ps1 was not found」と出て止まります。先に展開してください。
+   展開しないまま zip の中の install.cmd を開くと、zip を開くアプリによっては
+   「install.ps1 was not found」と出て止まります。そのときは、先に展開してください。
 2. 展開したフォルダの install.cmd をダブルクリックします。
 3. 「開いているファイル - セキュリティの警告」が出たら、「実行」を押します。
    インターネットから落としたファイルを開くときに、Windows が出す確認です。

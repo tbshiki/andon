@@ -799,7 +799,8 @@ try {
     }
     finally { $t.Process.Dispose() }
 
-    # zip を展開せずに、zip の中の install.cmd だけを開いたとき（隣に install.ps1 がない）
+    # zip を開くアプリが、開いた install.cmd だけを取り出して動かしたとき（隣に install.ps1 がない）。
+    # エクスプローラーは、zip の中のファイルを開くと、全部を取り出してから動かすので、この形にはならない
     $alone = Join-Path $installTmp 'cmd-alone'
     New-Item -ItemType Directory -Path $alone -Force | Out-Null
     Copy-Item -LiteralPath $cmdSource -Destination $alone
