@@ -10,9 +10,11 @@
     ファイルの中身は読まない。同じ場所にある *.key には触れない。
 
     - waiting（許可待ち・質問待ち）を赤、busy から idle に変わった未確認のもの（完了）を黄で上に並べる。
+      busy（実行中）の行は薄い緑にする。
     - VS Code の拡張機能のパネルなど、SDK から動かしているセッションは、待機中（確認済み）なら出さない。
       拡張機能は、パネルを閉じても claude を終了させず、待機中のまま残すため。
     - タスクバーには出さず、通知領域（タスクトレイ）のアイコンの色で状態を示す。
+      待ちがあれば赤、完了があれば黄、全部が実行中なら緑、それ以外（実行中と待機が混ざる、0 件など）は灰。
       × で閉じるとトレイに隠れる。終了はトレイの右クリックのメニューから行う。
     - 新しい待ちや完了が出たとき、このウィンドウが前面になければ Windows の通知を出す。
       通知をクリックすると、そのセッションを開く。送り元は、プロセスにアプリ ID（tbshiki.andon）を付け、
@@ -190,11 +192,14 @@ function Test-SessionVisible {
 }
 
 function Get-AlertLevel {
-    <# トレイのアイコンの色を決める。待ちがあれば waiting、完了があれば done、どちらもなければ none #>
+    <# トレイのアイコンの色を決める。待ちがあれば waiting、完了があれば done、全部が実行中なら busy、それ以外は none。
+       実行中と待機が混ざるとき、セッションが 0 件のときは none。$Entries には一覧に出すものだけを渡す
+       （一覧に出さない拡張機能のパネルの待機は、緑を止めない） #>
     param([object[]]$Entries)
     $ranks = @(foreach ($e in $Entries) { Get-Rank $e })
     if ($ranks -contains 0) { return 'waiting' }
     if ($ranks -contains 1) { return 'done' }
+    if ($ranks.Count -gt 0 -and @($ranks | Where-Object { $_ -ne 2 }).Count -eq 0) { return 'busy' }
     return 'none'
 }
 
@@ -826,6 +831,7 @@ function New-StateIcon {
 $script:Icons = @{
     waiting = New-StateIcon ([System.Drawing.Color]::FromArgb(220, 40, 40))
     done    = New-StateIcon ([System.Drawing.Color]::FromArgb(240, 180, 0))
+    busy    = New-StateIcon ([System.Drawing.Color]::FromArgb(40, 200, 60))
     none    = New-StateIcon ([System.Drawing.Color]::FromArgb(150, 150, 150))
 }
 $form.Icon = $script:Icons['none']
@@ -922,6 +928,7 @@ function Update-ListView {
         switch (Get-Rank $e) {
             0 { $item.BackColor = [System.Drawing.Color]::FromArgb(255, 210, 210); $item.Font = $boldFont }
             1 { $item.BackColor = [System.Drawing.Color]::FromArgb(255, 240, 180); $item.Font = $boldFont }
+            2 { $item.BackColor = [System.Drawing.Color]::FromArgb(228, 248, 230) }   # 実行中は見てほしい行ではないので、太字にしない
             3 { $item.ForeColor = [System.Drawing.Color]::Gray }
         }
         [void]$lv.Items.Add($item)

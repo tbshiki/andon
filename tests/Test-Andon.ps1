@@ -159,8 +159,32 @@ Write-Host '== Get-AlertLevel / Get-AlertNotice'
 $script:State = @{}
 $null = Update-SessionState -Sessions @((New-Session 1 'busy'), (New-Session 2 'idle')) -Now $t0
 Assert-Equal $script:State['1'].AlertAt $null '通知していないものは AlertAt が空'
-Assert-Equal (Get-AlertLevel @($script:State.Values)) 'none' '待ちも完了もなければ none'
+Assert-Equal (Get-AlertLevel @($script:State.Values)) 'none' '実行中と待機が混ざれば none'
 Assert-Equal (Get-AlertLevel @()) 'none' 'セッションがなければ none'
+Assert-Equal (Get-AlertLevel @($script:State['1'])) 'busy' '実行中が 1 件だけなら busy'
+$busy2 = [pscustomobject]@{ Key = '7'; Status = 'busy'; Unread = $false }
+Assert-Equal (Get-AlertLevel @($script:State['1'], $busy2)) 'busy' '全部が実行中なら busy'
+$unknown = [pscustomobject]@{ Key = '8'; Status = 'unknown'; Unread = $false }
+Assert-Equal (Get-AlertLevel @($script:State['1'], $unknown)) 'none' '実行中と、状態の分からないものが混ざれば none'
+Assert-Equal (Get-AlertLevel @($script:State['1'], ([pscustomobject]@{ Key = '9'; Status = 'idle'; Unread = $true }))) 'done' '実行中と完了なら done'
+Assert-Equal (Get-AlertLevel @($script:State['1'], ([pscustomobject]@{ Key = '9'; Status = 'waiting'; Unread = $true }))) 'waiting' '実行中と待ちなら waiting'
+
+# トレイのアイコンは GUI の部分（ドットソースの境界より後ろ）で作るので、Get-AlertLevel が返す色ごとに
+# $script:Icons にアイコンがあるかを、構文木で確かめる。ないと、その色のときにトレイのアイコンが消える
+$andonAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'andon.ps1'), [ref]$null, [ref]$null)
+$levelAst = $andonAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-AlertLevel' }, $true)
+$levels = @($levelAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.ReturnStatementAst] }, $true) |
+        ForEach-Object { $_.Pipeline.GetPureExpression().Value } | Sort-Object)
+Assert-Equal ($levels -join ',') 'busy,done,none,waiting' 'Get-AlertLevel が返す色は 4 つ'
+$iconsAst = $andonAst.Find({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$script:Icons' }, $true)
+$iconKeys = @()
+if ($iconsAst) {
+    $iconKeys = @($iconsAst.Right.Find({ param($n) $n -is [System.Management.Automation.Language.HashtableAst] }, $true).KeyValuePairs |
+            ForEach-Object { $_.Item1.Value })
+}
+foreach ($level in $levels) {
+    Assert-True ($iconKeys -contains $level) "トレイのアイコン（`$script:Icons）に $level がある"
+}
 Assert-Equal (Get-AlertNotice -Entries @($script:State.Values) -Now $t0) $null '新しい待ちも完了もなければ通知しない'
 
 $t1 = $t0.AddSeconds(5)
