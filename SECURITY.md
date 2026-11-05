@@ -24,6 +24,7 @@
 - Claude Code の設定ディレクトリ（既定は `~/.claude`）にある `sessions/*.json` の、ファイル名と更新時刻を見る（中身は読まない。`*.key` には触れない）
 - セッションの作業フォルダとその周辺の `*.code-workspace` を読み、開く対象を VS Code（`Code.exe`）に渡す
 - 通知の送り元を `andon` と表示させるため、`HKCU\Software\Classes\AppUserModelId\tbshiki.andon` に表示名を書く
+- ウィンドウの位置と大きさ、「常に手前」を、`HKCU\Software\tbshiki\andon` に書き、起動したときに読む（数値だけ。読めない値は使わない）
 - トレイのメニューの「ログオン時に起動」を選んだときだけ、スタートアップのフォルダに `andon.lnk`（スタートメニューの `andon` のショートカットの写し）を作る、または消す。あわせて、タスク マネージャーの有効・無効の記録（`HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder` の値 `andon.lnk`）を消す。インストールした andon だけが行い、clone から動かしている andon は行わない
 - 名前付きのイベント `Local\andon-exit` の合図を受けたら終了する（同じ Windows のセッションのプロセスなら、andon を終了できる）
 - 起動して少し後と、その後 1 日 1 回、`https://api.github.com/repos/tbshiki/andon/releases/latest` を取得して、新しいバージョンがあるかを確かめる。送るのは普通の HTTP の要求（User-Agent は `andon/<バージョン>`）だけで、セッションやファイルの情報は送らない。`-NoUpdateCheck` を付けたときと、`andon.ps1` の隣に `.git` があるときは確かめない
@@ -37,6 +38,6 @@ andon が通信するのは、上の GitHub だけです。GitHub にはログ�
 - スタートメニューに、andon を起動するショートカットを作る。スタートアップのショートカットは、アップデートのときにあれば書き直す（新しくインストールするときは作らない）
 - Windows の「インストールされているアプリ」に andon を登録する（`HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\tbshiki.andon`）。登録するアンインストールのコマンドは、cmd.exe を通さず、Windows PowerShell 5.1 を絶対パスで起動して `install.ps1 -Uninstall -PauseOnError` を実行する
 - 動いている andon を終了する。合図を受けられない古いバージョンは、`andon.ps1` を `-File` で動かしている PowerShell のプロセスを止める
-- `-Uninstall` を付けたときは、これらと、andon と Windows が作ったレジストリのキーと値（`AppUserModelId\tbshiki.andon`、`Notifications\Settings\tbshiki.andon`、`Uninstall\tbshiki.andon`、`StartupApproved\StartupFolder` の `andon.lnk`）を消す
+- `-Uninstall` を付けたときは、これらと、andon と Windows が作ったレジストリのキーと値（`AppUserModelId\tbshiki.andon`、`Notifications\Settings\tbshiki.andon`、`Uninstall\tbshiki.andon`、`StartupApproved\StartupFolder` の `andon.lnk`、設定の `Software\tbshiki\andon`。`Software\tbshiki` は、ほかに何もなければ消す）を消す
 
 `install.cmd` は、同じフォルダの `install.ps1` を、Windows PowerShell 5.1 を絶対パスで起動して実行するだけです。失敗したときだけ、閉じる前にキーを待ちます。

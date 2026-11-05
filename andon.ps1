@@ -18,6 +18,9 @@
       × で閉じるとトレイに隠れる。終了はトレイの右クリックのメニューから行う。
     - トレイのメニューの「ログオン時に起動」で、スタートアップのショートカットを作ったり消したりする。
       インストールした andon だけで出す。チェックは、ショートカットがあり、タスク マネージャーで無効にしていないこと。
+    - ウィンドウの位置と大きさ、「常に手前」を HKCU\Software\tbshiki\andon に覚え、次に起動したときに戻す。
+      動かし終えたとき、大きさを変え終えたとき、「常に手前」を切り替えたとき、終わるときに保存する。
+      覚えた位置が画面の外なら、一番近い画面に収める。読めなければ既定（主画面の右下）。
     - 新しい待ちや完了が出たとき、このウィンドウが前面になければ Windows の通知を出す。
       通知をクリックすると、そのセッションを開く。送り元は、プロセスにアプリ ID（tbshiki.andon）を付け、
       その表示名を HKCU に登録して「andon」と表示させる。
@@ -695,6 +698,107 @@ function Set-LogonStartup {
     }
 }
 
+# ---------------------------------------------------------------------------
+# 設定（レジストリの HKCU\Software\tbshiki\andon に、値ごとに DWORD で置く）。ウィンドウの位置と大きさ、「常に手前」。
+# 読めなくても、ありえない値でも、既定で動き続ける。関数の名前は install.ps1 と重ねない
+# ---------------------------------------------------------------------------
+
+function Get-AndonSettingsKey {
+    <# 設定を置くキー。install.ps1 の Remove-AndonRegistry は、アンインストールでこのキーを消す #>
+    return 'HKCU:\Software\tbshiki\andon'
+}
+
+function Read-AndonSettings {
+    <# 覚えた設定を読む。値がない、DWORD でない、ありえない値なら、その組（位置、大きさ、常に手前）を $null にし、既定を使わせる。
+       位置はマイナスもありうる（主画面の左や上の画面）。小さすぎる大きさは、戻すと操作しにくいので使わない。
+       キーが読めなくても失敗しない #>
+    param([string]$Key, [int]$MinWidth = 160, [int]$MinHeight = 80, [int]$Limit = 100000)
+    $raw = @{}
+    try {
+        if ($Key -and (Test-Path -LiteralPath $Key)) {
+            $item = Get-Item -LiteralPath $Key
+            $names = $item.GetValueNames()
+            foreach ($name in 'Left', 'Top', 'Width', 'Height', 'TopMost') {
+                if ($names -notcontains $name) { continue }
+                if ($item.GetValueKind($name) -ne [Microsoft.Win32.RegistryValueKind]::DWord) { continue }
+                $raw[$name] = [int]$item.GetValue($name)
+            }
+        }
+    }
+    catch { $raw = @{} }
+    $s = [pscustomobject]@{ Left = $null; Top = $null; Width = $null; Height = $null; TopMost = $null }
+    if ($raw.ContainsKey('Left') -and $raw.ContainsKey('Top') -and
+        [Math]::Abs($raw['Left']) -le $Limit -and [Math]::Abs($raw['Top']) -le $Limit) {
+        $s.Left = $raw['Left']; $s.Top = $raw['Top']
+    }
+    if ($raw.ContainsKey('Width') -and $raw.ContainsKey('Height') -and
+        $raw['Width'] -ge $MinWidth -and $raw['Height'] -ge $MinHeight -and $raw['Width'] -le $Limit -and $raw['Height'] -le $Limit) {
+        $s.Width = $raw['Width']; $s.Height = $raw['Height']
+    }
+    if ($raw.ContainsKey('TopMost') -and ($raw['TopMost'] -eq 0 -or $raw['TopMost'] -eq 1)) { $s.TopMost = ($raw['TopMost'] -eq 1) }
+    return $s
+}
+
+function Write-AndonSettings {
+    <# 設定を書く。$Values は名前 -> 整数で、DWORD で書く。キーがなければ作る #>
+    param([string]$Key, [System.Collections.IDictionary]$Values)
+    if (-not $Key) { throw '設定のキーがありません' }
+    if (-not (Test-Path -LiteralPath $Key)) { New-Item -Path $Key -Force | Out-Null }
+    foreach ($name in $Values.Keys) {
+        New-ItemProperty -LiteralPath $Key -Name $name -PropertyType DWord -Value ([int]$Values[$name]) -Force | Out-Null
+    }
+}
+
+function Get-WindowPlacement {
+    <# ウィンドウの位置と大きさを決める。$Screens は画面の作業領域（タスクバーを除いた範囲。Left、Top、Width、Height を持つもの）で、
+       先頭が主画面。$Saved は Read-AndonSettings の結果。
+       - 位置を覚えていなければ、主画面の右下（端から $Margin）に置く
+       - 位置を覚えていれば、重なりの一番大きい画面（どの画面とも重ならなければ、中心が一番近い画面）の中に収まるよう動かす
+       - 大きさは覚えたもの（なければ $DefaultWidth × $DefaultHeight）。画面より大きければ縮める #>
+    param($Saved, [object[]]$Screens, [int]$DefaultWidth, [int]$DefaultHeight, [int]$Margin = 8)
+    $w = $DefaultWidth
+    $h = $DefaultHeight
+    if ($null -ne $Saved -and $null -ne $Saved.Width -and $null -ne $Saved.Height) { $w = [int]$Saved.Width; $h = [int]$Saved.Height }
+    $hasPosition = $null -ne $Saved -and $null -ne $Saved.Left -and $null -ne $Saved.Top
+    # 整数にそろえる（文字列のままだと、+ が連結になって計算が狂う）
+    $left = 0
+    $top = 0
+    if ($hasPosition) { $left = [int]$Saved.Left; $top = [int]$Saved.Top }
+    $screen = $Screens[0]
+    if ($hasPosition) {
+        $best = $null
+        $bestArea = 0
+        foreach ($s in $Screens) {
+            $overlapX = [Math]::Min($left + $w, $s.Left + $s.Width) - [Math]::Max($left, $s.Left)
+            $overlapY = [Math]::Min($top + $h, $s.Top + $s.Height) - [Math]::Max($top, $s.Top)
+            if ($overlapX -gt 0 -and $overlapY -gt 0 -and [double]$overlapX * $overlapY -gt $bestArea) {
+                $best = $s
+                $bestArea = [double]$overlapX * $overlapY
+            }
+        }
+        if (-not $best) {
+            $bestDistance = [double]::MaxValue
+            foreach ($s in $Screens) {
+                $dx = ($left + $w / 2.0) - ($s.Left + $s.Width / 2.0)
+                $dy = ($top + $h / 2.0) - ($s.Top + $s.Height / 2.0)
+                if ($dx * $dx + $dy * $dy -lt $bestDistance) { $best = $s; $bestDistance = $dx * $dx + $dy * $dy }
+            }
+        }
+        $screen = $best
+    }
+    $w = [Math]::Min($w, $screen.Width)
+    $h = [Math]::Min($h, $screen.Height)
+    if ($hasPosition) {
+        $x = [Math]::Min([Math]::Max($left, $screen.Left), $screen.Left + $screen.Width - $w)
+        $y = [Math]::Min([Math]::Max($top, $screen.Top), $screen.Top + $screen.Height - $h)
+    }
+    else {
+        $x = [Math]::Max($screen.Left, $screen.Left + $screen.Width - $w - $Margin)
+        $y = [Math]::Max($screen.Top, $screen.Top + $screen.Height - $h - $Margin)
+    }
+    return [pscustomobject]@{ Left = [int]$x; Top = [int]$y; Width = [int]$w; Height = [int]$h }
+}
+
 # ドットソースされたときは関数の定義だけで止める
 if ($MyInvocation.InvocationName -eq '.') { return }
 
@@ -886,8 +990,15 @@ $g = $form.CreateGraphics()
 $scale = $g.DpiX / 96
 $g.Dispose()
 $form.ClientSize = New-Object System.Drawing.Size([int](640 * $scale), [int](230 * $scale))
-$workArea = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
-$form.Location = New-Object System.Drawing.Point(($workArea.Right - $form.Width - 8), ($workArea.Bottom - $form.Height - 8))
+# 覚えた位置と大きさがあれば戻す。なければ主画面の右下。画面の外になっていれば、一番近い画面に収める
+$script:SettingsKey = Get-AndonSettingsKey
+$script:Settings = Read-AndonSettings -Key $script:SettingsKey
+$screens = @([System.Windows.Forms.Screen]::AllScreens | Sort-Object { -not $_.Primary } | ForEach-Object {
+        $area = $_.WorkingArea
+        [pscustomobject]@{ Left = $area.Left; Top = $area.Top; Width = $area.Width; Height = $area.Height }
+    })
+$placement = Get-WindowPlacement -Saved $script:Settings -Screens $screens -DefaultWidth $form.Width -DefaultHeight $form.Height
+$form.Bounds = New-Object System.Drawing.Rectangle($placement.Left, $placement.Top, $placement.Width, $placement.Height)
 $boldFont = New-Object System.Drawing.Font($form.Font, [System.Drawing.FontStyle]::Bold)
 # タスクバーには出さず、通知領域（タスクトレイ）のアイコンで状態を示す
 $form.ShowInTaskbar = $false
@@ -971,6 +1082,11 @@ $panel.WrapContents = $false
 $chkTop = New-Object System.Windows.Forms.CheckBox
 $chkTop.Text = '常に手前'
 $chkTop.Checked = $true
+# 覚えた「常に手前」を戻す。切り替えたときの処理（保存）は、あとで付けるので、ここでは保存しない
+if ($null -ne $script:Settings.TopMost) {
+    $chkTop.Checked = $script:Settings.TopMost
+    $form.TopMost = $script:Settings.TopMost
+}
 $chkTop.AutoSize = $true
 $chkTop.Margin = New-Object System.Windows.Forms.Padding(6, 6, 6, 3)
 $btnRead = New-Object System.Windows.Forms.Button
@@ -1035,6 +1151,23 @@ function Update-ListView {
         if (-not $script:AppIcon) { $form.Icon = $icon }
     }
     if ($tray.Text -ne $form.Text) { $tray.Text = $form.Text }
+}
+
+function Save-WindowSettings {
+    <# ウィンドウの位置と大きさ、「常に手前」を保存する。最小化・最大化しているときは、位置と大きさを保存しない
+       （最小化したウィンドウの位置は画面の外の値になる）。保存できなくても andon は動き続ける #>
+    try {
+        $values = [ordered]@{ TopMost = [int]$chkTop.Checked }
+        if ($form.WindowState -eq [System.Windows.Forms.FormWindowState]::Normal) {
+            $b = $form.Bounds
+            $values['Left'] = $b.Left
+            $values['Top'] = $b.Top
+            $values['Width'] = $b.Width
+            $values['Height'] = $b.Height
+        }
+        Write-AndonSettings -Key $script:SettingsKey -Values $values
+    }
+    catch { }
 }
 
 function Show-AndonWindow {
@@ -1273,7 +1406,12 @@ $miRead.Add_Click({
         if ($e) { $e.Unread = $false; Update-ListView }
     })
 $btnRead.Add_Click({ Set-AllRead })
-$chkTop.Add_CheckedChanged({ $form.TopMost = $chkTop.Checked })
+$chkTop.Add_CheckedChanged({
+        $form.TopMost = $chkTop.Checked
+        Save-WindowSettings
+    })
+# 動かし終えたとき、大きさを変え終えたときに保存する（終了するときだけだと、プロセスを止められたときに覚えたものがなくなる）
+$form.Add_ResizeEnd({ Save-WindowSettings })
 
 $tray.Add_MouseClick({
         param($source, $mouse)
@@ -1332,7 +1470,9 @@ $form.Add_FormClosing({
         if ($closing.CloseReason -eq [System.Windows.Forms.CloseReason]::UserClosing -and -not $script:Exiting) {
             $closing.Cancel = $true
             $form.Hide()
+            return
         }
+        Save-WindowSettings   # 終わる前に保存する
     })
 
 $script:PollTask = $null

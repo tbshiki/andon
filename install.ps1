@@ -303,18 +303,28 @@ function Remove-AndonRegistry {
          表示名を登録できなかったときに andon が使う ID（andon）の通知の設定も消す
        - 「インストールされているアプリ」への登録（install.ps1 が入れるたびに書く）
        - スタートアップのショートカットの有効・無効（Windows がショートカットの名前 andon.lnk で記録する。
-         タスク マネージャーの「スタートアップ アプリ」で切り替えるもの）。残すと、入れ直したときに前の状態を引き継ぐ #>
+         タスク マネージャーの「スタートアップ アプリ」で切り替えるもの）。残すと、入れ直したときに前の状態を引き継ぐ
+       - andon の設定（andon が書く $SettingsRoot\andon。ウィンドウの位置と大きさ、「常に手前」）。
+         $SettingsRoot（tbshiki）は、ほかに何もなければ消す #>
     param(
         [string]$ClassesRoot = 'HKCU:\Software\Classes\AppUserModelId',
         [string]$NotificationsRoot = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings',
         [string]$UninstallRoot = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
-        [string]$StartupApprovedKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder'
+        [string]$StartupApprovedKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder',
+        [string]$SettingsRoot = 'HKCU:\Software\tbshiki'
     )
     $removed = @()
-    foreach ($key in @((Join-Path $ClassesRoot 'tbshiki.andon'), (Join-Path $NotificationsRoot 'tbshiki.andon'), (Join-Path $NotificationsRoot 'andon'), (Join-Path $UninstallRoot 'tbshiki.andon'))) {
+    foreach ($key in @((Join-Path $ClassesRoot 'tbshiki.andon'), (Join-Path $NotificationsRoot 'tbshiki.andon'), (Join-Path $NotificationsRoot 'andon'), (Join-Path $UninstallRoot 'tbshiki.andon'), (Join-Path $SettingsRoot 'andon'))) {
         if (Test-Path -LiteralPath $key) {
             Remove-Item -LiteralPath $key -Recurse -Force
             $removed += $key
+        }
+    }
+    if (Test-Path -LiteralPath $SettingsRoot) {
+        $root = Get-Item -LiteralPath $SettingsRoot
+        if ($root.SubKeyCount -eq 0 -and $root.ValueCount -eq 0) {
+            Remove-Item -LiteralPath $SettingsRoot -Force
+            $removed += $SettingsRoot
         }
     }
     if ((Test-Path -LiteralPath $StartupApprovedKey) -and ((Get-Item -LiteralPath $StartupApprovedKey).GetValueNames() -contains 'andon.lnk')) {

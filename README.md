@@ -24,6 +24,7 @@
 - 新しく待ちや完了が出たとき、andon が前面になければ Windows の通知を出し、ウィンドウのタイトルバーを点滅させます。通知をクリックすると、そのセッションの VS Code ウィンドウが前面に出ます。通知の送り元は `andon` と表示されます（下の「インストール」で作られるショートカットや、「clone して動かす」の方法で起動したとき。対話で使っている PowerShell で直接 `.\andon.ps1` を動かしたときは、andon を終えたあともそのシェルに andon の名前が残らないよう、送り元は PowerShell のままにします）。通知を止めたり、バナーを出さないようにしたりするときは、Windows の「設定 → システム → 通知」で `andon` を選びます。
 - 点滅は、andon を前面に出したときのほか、そのセッションの VS Code ウィンドウを前面に出したとき（通知のクリックでも、直接でも）や、そのセッションが待ちでも完了でもなくなったとき（VS Code で答えた、次のプロンプトを送った、既読にした）に止まります。完了の黄色は、確認するまで残ります。VS Code ウィンドウは、題名に入るフォルダ名や workspace 名で見分けるので、VS Code の設定 `window.title` を変えていると見分けられません。そのセッションの VS Code ウィンドウがすでに前面にあるときは、点滅しません。
 - ウィンドウの × や最小化では、終了せずにトレイに隠れます。トレイのアイコンをクリックすると、表示と非表示が切り替わります。終了は、トレイのアイコンの右クリックのメニューから行います。
+- ウィンドウの位置と大きさ、「常に手前」は、次に起動したときに戻ります。モニターを外したなどで画面の外になっていれば、一番近い画面の中に動かします。覚えた値は `HKCU\Software\tbshiki\andon` に置きます。
 - Windows 11 では、新しいアイコンは最初、通知領域の `^` の中に隠れています。常に見えるようにするには、`^` の中からアイコンをタスクバーへドラッグします。
 
 ## 動作環境
@@ -107,6 +108,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Progr
 - スタートメニューとスタートアップの `andon` のショートカット
 - `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\tbshiki.andon`（「インストールされているアプリ」への登録）
 - `%LOCALAPPDATA%\Programs\andon`
+- `HKCU\Software\tbshiki\andon`（andon が覚えた、ウィンドウの位置と大きさ、「常に手前」）。`HKCU\Software\tbshiki` は、ほかに何もなければ消す
 - `HKCU\Software\Classes\AppUserModelId\tbshiki.andon`（andon が、通知の送り元を `andon` と表示させるため、起動のたびに表示名を書くキー）
 - `HKCU\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings\tbshiki.andon`（最初の通知で Windows が作る、通知の設定）
 - `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder` の値 `andon.lnk`（Windows がショートカットの名前で記録する、スタートアップの有効・無効。残すと、インストールし直したときに前の状態を引き継ぐ）
