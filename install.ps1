@@ -360,7 +360,7 @@ function Stop-AndonProcess {
 function Stop-RunningAndon {
     <# 動いている andon を終わらせる。終わらせられなければ $false #>
     if (-not (Test-AndonRunning)) { return $true }
-    Write-Host '動いている andon を終わらせます。'
+    Write-Host '動いている andon を終了します。'
     if ((Send-AndonExit) -and (Wait-AndonExit -TimeoutSec 10)) { return $true }
     # 合図を受けられない古い版は、プロセスを止める。トレイのアイコンは、マウスを重ねるまで残る
     if ((Stop-AndonProcess) -gt 0) { [void](Wait-AndonExit -TimeoutSec 10) }
@@ -381,7 +381,7 @@ function Start-Andon {
 
 try {
     $layout = Get-AndonLayout
-    $notStopped = 'andon を終わらせられませんでした。トレイのアイコンを右クリックして「終了」を選んでから、もう一度実行してください。'
+    $notStopped = 'andon を終了できませんでした。トレイのアイコンを右クリックして「終了」を選んでから、もう一度実行してください。'
 
     if ($Uninstall) {
         if (-not (Stop-RunningAndon)) { Write-Host $notStopped -ForegroundColor Red; Exit-Install 1 }

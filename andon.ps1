@@ -526,7 +526,7 @@ function Get-UpdatePrompt {
     return (@(
             "andon v$Version があります（今のバージョンは v$CurrentVersion）。"
             ''
-            'アップデートすると、andon を終わらせて新しいバージョンをインストールし、起動し直します。'
+            'アップデートは、いま起動している andon を終了して新しいバージョンをインストールして起動しなおします。'
         ) -join "`r`n")
 }
 

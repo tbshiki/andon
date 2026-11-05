@@ -78,15 +78,15 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<展開したフォル�
 
 通知をクリックするか、トレイのメニューの「アップデート（v<バージョン>）」を選ぶと、アップデートするかを尋ねる画面が出ます。「しない」を選んでも、メニューの「アップデート」は残るので、あとでアップデートできます。自動ではアップデートしません。
 
-「アップデートする」を選ぶと、andon は次のことをして終わります。
+「アップデートする」を選ぶと、andon は次のことをして終了します。
 
 1. そのバージョンの zip を落とし、Release が示す sha256 と同じかを確かめる
 2. 一時フォルダに展開する
 3. 新しいバージョンの `install.ps1` を実行するコンソールを開く
 
-`install.ps1` は、手でアップデートするときと同じく andon を置き換えて、起動し直します。失敗したときは、コンソールに理由を出し、Enter キーを押すまで閉じません。andon は終わっているので、閉じたあとは、スタートメニューの「andon」で起動し直します。
+`install.ps1` は、手でアップデートするときと同じく andon を置き換えて、起動し直します。失敗したときは、コンソールに理由を出し、Enter キーを押すまで閉じません。andon は終了しているので、閉じたあとは、スタートメニューの「andon」で起動し直します。
 
-手でアップデートするときは、新しいバージョンの zip を落として、同じ手順で `install.cmd` をダブルクリックします（または `install.ps1` を実行します）。動いている andon を終わらせてからファイルを置き換え、起動し直します。スタートアップのショートカットを消していれば、作り直しません。0.1.0 には新しいバージョンを確かめる機能がないので、0.1.0 からは手でアップデートします。
+手でアップデートするときは、新しいバージョンの zip を落として、同じ手順で `install.cmd` をダブルクリックします（または `install.ps1` を実行します）。動いている andon を終了してからファイルを置き換え、起動し直します。スタートアップのショートカットを消していれば、作り直しません。0.1.0 には新しいバージョンを確かめる機能がないので、0.1.0 からは手でアップデートします。
 
 新しいバージョンを確かめないようにするには、ショートカットのプロパティで、リンク先の末尾に `-NoUpdateCheck` を付けます。アップデートしても引き継ぎます。clone から動かしている andon（`andon.ps1` の隣に `.git` がある）は確かめません。
 
@@ -100,7 +100,7 @@ PowerShell から消すときは、次を実行します。
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\andon\install.ps1" -Uninstall
 ```
 
-どちらも、動いている andon を終わらせて、次のものを消します。
+どちらも、動いている andon を終了して、次のものを消します。
 
 - スタートメニューとスタートアップの `andon` のショートカット
 - `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\tbshiki.andon`（「インストールされているアプリ」への登録）
@@ -142,7 +142,7 @@ clone で `install.ps1` を実行すると、clone の `andon.ps1` を `%LOCALAP
   3. どちらもなければ repository の root（git の外なら作業フォルダ）
 - 無関係な workspace を開かないよう、repository の root より上の階層の `*.code-workspace` は、`folders` で repository を挙げていない限り使いません。`folders` に親フォルダ全体（`..` など）を挙げているだけの workspace も使いません。
 - Claude Code が作る worktree（`<repo>\.claude\worktrees\<name>`）は、元の repository として扱います。
-- **アップデートと削除の前の終了:** `install.ps1` は、名前付きのイベント `Local\andon-exit` で andon に終わるよう合図し、二重起動を防ぐ mutex `Local\andon` が消えるのを待ってから、ファイルを置き換えます。待たずに起動し直すと、新しい andon が二重起動と判断して終わってしまうためです。合図を受けられない古いバージョンは、`andon.ps1` を `-File` で動かしている PowerShell のプロセスを止めます（トレイのアイコンは、マウスを重ねるまで残ります）。
+- **アップデートと削除の前の終了:** `install.ps1` は、名前付きのイベント `Local\andon-exit` で andon に終了するよう合図し、二重起動を防ぐ mutex `Local\andon` が消えるのを待ってから、ファイルを置き換えます。待たずに起動し直すと、新しい andon が二重起動と判断して終了してしまうためです。合図を受けられない古いバージョンは、`andon.ps1` を `-File` で動かしている PowerShell のプロセスを止めます（トレイのアイコンは、マウスを重ねるまで残ります）。
 - **新しいバージョンの確認:** GitHub の API（`releases/latest`）を、`claude agents --json` と同じく待たずに取得します（timer で、終わったかだけを見ます）。確かめられなければ 1 時間後に、確かめられれば 1 日後に、もう一度確かめます。次の Release は使いません。
   - 下書き
   - pre-release
@@ -165,7 +165,7 @@ clone で `install.ps1` を実行すると、clone の `andon.ps1` を `%LOCALAP
 
 ## 開発
 
-GUI に依存しない部分のテストを、Windows PowerShell 5.1 と PowerShell 7 の両方で実行します。`install.ps1` は、実際の場所（`%LOCALAPPDATA%`、スタートメニュー、スタートアップ、`HKCU`）に書き込み、動いている andon を終わらせるので、テストでは、場所を引数で変えられる部分だけを確かめます。
+GUI に依存しない部分のテストを、Windows PowerShell 5.1 と PowerShell 7 の両方で実行します。`install.ps1` は、実際の場所（`%LOCALAPPDATA%`、スタートメニュー、スタートアップ、`HKCU`）に書き込み、動いている andon を終了するので、テストでは、場所を引数で変えられる部分だけを確かめます。
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-Andon.ps1
