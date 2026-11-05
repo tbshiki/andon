@@ -66,9 +66,9 @@ jobs:
           $zip = New-AndonPackage -SourceDir . -OutDir $env:RUNNER_TEMP -Version $env:VERSION
           Get-FileHash -Algorithm SHA256 -LiteralPath $zip | Format-List Algorithm, Hash, Path
           $notes = @'
-          ## 更新
+          ## アップデート
 
-          andon（0.1.1 から）が動いていれば、andon が新しい版を知らせます。通知をクリックするか、トレイのメニューの「更新（v{version}）」を選び、「更新する」を選ぶと入れ替わります。ここから落とす必要はありません。
+          andon（0.1.1 から）が動いていれば、andon が新しいバージョンを知らせます。通知をクリックするか、トレイのメニューの「アップデート（v{version}）」を選び、「アップデートする」を選ぶと入れ替わります。ここから落とす必要はありません。
 
           ## インストール（初めて入れるとき、0.1.0 から上げるとき）
 

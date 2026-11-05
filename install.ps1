@@ -1,7 +1,7 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-    andon を、このユーザーの場所（%LOCALAPPDATA%\Programs\andon）に入れる。新しい版でもう一度実行すると更新になる。
+    andon を、このユーザーの場所（%LOCALAPPDATA%\Programs\andon）に入れる。新しいバージョンでもう一度実行するとアップデートになる。
 
 .DESCRIPTION
     このスクリプトと同じフォルダにある andon.ps1 を入れる。ネットワークからは何も落とさない。
@@ -17,7 +17,7 @@
 
 .PARAMETER NoStartup
     ログオン時に起動するショートカットを作らない（あれば消す）。
-    更新のときにこれを付けなければ、前の状態（スタートアップのショートカットがあるかないか）を引き継ぐ。
+    アップデートのときにこれを付けなければ、前の状態（スタートアップのショートカットがあるかないか）を引き継ぐ。
 
 .EXAMPLE
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
