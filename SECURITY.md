@@ -30,9 +30,12 @@
 
 andon が通信するのは、上の GitHub だけです。GitHub にはログインせずに問い合わせ、認証情報は読みません。
 
-`install.ps1` が行うのは次のことだけです。ネットワークには通信しません。
+`install.ps1` が行うのは次のことだけです。ネットワークには通信しません。管理者の権限を求めません。
 
-- 同じフォルダにある `andon.ps1`・`install.ps1`・`andon.ico`・`LICENSE` を `%LOCALAPPDATA%\Programs\andon` に置き、ダウンロードした印（Mark of the Web）を外す
+- 同じフォルダにある `andon.ps1`・`install.ps1`・`install.cmd`・`README.txt`・`andon.ico`・`LICENSE` を `%LOCALAPPDATA%\Programs\andon` に置き、ダウンロードした印（Mark of the Web）を外す
 - スタートメニューとスタートアップに、andon を起動するショートカットを作る
+- Windows の「インストールされているアプリ」に andon を登録する（`HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\tbshiki.andon`）。登録するアンインストールのコマンドは、cmd.exe を通さず、Windows PowerShell 5.1 を絶対パスで起動して `install.ps1 -Uninstall -PauseOnError` を実行する
 - 動いている andon を終わらせる。合図を受けられない古いバージョンは、`andon.ps1` を `-File` で動かしている PowerShell のプロセスを止める
-- `-Uninstall` を付けたときは、これらと、andon と Windows が作ったレジストリのキーと値（`AppUserModelId\tbshiki.andon`、`Notifications\Settings\tbshiki.andon`、`StartupApproved\StartupFolder` の `andon.lnk`）を消す
+- `-Uninstall` を付けたときは、これらと、andon と Windows が作ったレジストリのキーと値（`AppUserModelId\tbshiki.andon`、`Notifications\Settings\tbshiki.andon`、`Uninstall\tbshiki.andon`、`StartupApproved\StartupFolder` の `andon.lnk`）を消す
+
+`install.cmd` は、同じフォルダの `install.ps1` を、Windows PowerShell 5.1 を絶対パスで起動して実行するだけです。失敗したときだけ、閉じる前にキーを待ちます。

@@ -37,7 +37,21 @@ Claude Code は VS Code の統合ターミナルなどで普通に `claude` を�
 
 ## インストール
 
-[Releases](https://github.com/tbshiki/andon/releases) の最新のバージョンから `andon-<バージョン>.zip` を落として展開し、PowerShell で、展開したフォルダの `install.ps1` を実行します。管理者の権限は要りません。
+管理者の権限は要りません。
+
+1. [Releases](https://github.com/tbshiki/andon/releases) の最新のバージョンから `andon-<バージョン>.zip` を落とします。andon は、このリポジトリの Release からだけ落としてください。ダブルクリックで入れられるので、ほかの場所から落とした偽物の zip でも動いてしまいます。
+2. 展開する前に、落とした zip が Release のものと同じかを、[GitHub CLI](https://cli.github.com/) で確かめられます。Release は、公開したあとに中身を変えられない設定（immutable releases）にしています。
+
+   ```powershell
+   gh release verify-asset v<バージョン> .\andon-<バージョン>.zip -R tbshiki/andon
+   ```
+
+3. zip を右クリックして「すべて展開」を選び、展開します。
+4. 展開したフォルダの `install.cmd` をダブルクリックします。「開いているファイル - セキュリティの警告」が出たら、「実行」を押します（インターネットから落としたファイルを開くときに、Windows が出す確認です）。
+
+andon が起動すれば、入っています。失敗したときは、コンソールに理由が出て、キーを押すまで閉じません。展開したフォルダと zip は、入れたあと消してかまいません。andon は、入れた場所（`%LOCALAPPDATA%\Programs\andon`）から動きます。zip には、入れ方を短くまとめた `README.txt` も入っています。
+
+`install.cmd` は、同じフォルダの `install.ps1` を Windows PowerShell 5.1 で実行するだけです。PowerShell から入れるときは、次を実行します。
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<展開したフォルダ>\install.ps1"
@@ -46,16 +60,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<展開したフォル�
 `install.ps1` は次のことをします。ネットワークからは何も落としません。
 
 - andon を `%LOCALAPPDATA%\Programs\andon` に置き、ダウンロードした印（Mark of the Web）を外す
-- スタートメニューと、スタートアップ（ログオン時に起動）に `andon` のショートカットを作る。スタートアップに作らないときは、`-NoStartup` を付けて実行する
+- スタートメニューと、スタートアップ（ログオン時に起動）に `andon` のショートカットを作る。スタートアップに作らないときは、PowerShell から `-NoStartup` を付けて実行する
+- Windows の「インストールされているアプリ」に andon を登録する（`HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\tbshiki.andon`）
 - andon を起動する
 
-エクスプローラーの右クリックの「PowerShell で実行」は使わないでください。実行ポリシーを指定せずに PowerShell を起動するので、ダウンロードした印の付いた `install.ps1` は止められることがあります。上のコマンドの `-ExecutionPolicy Bypass` は、その PowerShell のプロセスにだけ効き、PC の実行ポリシーは変えません。andon のショートカットも、同じく andon のプロセスにだけ `Bypass` を付けて起動します。
-
-落とした zip が Release のものと同じかは、[GitHub CLI](https://cli.github.com/) で確かめられます。Release は、公開したあとに中身を変えられない設定（immutable releases）にしています。
-
-```powershell
-gh release verify-asset v<バージョン> .\andon-<バージョン>.zip -R tbshiki/andon
-```
+`install.ps1` を、エクスプローラーの右クリックの「PowerShell で実行」で動かさないでください。実行ポリシーを指定せずに PowerShell を起動するので、ダウンロードした印の付いた `install.ps1` は止められることがあります。`install.cmd` と上のコマンドの `-ExecutionPolicy Bypass` は、その PowerShell のプロセスにだけ効き、PC の実行ポリシーは変えません。andon のショートカットも、同じく andon のプロセスにだけ `Bypass` を付けて起動します。
 
 起動すると、画面の右下に、常に手前に表示されるウィンドウが開き、通知領域にアイコンが出ます。二重に起動しても 2 つ目はすぐ終了します（トレイに隠れているときは、トレイのアイコンから表示します）。トレイから「終了」したあとは、スタートメニューの「andon」で起動します。トレイのメニューの先頭に、入っているバージョンが出ます。
 
@@ -77,19 +86,24 @@ gh release verify-asset v<バージョン> .\andon-<バージョン>.zip -R tbsh
 
 `install.ps1` は、手でアップデートするときと同じく andon を置き換えて、起動し直します。失敗したときは、コンソールに理由を出し、Enter キーを押すまで閉じません。andon は終わっているので、閉じたあとは、スタートメニューの「andon」で起動し直します。
 
-手でアップデートするときは、新しいバージョンの zip を落として、同じ手順で `install.ps1` を実行します。動いている andon を終わらせてからファイルを置き換え、起動し直します。スタートアップのショートカットを消していれば、作り直しません。0.1.0 には新しいバージョンを確かめる機能がないので、0.1.0 からは手でアップデートします。
+手でアップデートするときは、新しいバージョンの zip を落として、同じ手順で `install.cmd` をダブルクリックします（または `install.ps1` を実行します）。動いている andon を終わらせてからファイルを置き換え、起動し直します。スタートアップのショートカットを消していれば、作り直しません。0.1.0 には新しいバージョンを確かめる機能がないので、0.1.0 からは手でアップデートします。
 
 新しいバージョンを確かめないようにするには、ショートカットのプロパティで、リンク先の末尾に `-NoUpdateCheck` を付けます。アップデートしても引き継ぎます。clone から動かしている andon（`andon.ps1` の隣に `.git` がある）は確かめません。
 
 ### アンインストール
 
+Windows の「設定」→「アプリ」→「インストールされているアプリ」（Windows 10 では「アプリと機能」）で andon を選び、「アンインストール」を押します。失敗したときは、コンソールに理由が出て、Enter キーを押すまで閉じません。
+
+PowerShell から消すときは、次を実行します。
+
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\andon\install.ps1" -Uninstall
 ```
 
-動いている andon を終わらせて、次のものを消します。
+どちらも、動いている andon を終わらせて、次のものを消します。
 
 - スタートメニューとスタートアップの `andon` のショートカット
+- `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\tbshiki.andon`（「インストールされているアプリ」への登録）
 - `%LOCALAPPDATA%\Programs\andon`
 - `HKCU\Software\Classes\AppUserModelId\tbshiki.andon`（andon が、通知の送り元を `andon` と表示させるため、起動のたびに表示名を書くキー）
 - `HKCU\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings\tbshiki.andon`（最初の通知で Windows が作る、通知の設定）

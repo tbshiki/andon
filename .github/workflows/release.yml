@@ -72,8 +72,11 @@ jobs:
 
           ## インストール（初めて入れるとき、0.1.0 から上げるとき）
 
-          1. 下の Assets から `andon-{version}.zip` を落として、展開します。
-          2. PowerShell で次を実行します。
+          1. 下の Assets から `andon-{version}.zip` を落とします。
+          2. zip を右クリックして「すべて展開」を選び、展開します。
+          3. 展開したフォルダの `install.cmd` をダブルクリックします。「開いているファイル - セキュリティの警告」が出たら、「実行」を押します。
+
+          PowerShell から入れるときは、次を実行します。
 
           ```powershell
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<展開したフォルダ>\install.ps1"
