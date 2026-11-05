@@ -16,6 +16,8 @@
     - タスクバーには出さず、通知領域（タスクトレイ）のアイコンの色で状態を示す。
       待ちがあれば赤、完了があれば黄、全部が実行中なら緑、それ以外（実行中と待機が混ざる、0 件など）は灰。
       × で閉じるとトレイに隠れる。終了はトレイの右クリックのメニューから行う。
+    - トレイのメニューの「ログオン時に起動」で、スタートアップのショートカットを作ったり消したりする。
+      インストールした andon だけで出す。チェックは、ショートカットがあり、タスク マネージャーで無効にしていないこと。
     - 新しい待ちや完了が出たとき、このウィンドウが前面になければ Windows の通知を出す。
       通知をクリックすると、そのセッションを開く。送り元は、プロセスにアプリ ID（tbshiki.andon）を付け、
       その表示名を HKCU に登録して「andon」と表示させる。
@@ -613,6 +615,86 @@ exit `$code
     }
 }
 
+# ---------------------------------------------------------------------------
+# ログオン時に起動（トレイのメニュー）。スタートアップのショートカットがあるかないかを、そのまま設定として使う。
+# 関数の名前は install.ps1 と重ねない（テストは andon.ps1 と install.ps1 を同じスコープにドットソースする）
+# ---------------------------------------------------------------------------
+
+function Get-LogonStartupLayout {
+    <# インストール先、スタートメニューとスタートアップのショートカット、タスク マネージャーの「スタートアップ アプリ」での
+       有効・無効を Windows が記録するキー。install.ps1 の Get-AndonLayout と同じ場所 #>
+    return [pscustomobject]@{
+        InstallDir  = Join-Path $env:LOCALAPPDATA 'Programs\andon'
+        StartMenu   = Join-Path ([Environment]::GetFolderPath('Programs')) 'andon.lnk'
+        Startup     = Join-Path ([Environment]::GetFolderPath('Startup')) 'andon.lnk'
+        ApprovedKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder'
+    }
+}
+
+function Test-LogonStartupAvailable {
+    <# トレイのメニューに「ログオン時に起動」を出すか。インストール先の andon.ps1 を動かしていて、
+       写す元のスタートメニューのショートカットがあるときだけ出す。clone から動かしているときは出さない #>
+    param([string]$ScriptDir, [string]$InstallDir, [string]$StartMenu)
+    if (-not $ScriptDir -or -not $InstallDir -or -not $StartMenu) { return $false }
+    try {
+        if ([IO.Path]::GetFullPath($ScriptDir).TrimEnd('\') -ine [IO.Path]::GetFullPath($InstallDir).TrimEnd('\')) { return $false }
+    }
+    catch { return $false }
+    return (Test-LogonStartupShortcut -Path $StartMenu)
+}
+
+function Test-LogonStartupShortcut {
+    <# andon.ps1 を起動するショートカットか。同じ名前でも、別のものを起動するショートカットは andon のものとして扱わない #>
+    param([string]$Path)
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+    $shell = New-Object -ComObject WScript.Shell
+    try { $arguments = [string]$shell.CreateShortcut($Path).Arguments }
+    finally { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($shell) }
+    return [bool]($arguments -match '(?i)[\\/"\s]andon\.ps1')
+}
+
+function Test-LogonStartupDisabled {
+    <# タスク マネージャーで andon.lnk を無効にした記録があるか。先頭のバイトの下位のビットが 1 なら無効
+       （02 が有効、03 が無効。install.ps1 の Test-StartupDisabled と同じ見方） #>
+    param([string]$ApprovedKey)
+    if (-not $ApprovedKey -or -not (Test-Path -LiteralPath $ApprovedKey)) { return $false }
+    $value = (Get-Item -LiteralPath $ApprovedKey).GetValue('andon.lnk')
+    return [bool]($value -is [byte[]] -and $value.Length -gt 0 -and ($value[0] -band 1))
+}
+
+function Get-LogonStartup {
+    <# 「ログオン時に起動」のチェック。スタートアップに andon のショートカットがあり、タスク マネージャーで無効にしていなければ $true #>
+    param([string]$Startup, [string]$ApprovedKey)
+    if (-not (Test-LogonStartupShortcut -Path $Startup)) { return $false }
+    return -not (Test-LogonStartupDisabled -ApprovedKey $ApprovedKey)
+}
+
+function Set-LogonStartup {
+    <# 「ログオン時に起動」を変える。
+       - 入れるとき: スタートメニューのショートカットをスタートアップに写す（andon のものがあれば残す）。
+         install.ps1 が作るものと中身が同じになり、リンク先の末尾に付けた引数（-ScanMs など）も揃う
+       - 外すとき: スタートアップの andon のショートカットを消す
+       どちらでも、Windows が残しているタスク マネージャーの有効・無効の記録を消す。ショートカットを消しても記録は残り、
+       入れ直したときに前の「無効」がまた効いてしまうため。記録がなければ、Windows は有効として扱う #>
+    param([bool]$Enabled, [string]$StartMenu, [string]$Startup, [string]$ApprovedKey)
+    if ($Enabled) {
+        if (-not (Test-LogonStartupShortcut -Path $Startup)) {
+            if (-not (Test-LogonStartupShortcut -Path $StartMenu)) { throw "スタートメニューに andon のショートカットがありません: $StartMenu" }
+            $dir = Split-Path -Parent $Startup
+            if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+            Copy-Item -LiteralPath $StartMenu -Destination $Startup -Force
+        }
+    }
+    elseif (Test-LogonStartupShortcut -Path $Startup) {
+        Remove-Item -LiteralPath $Startup -Force
+    }
+    # andon のものでない andon.lnk が残っているなら、記録はそのショートカットのものなので触れない
+    if ((Test-Path -LiteralPath $Startup -PathType Leaf) -and -not (Test-LogonStartupShortcut -Path $Startup)) { return }
+    if ($ApprovedKey -and (Test-Path -LiteralPath $ApprovedKey) -and ((Get-Item -LiteralPath $ApprovedKey).GetValueNames() -contains 'andon.lnk')) {
+        Remove-ItemProperty -LiteralPath $ApprovedKey -Name 'andon.lnk'
+    }
+}
+
 # ドットソースされたときは関数の定義だけで止める
 if ($MyInvocation.InvocationName -eq '.') { return }
 
@@ -856,8 +938,15 @@ $miUpdate.Visible = $false
 [void]$trayMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
 $miShow = $trayMenu.Items.Add('表示')
 $miTrayRead = $trayMenu.Items.Add('すべて既読')
+# 設定の組。インストールした andon だけで出す（clone から動かしているときは出さない）
+$sepSettings = New-Object System.Windows.Forms.ToolStripSeparator
+[void]$trayMenu.Items.Add($sepSettings)
+$miLogon = New-Object System.Windows.Forms.ToolStripMenuItem('ログオン時に起動')
+[void]$trayMenu.Items.Add($miLogon)
 [void]$trayMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
 $miExit = $trayMenu.Items.Add('終了')
+$script:LogonLayout = Get-LogonStartupLayout
+$script:ScriptDir = $PSScriptRoot   # イベントの中では $PSScriptRoot に頼らない
 $tray.ContextMenuStrip = $trayMenu
 $script:Exiting = $false
 $script:NoticeKey = $null
@@ -1202,6 +1291,32 @@ $tray.Add_BalloonTipClicked({
 $miUpdate.Add_Click({ Request-AndonUpdate })
 $miShow.Add_Click({ Show-AndonWindow })
 $miTrayRead.Add_Click({ Set-AllRead })
+# メニューを開くたびに読み直す。タスク マネージャーで無効にしたり、ショートカットを手で消したりしても、次に開いたときに表す
+$trayMenu.Add_Opening({
+        $available = $false
+        $checked = $false
+        try {
+            $l = $script:LogonLayout
+            $available = Test-LogonStartupAvailable -ScriptDir $script:ScriptDir -InstallDir $l.InstallDir -StartMenu $l.StartMenu
+            if ($available) { $checked = Get-LogonStartup -Startup $l.Startup -ApprovedKey $l.ApprovedKey }
+        }
+        catch { $available = $false }   # 調べられなければ出さない
+        $sepSettings.Visible = $available
+        $miLogon.Visible = $available
+        $miLogon.Checked = $checked
+    })
+$miLogon.Add_Click({
+        $l = $script:LogonLayout
+        $enable = -not $miLogon.Checked
+        try { Set-LogonStartup -Enabled $enable -StartMenu $l.StartMenu -Startup $l.Startup -ApprovedKey $l.ApprovedKey }
+        catch {
+            $what = 'ログオン時に起動しないようにできませんでした'
+            if ($enable) { $what = 'ログオン時に起動するようにできませんでした' }
+            $script:NoticeKey = $null   # この通知のクリックでは、何も開かない
+            $script:NoticeUpdate = $false
+            $tray.ShowBalloonTip(10000, $what, $_.Exception.Message, [System.Windows.Forms.ToolTipIcon]::Warning)
+        }
+    })
 $miExit.Add_Click({
         $script:Exiting = $true
         $form.Close()

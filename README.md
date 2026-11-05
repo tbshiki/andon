@@ -60,7 +60,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<展開したフォル�
 `install.ps1` は次のことをします。ネットワークからは何も落としません。
 
 - andon を `%LOCALAPPDATA%\Programs\andon` に置き、ダウンロードした印（Mark of the Web）を外す
-- スタートメニューと、スタートアップ（ログオン時に起動）に `andon` のショートカットを作る。スタートアップに作らないときは、PowerShell から `-NoStartup` を付けて実行する
+- スタートメニューに `andon` のショートカットを作る。スタートアップ（ログオン時に起動）には作らない（下の「ログオン時に起動」）。アップデートのときは、スタートアップのショートカットがあれば書き直し、なければ作らない
 - Windows の「インストールされているアプリ」に andon を登録する（`HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\tbshiki.andon`）
 - andon を起動する
 
@@ -68,7 +68,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<展開したフォル�
 
 起動すると、画面の右下に、常に手前に表示されるウィンドウが開き、通知領域にアイコンが出ます。二重に起動しても 2 つ目はすぐ終了します（トレイに隠れているときは、トレイのアイコンから表示します）。トレイから「終了」したあとは、スタートメニューの「andon」で起動します。トレイのメニューの先頭に、インストールされているバージョンが出ます。
 
-タスク マネージャーの「スタートアップ アプリ」では、andon は `conhost.exe`（発行元は Microsoft Corporation）という名前で出ます。タスク マネージャーは、ショートカットの名前ではなく、ショートカットが起動するプログラムから名前を取るためです。andon は PowerShell のスクリプトなので、起動するのは Windows の `conhost.exe` です。ログオン時に起動しないようにするには、そこで無効にするか、`-NoStartup` を付けて `install.ps1` を実行し直します。タスク マネージャーで無効にした状態は、アップデートしても引き継ぎます。
+ログオンしたときにも起動するには、トレイのアイコンを右クリックして「ログオン時に起動」を選びます。チェックが付き、スタートアップに `andon` のショートカットができます。もう一度選ぶとチェックが外れ、ショートカットを消します。どちらも、アップデートしても引き継ぎます。
+
+タスク マネージャーの「スタートアップ アプリ」では、andon は `conhost.exe`（発行元は Microsoft Corporation）という名前で出ます。タスク マネージャーは、ショートカットの名前ではなく、ショートカットが起動するプログラムから名前を取るためです。andon は PowerShell のスクリプトなので、起動するのは Windows の `conhost.exe` です。タスク マネージャーで無効にしたときも、「ログオン時に起動」のチェックは外れます。そこでもう一度「ログオン時に起動」を選ぶと、有効に戻ります。PowerShell から `install.ps1` に `-NoStartup` を付けて実行しても、スタートアップのショートカットを消します。
 
 `-FallbackSec` で、変化がなくても状態を取り直す間隔（既定 30 秒）を変えられます。`-ScanMs` で、変化を見る間隔（既定 1000 ミリ秒、200〜5000）を変えられます。長くすると、待ちに気付くのが遅れます。使うときは、ショートカットのプロパティで、リンク先の末尾に `-ScanMs 500` のように付けます。アップデートしても引き継ぎます。
 
@@ -125,7 +127,7 @@ Start-Process conhost.exe '--headless powershell.exe -NoProfile -STA -ExecutionP
 
 `conhost.exe --headless` は、PowerShell のコンソールをウィンドウなしで動かします。Windows 11 では既定のターミナルが Windows Terminal なので、`powershell.exe -WindowStyle Hidden` で起動すると、コンソールが Windows Terminal に引き渡されて隠れず、andon とは別にタスクバーに残ります。
 
-clone から直接動かすときに、ログオン時に自動で起動するには、`Win + R` で `shell:startup` を開き、次のショートカットを置きます。インストールした andon と両方を置くと、どちらが起動するか決まらないので、どちらか一方にします。
+clone から直接動かしている andon には、トレイのメニューの「ログオン時に起動」は出ません。ログオン時に自動で起動するには、`Win + R` で `shell:startup` を開き、次のショートカットを置きます。インストールした andon と両方を置くと、どちらが起動するか決まらないので、どちらか一方にします。
 
 - リンク先: `conhost.exe --headless powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "<clone した場所>\andon.ps1"`
 
@@ -142,6 +144,7 @@ clone で `install.ps1` を実行すると、clone の `andon.ps1` を `%LOCALAP
   3. どちらもなければ repository の root（git の外なら作業フォルダ）
 - 無関係な workspace を開かないよう、repository の root より上の階層の `*.code-workspace` は、`folders` で repository を挙げていない限り使いません。`folders` に親フォルダ全体（`..` など）を挙げているだけの workspace も使いません。
 - Claude Code が作る worktree（`<repo>\.claude\worktrees\<name>`）は、元の repository として扱います。
+- **ログオン時に起動:** スタートアップに andon のショートカット（`andon.ps1` を起動するもの）があり、タスク マネージャーで無効にしていなければ、チェックを付けます。チェックを付けるときは、スタートメニューの `andon` のショートカットをスタートアップに写し、Windows が残しているタスク マネージャーの有効・無効の記録（`HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder` の値 `andon.lnk`）を消して、有効に戻します。外すときは、ショートカットと記録の両方を消します。Windows は、ショートカットを消しても記録を残すので、消さないと、入れ直したときに前の「無効」がまた効いてしまいます。
 - **アップデートと削除の前の終了:** `install.ps1` は、名前付きのイベント `Local\andon-exit` で andon に終了するよう合図し、二重起動を防ぐ mutex `Local\andon` が消えるのを待ってから、ファイルを置き換えます。待たずに起動し直すと、新しい andon が二重起動と判断して終了してしまうためです。合図を受けられない古いバージョンは、`andon.ps1` を `-File` で動かしている PowerShell のプロセスを止めます（トレイのアイコンは、マウスを重ねるまで残ります）。
 - **新しいバージョンの確認:** GitHub の API（`releases/latest`）を、`claude agents --json` と同じく待たずに取得します（timer で、終わったかだけを見ます）。確かめられなければ 1 時間後に、確かめられれば 1 日後に、もう一度確かめます。次の Release は使いません。
   - 下書き
