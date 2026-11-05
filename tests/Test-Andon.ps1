@@ -353,8 +353,8 @@ Assert-Equal (Get-UpdateInfo -Release $null -CurrentVersion '0.1.0') $null '応�
 Write-Host '== 更新の確認: 更新するかを尋ねる画面の文（Get-UpdatePrompt）'
 $prompt = Get-UpdatePrompt -Version '0.2.0' -CurrentVersion '0.1.1'
 Assert-True ($prompt.StartsWith('andon v0.2.0 があります（今のバージョンは v0.1.1）。')) '新しい版と今の版を出す'
-Assert-True ($prompt.EndsWith('アップデートすると、andon を終わらせて新しいバージョンを入れ、起動し直します。')) 'アップデートすると何が起きるかを書く'
-Assert-Equal ($prompt -match '更新|版') $false '状態の「更新」と分けるため、「アップデート」「バージョン」と書く'
+Assert-True ($prompt.EndsWith('アップデートすると、andon を終わらせて新しいバージョンをインストールし、起動し直します。')) 'アップデートすると何が起きるかを書く'
+Assert-Equal ($prompt -match '更新|版|入れ') $false '状態の「更新」と分けるため、「アップデート」「バージョン」と書く。「入れる」ではなく「インストール」と書く'
 
 Write-Host '== 更新の確認: 新しい版の install.ps1 を起動するコマンド（Get-UpdateCommand）'
 $updateCmd = Get-UpdateCommand -InstallScript "C:\Users\o'neil\AppData\Local\Temp\andon-update-0.2.0-x\install.ps1" -SystemRoot 'C:\Windows'
@@ -575,6 +575,8 @@ try {
     Assert-True (-not [regex]::IsMatch($cmdText, "(?<!`r)`n")) 'install.cmd の改行は CRLF（LF だけだと goto の飛び先を読み違える）'
     Assert-True ($cmdText.Contains('"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1"')) 'install.cmd は Windows PowerShell 5.1 を絶対パスで起動し、隣の install.ps1 を引用符で囲んで渡す'
     Assert-Equal ([regex]::IsMatch($cmdText, '(?im)^\s*(rem|::).*%')) $false 'install.cmd の注釈に % を書かない（rem の行も % を展開する）'
+    $readmeTxt = Get-Content -LiteralPath (Join-Path $root 'README.txt') -Raw -Encoding UTF8
+    Assert-Equal ([regex]::IsMatch($readmeTxt, '入れ|入る|入り')) $false 'README.txt は「入れる」ではなく「インストール」「アップデート」と書く'
     $removeCalls = @([regex]::Matches((Get-Content -LiteralPath $PSCommandPath -Raw -Encoding UTF8), '(?m)^(?!\s*#).*\bRemove-AndonRegistry\s+-.*$') | ForEach-Object { $_.Value })
     Assert-True ($removeCalls.Count -gt 0 -and @($removeCalls | Where-Object { $_ -notmatch '-UninstallRoot\s' }).Count -eq 0) 'テストは Remove-AndonRegistry に必ずテスト用の場所を渡す（本物の登録を消さない）'
     # リポジトリのファイルから、Release の workflow と同じく zip を作る
