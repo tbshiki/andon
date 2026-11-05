@@ -454,10 +454,41 @@ $regBase = 'HKCU:\Software\andon-test-' + [guid]::NewGuid().ToString('N')
 try {
     $classes = Join-Path $regBase 'AppUserModelId'
     $notifications = Join-Path $regBase 'Notifications'
+    $uninstallRoot = Join-Path $regBase 'Uninstall'
     $approved = Join-Path $regBase 'StartupApproved'
-    foreach ($k in @((Join-Path $classes 'tbshiki.andon'), (Join-Path $notifications 'tbshiki.andon'), (Join-Path $notifications 'andon'), (Join-Path $notifications 'example.other'), $approved)) {
+    foreach ($k in @((Join-Path $classes 'tbshiki.andon'), (Join-Path $notifications 'tbshiki.andon'), (Join-Path $notifications 'andon'), (Join-Path $notifications 'example.other'), (Join-Path $uninstallRoot 'example.other'), $approved)) {
         New-Item -Path $k -Force | Out-Null
     }
+
+    Write-Host '== install.ps1: 「インストールされているアプリ」への登録'
+    $layoutKey = (Get-AndonLayout).UninstallKey
+    Assert-Equal $layoutKey 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\tbshiki.andon' '登録するのは、このユーザーの Uninstall\tbshiki.andon'
+    $defaultRoot = ((Get-Command Remove-AndonRegistry).ScriptBlock.Ast.Body.ParamBlock.Parameters |
+            Where-Object { $_.Name.VariablePath.UserPath -eq 'UninstallRoot' }).DefaultValue.Value
+    Assert-Equal (Join-Path $defaultRoot 'tbshiki.andon') $layoutKey '消すときも、登録したのと同じキーを見る'
+    $ps = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
+    $entry = Get-AndonUninstallEntry -InstallDir "C:\Users\o'neil 100% & (1)\AppData\Local\Programs\andon" -Version '0.2.0' -PowerShell $ps -SizeBytes 2049 -Date ([datetime]'2026-11-05')
+    Assert-Equal $entry['UninstallString'] ('"' + $ps + '" -NoProfile -ExecutionPolicy Bypass -File "C:\Users\o''neil 100% & (1)\AppData\Local\Programs\andon\install.ps1" -Uninstall -PauseOnError') 'アンインストールのコマンドは、Windows PowerShell 5.1 を絶対パスで起動し、パスを引用符で囲む'
+    Assert-Equal ($entry['UninstallString'] -match '(?i)cmd(\.exe)?\b|install\.cmd') $false 'アンインストールのコマンドは cmd.exe を通さない'
+    Assert-Equal $entry['DisplayName'] 'andon' '名前'
+    Assert-Equal $entry['DisplayVersion'] '0.2.0' 'バージョン'
+    Assert-Equal $entry['InstallDate'] '20261105' '入れた日は yyyyMMdd'
+    Assert-Equal $entry['EstimatedSize'] 3 '大きさは KB（切り上げ）'
+    Assert-Equal $entry['DisplayIcon'] "C:\Users\o'neil 100% & (1)\AppData\Local\Programs\andon\andon.ico" 'アイコンはインストール先の andon.ico'
+    Assert-Equal $entry.Contains('DisplayVersion') $true 'バージョンが分かれば書く'
+    Assert-Equal (Get-AndonUninstallEntry -InstallDir 'C:\Apps\andon' -Version '' -PowerShell $ps).Contains('DisplayVersion') $false 'バージョンが分からなければ書かない'
+
+    $testKey = Join-Path $uninstallRoot 'tbshiki.andon'
+    Set-AndonUninstallEntry -Key $testKey -Values $entry
+    $item = Get-Item -LiteralPath $testKey
+    Assert-Equal $item.GetValue('UninstallString') $entry['UninstallString'] '登録したアンインストールのコマンドを読める'
+    Assert-Equal $item.GetValueKind('NoModify').ToString() 'DWord' 'NoModify は DWORD'
+    Assert-Equal $item.GetValueKind('EstimatedSize').ToString() 'DWord' 'EstimatedSize は DWORD'
+    Assert-Equal $item.GetValueKind('DisplayVersion').ToString() 'String' 'DisplayVersion は文字列'
+    $entry['DisplayVersion'] = '0.2.1'
+    Set-AndonUninstallEntry -Key $testKey -Values $entry
+    Assert-Equal (Get-Item -LiteralPath $testKey).GetValue('DisplayVersion') '0.2.1' 'もう一度入れると書き直す（バージョンをそろえる）'
+
     # Windows と同じく、先頭のバイトが 02 なら有効、03 なら無効
     New-ItemProperty -LiteralPath $approved -Name 'andon.lnk' -PropertyType Binary -Value ([byte[]](3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)) | Out-Null
     New-ItemProperty -LiteralPath $approved -Name 'other.lnk' -PropertyType Binary -Value ([byte[]](2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)) | Out-Null
@@ -466,12 +497,14 @@ try {
     Assert-Equal (Test-StartupDisabled -StartupApprovedKey $approved) $false '先頭が 02 なら有効'
     Set-ItemProperty -LiteralPath $approved -Name 'andon.lnk' -Value ([byte[]](3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
     Assert-Equal (Test-StartupDisabled -StartupApprovedKey (Join-Path $regBase 'NoSuchKey')) $false '記録がなければ有効（無効にしていない）'
-    # 本物の記録（StartupApproved\StartupFolder）を消さないよう、場所は必ず渡す
-    Assert-Equal @(Remove-AndonRegistry -ClassesRoot $classes -NotificationsRoot $notifications -StartupApprovedKey $approved).Count 4 'アプリ ID の表示名、2 つの ID の通知の設定、スタートアップの有効・無効の記録を消す'
+    # 本物の記録（StartupApproved\StartupFolder、Uninstall\tbshiki.andon）を消さないよう、場所は必ず渡す
+    Assert-Equal @(Remove-AndonRegistry -ClassesRoot $classes -NotificationsRoot $notifications -UninstallRoot $uninstallRoot -StartupApprovedKey $approved).Count 5 'アプリ ID の表示名、2 つの ID の通知の設定、「インストールされているアプリ」への登録、スタートアップの有効・無効の記録を消す'
+    Assert-Equal (Test-Path -LiteralPath $testKey) $false '「インストールされているアプリ」への登録を消した'
+    Assert-Equal (Test-Path -LiteralPath (Join-Path $uninstallRoot 'example.other')) $true 'ほかのアプリの登録は消さない'
     Assert-Equal (Test-Path -LiteralPath (Join-Path $notifications 'example.other')) $true 'ほかのアプリの通知の設定は消さない'
     Assert-Equal ((Get-Item -LiteralPath $approved).GetValueNames() -join ',') 'other.lnk' 'ほかのショートカットの有効・無効の記録は消さない'
-    Assert-Equal @(Remove-AndonRegistry -ClassesRoot $classes -NotificationsRoot $notifications -StartupApprovedKey $approved).Count 0 'なければ何もしない'
-    Assert-Equal @(Remove-AndonRegistry -ClassesRoot $classes -NotificationsRoot $notifications -StartupApprovedKey (Join-Path $regBase 'NoSuchKey')).Count 0 '記録の場所がなくても失敗しない'
+    Assert-Equal @(Remove-AndonRegistry -ClassesRoot $classes -NotificationsRoot $notifications -UninstallRoot $uninstallRoot -StartupApprovedKey $approved).Count 0 'なければ何もしない'
+    Assert-Equal @(Remove-AndonRegistry -ClassesRoot $classes -NotificationsRoot $notifications -UninstallRoot $uninstallRoot -StartupApprovedKey (Join-Path $regBase 'NoSuchKey')).Count 0 '記録の場所がなくても失敗しない'
 }
 finally {
     if (Test-Path -LiteralPath $regBase) { Remove-Item -LiteralPath $regBase -Recurse -Force }
@@ -531,6 +564,19 @@ try {
     Assert-Equal (Remove-AndonShortcut -Path $other) $false '別のスクリプトを起動するショートカットは消さない'
 
     Write-Host '== install.ps1: 配る zip'
+    foreach ($name in Get-AndonPayload) {
+        # 古い andon は、アップデートの zip を展開する前に、項目の名前をこの形に限って確かめる（andon.ps1 の Expand-UpdatePackage）
+        Assert-True ($name -match '^[A-Za-z0-9][A-Za-z0-9._-]*$') "配るファイルの名前は英数字と . _ - だけ: $name"
+    }
+    Assert-True ($andonText.Contains('''^[A-Za-z0-9][A-Za-z0-9._-]*$''')) 'andon.ps1 が zip の項目の名前を確かめる形は、上と同じ'
+    $cmdBytes = [IO.File]::ReadAllBytes((Join-Path $root 'install.cmd'))
+    $cmdText = [Text.Encoding]::ASCII.GetString($cmdBytes)
+    Assert-Equal @($cmdBytes | Where-Object { $_ -ge 0x80 }).Count 0 'install.cmd は ASCII だけ（cmd.exe はコンソールのコード ページで読む）'
+    Assert-True (-not [regex]::IsMatch($cmdText, "(?<!`r)`n")) 'install.cmd の改行は CRLF（LF だけだと goto の飛び先を読み違える）'
+    Assert-True ($cmdText.Contains('"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1"')) 'install.cmd は Windows PowerShell 5.1 を絶対パスで起動し、隣の install.ps1 を引用符で囲んで渡す'
+    Assert-Equal ([regex]::IsMatch($cmdText, '(?im)^\s*(rem|::).*%')) $false 'install.cmd の注釈に % を書かない（rem の行も % を展開する）'
+    $removeCalls = @([regex]::Matches((Get-Content -LiteralPath $PSCommandPath -Raw -Encoding UTF8), '(?m)^(?!\s*#).*\bRemove-AndonRegistry\s+-.*$') | ForEach-Object { $_.Value })
+    Assert-True ($removeCalls.Count -gt 0 -and @($removeCalls | Where-Object { $_ -notmatch '-UninstallRoot\s' }).Count -eq 0) 'テストは Remove-AndonRegistry に必ずテスト用の場所を渡す（本物の登録を消さない）'
     # リポジトリのファイルから、Release の workflow と同じく zip を作る
     $zip = New-AndonPackage -SourceDir $root -OutDir (Join-Path $installTmp 'out') -Version $script:AndonVersion
     Assert-Equal (Split-Path -Leaf $zip) "andon-$($script:AndonVersion).zip" 'zip の名前は andon-<版>.zip'
@@ -675,6 +721,123 @@ try {
         }
     }
     finally { $env:ANDON_TEST_EXIT = $savedExit }
+
+    function Start-TestProcess {
+        <# 入力と出力をつないだまま、ウィンドウなしでプロセスを起動する。入力を閉じないので、PowerShell の Read-Host は待つ。
+           cmd.exe の pause は、入力がパイプだと、待つかどうかが起動した側で違う（Windows PowerShell 5.1 から起動すると待たずに戻り、
+           PowerShell 7 から起動すると待つ）。ダブルクリックしたときの入力はコンソールなので待つ。
+           そのため pause は、少し待ってから Enter を送り、出力に pause の案内の末尾（日本語でも英語でも ASCII の " . . ."）があるかで見る #>
+        param([string]$FilePath, [string]$Arguments = '', [hashtable]$Environment = @{})
+        $psi = New-Object Diagnostics.ProcessStartInfo $FilePath, $Arguments
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $psi.RedirectStandardInput = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        foreach ($k in $Environment.Keys) { $psi.EnvironmentVariables[$k] = [string]$Environment[$k] }
+        $proc = [Diagnostics.Process]::Start($psi)
+        return [pscustomobject]@{
+            Process = $proc
+            Output  = $proc.StandardOutput.ReadToEndAsync()
+            Error   = $proc.StandardError.ReadToEndAsync()
+        }
+    }
+    function Stop-TestProcess {
+        <# Enter を送って入力を閉じ、終わるのを待つ。終わらなければ止める。終わったかを返す #>
+        param($Started)
+        try { $Started.Process.StandardInput.WriteLine(); $Started.Process.StandardInput.Close() } catch { }
+        $exited = $Started.Process.WaitForExit(30000)
+        if (-not $exited) { try { $Started.Process.Kill() } catch { } }
+        return $exited
+    }
+    function Get-TestOutput {
+        param($Started)
+        if (-not $Started.Output.Wait(5000)) { return '' }
+        return [string]$Started.Output.Result
+    }
+
+    Write-Host '== install.cmd: ダブルクリックの入口を実際に動かす'
+    # 偽の install.ps1 を置く。動いたら、受け取った引数の数を ran.txt に書き、ANDON_TEST_EXIT の終了コードで終わる。
+    # フォルダの名前には、cmd.exe が特別に読む文字と、Shift-JIS で 2 バイト目が \ になる文字（表・ソ・能）を入れる
+    $cmdSource = Join-Path $root 'install.cmd'
+    $fakeScript = "[IO.File]::WriteAllText((Join-Path `$PSScriptRoot 'ran.txt'), [string]`$args.Count)`r`nexit [int]`$env:ANDON_TEST_EXIT`r`n"
+    $cmdDirs = @('a b', 'a&b', '100%', 'andon-0.2.0 (1)', ([string][char]0x8868 + [char]0x30BD + [char]0x80FD),
+        ("all a&b 100% (1) ^ ! o'neil ;,= " + [char]0x8868 + [char]0x30BD + [char]0x80FD))
+    $n = 0
+    foreach ($dirName in $cmdDirs) {
+        $n++
+        $dir = Join-Path $installTmp "cmd$n\$dirName"
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        Copy-Item -LiteralPath $cmdSource -Destination $dir
+        [IO.File]::WriteAllText((Join-Path $dir 'install.ps1'), $fakeScript, (New-Object Text.UTF8Encoding($true)))
+        $t = Start-TestProcess -FilePath (Join-Path $dir 'install.cmd') -Environment @{ ANDON_TEST_EXIT = '0' }
+        try {
+            $before = $t.Process.WaitForExit(30000)
+            $exited = Stop-TestProcess $t
+            Assert-True ($before -and $exited) "成功したら閉じる: $dirName"
+            if ($exited) { Assert-Equal $t.Process.ExitCode 0 "成功したら終了コード 0: $dirName" }
+            Assert-Equal ((Get-TestOutput $t).Contains(' . . .')) $false "成功したらキーを待たない（pause を通らない）: $dirName"
+        }
+        finally { $t.Process.Dispose() }
+        $ran = Join-Path $dir 'ran.txt'
+        Assert-True (Test-Path -LiteralPath $ran) "隣の install.ps1 を実行する: $dirName"
+        if (Test-Path -LiteralPath $ran) { Assert-Equal ([IO.File]::ReadAllText($ran)) '0' "install.ps1 に引数を渡さない: $dirName" }
+    }
+
+    # 失敗したとき: install.ps1 を実行したあと、pause でキーを待つ
+    $dir = Join-Path $installTmp "cmd$n\$($cmdDirs[-1])"
+    Remove-Item -LiteralPath (Join-Path $dir 'ran.txt') -ErrorAction SilentlyContinue
+    $t = Start-TestProcess -FilePath (Join-Path $dir 'install.cmd') -Environment @{ ANDON_TEST_EXIT = '4' }
+    try {
+        $deadline = (Get-Date).AddSeconds(30)
+        while (-not (Test-Path -LiteralPath (Join-Path $dir 'ran.txt')) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 100 }
+        [void]$t.Process.WaitForExit(2000)
+        Assert-True (Stop-TestProcess $t) 'install.ps1 が失敗したときも、キーを押せば閉じる'
+        Assert-True (Test-Path -LiteralPath (Join-Path $dir 'ran.txt')) '失敗する install.ps1 も実行する'
+        Assert-True ((Get-TestOutput $t).Contains(' . . .')) 'install.ps1 が失敗したら、pause でキーを待つ'
+        Assert-Equal $t.Process.ExitCode 1 'install.ps1 が失敗したら終了コード 1'
+    }
+    finally { $t.Process.Dispose() }
+
+    # zip を展開せずに、zip の中の install.cmd だけを開いたとき（隣に install.ps1 がない）
+    $alone = Join-Path $installTmp 'cmd-alone'
+    New-Item -ItemType Directory -Path $alone -Force | Out-Null
+    Copy-Item -LiteralPath $cmdSource -Destination $alone
+    $t = Start-TestProcess -FilePath (Join-Path $alone 'install.cmd')
+    try {
+        [void]$t.Process.WaitForExit(3000)
+        Assert-True (Stop-TestProcess $t) 'install.ps1 がないときも、キーを押せば閉じる'
+        $aloneOutput = Get-TestOutput $t
+        Assert-True ($aloneOutput.Contains('install.ps1 was not found') -and $aloneOutput.Contains('Extract All')) '隣に install.ps1 がなければ、zip を展開するよう伝える'
+        Assert-True ($aloneOutput.Contains(' . . .')) '隣に install.ps1 がなければ、pause でキーを待つ'
+        Assert-Equal $t.Process.ExitCode 1 '隣に install.ps1 がなければ終了コード 1'
+    }
+    finally { $t.Process.Dispose() }
+
+    Write-Host '== install.ps1: -PauseOnError'
+    # install.ps1 だけを写したフォルダで動かす。隣に andon.ps1 がないので、実際の場所に触れる前に、失敗して終わる。
+    # 念のため、インストール先（%LOCALAPPDATA%）もテスト用のフォルダに向ける
+    $lonely = Join-Path $installTmp 'lonely'
+    New-Item -ItemType Directory -Path (Join-Path $lonely 'localappdata') -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $root 'install.ps1') -Destination $lonely
+    $ps51 = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $lonelyArgs = '-NoProfile -ExecutionPolicy Bypass -File "{0}"' -f (Join-Path $lonely 'install.ps1')
+    $lonelyEnv = @{ LOCALAPPDATA = (Join-Path $lonely 'localappdata') }
+    $t = Start-TestProcess -FilePath $ps51 -Arguments $lonelyArgs -Environment $lonelyEnv
+    try {
+        $before = $t.Process.WaitForExit(30000)
+        Assert-True ($before -and (Stop-TestProcess $t)) '-PauseOnError がなければ、失敗してもキーを待たずに閉じる'
+        if ($before) { Assert-Equal $t.Process.ExitCode 1 '失敗したら終了コード 1' }
+    }
+    finally { $t.Process.Dispose() }
+    # PowerShell の Read-Host は、入力がパイプでも、行が来るまで待つ
+    $t = Start-TestProcess -FilePath $ps51 -Arguments ($lonelyArgs + ' -PauseOnError') -Environment $lonelyEnv
+    try {
+        Assert-Equal $t.Process.WaitForExit(8000) $false '-PauseOnError を付けたら、失敗したときに Enter キーを待つ'
+        Assert-True (Stop-TestProcess $t) 'Enter キーを押せば閉じる'
+        Assert-Equal $t.Process.ExitCode 1 '-PauseOnError を付けても、失敗したら終了コード 1'
+    }
+    finally { $t.Process.Dispose() }
 }
 finally {
     if (Test-Path -LiteralPath $installTmp) { Remove-Item -LiteralPath $installTmp -Recurse -Force }

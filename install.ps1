@@ -6,11 +6,13 @@
 .DESCRIPTION
     このスクリプトと同じフォルダにある andon.ps1 を入れる。ネットワークからは何も落とさない。
     管理者の権限は要らない。ユーザーや PC の実行ポリシーは変えない（ショートカットは、andon のプロセスだけを Bypass で起動する）。
+    同じフォルダの install.cmd をダブルクリックしても、このスクリプトを実行する。
 
     1. 動いている andon を終わらせる（名前付きのイベント Local\andon-exit で合図し、mutex Local\andon が消えるのを待つ）
-    2. andon.ps1・install.ps1・andon.ico・LICENSE を置き、ダウンロードした印（Mark of the Web）を外す
+    2. 配るファイル（Get-AndonPayload）を置き、ダウンロードした印（Mark of the Web）を外す
     3. スタートメニューと、スタートアップ（ログオン時に起動）に andon のショートカットを作る
-    4. andon を起動する
+    4. Windows の「インストールされているアプリ」に andon を登録する（HKCU の Uninstall\tbshiki.andon）
+    5. andon を起動する
 
 .PARAMETER Uninstall
     andon を終わらせ、ショートカット、andon と Windows が作ったレジストリのキー、入れたファイルを消す。
@@ -18,6 +20,10 @@
 .PARAMETER NoStartup
     ログオン時に起動するショートカットを作らない（あれば消す）。
     アップデートのときにこれを付けなければ、前の状態（スタートアップのショートカットがあるかないか）を引き継ぐ。
+
+.PARAMETER PauseOnError
+    失敗したときに、理由を読めるよう、Enter キーを押すまで閉じない。
+    「インストールされているアプリ」から消すとき（登録したアンインストールのコマンド）に付ける。
 
 .EXAMPLE
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
@@ -28,7 +34,8 @@
 [CmdletBinding()]
 param(
     [switch]$Uninstall,
-    [switch]$NoStartup
+    [switch]$NoStartup,
+    [switch]$PauseOnError
 )
 
 # ---------------------------------------------------------------------------
@@ -36,8 +43,11 @@ param(
 # ---------------------------------------------------------------------------
 
 function Get-AndonPayload {
-    <# 配るファイル。Release の zip に入れるもの。入れるときは、andon.ps1 は必須、ほかはあれば置く #>
-    return @('andon.ps1', 'install.ps1', 'andon.ico', 'LICENSE')
+    <# 配るファイル。Release の zip に入れるもの。入れるときは、andon.ps1 は必須、ほかはあれば置く。
+       名前は、英数字と . _ - だけにする（古い andon は、アップデートの zip を展開する前に、項目の名前をこの形に限って確かめる）
+       - install.cmd: ダブルクリックで install.ps1 を実行する入口
+       - README.txt: zip を開いた人が読む、入れ方の説明 #>
+    return @('andon.ps1', 'install.ps1', 'install.cmd', 'README.txt', 'andon.ico', 'LICENSE')
 }
 
 function New-AndonPackage {
@@ -59,11 +69,12 @@ function New-AndonPackage {
 }
 
 function Get-AndonLayout {
-    <# 入れる場所と、ショートカットの場所 #>
+    <# 入れる場所と、ショートカットの場所と、「インストールされているアプリ」に登録するキー #>
     return [pscustomobject]@{
-        InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\andon'
-        StartMenu  = Join-Path ([Environment]::GetFolderPath('Programs')) 'andon.lnk'
-        Startup    = Join-Path ([Environment]::GetFolderPath('Startup')) 'andon.lnk'
+        InstallDir   = Join-Path $env:LOCALAPPDATA 'Programs\andon'
+        StartMenu    = Join-Path ([Environment]::GetFolderPath('Programs')) 'andon.lnk'
+        Startup      = Join-Path ([Environment]::GetFolderPath('Startup')) 'andon.lnk'
+        UninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\tbshiki.andon'
     }
 }
 
@@ -249,19 +260,56 @@ function Test-StartupDisabled {
     return [bool]($value -is [byte[]] -and $value.Length -gt 0 -and ($value[0] -band 1))
 }
 
+function Get-AndonUninstallEntry {
+    <# 「インストールされているアプリ」に書く値（名前と値の組。[int] は DWORD、ほかは文字列）。
+       アンインストールのコマンドは、cmd.exe を通さず、Windows PowerShell 5.1 を絶対パスで直接起動する。
+       - cmd.exe は、パスの %VAR% を展開する
+       - install.cmd から消すと、実行中の install.cmd を自分で消すことになる
+       パスは引用符で囲む。失敗したときは、理由を読めるよう -PauseOnError で Enter キーを待つ #>
+    param([string]$InstallDir, [string]$Version, [string]$PowerShell, [long]$SizeBytes = 0, [datetime]$Date = (Get-Date))
+    $values = [ordered]@{
+        DisplayName     = 'andon'
+        Publisher       = 'tbshiki'
+        InstallLocation = $InstallDir
+        DisplayIcon     = Join-Path $InstallDir 'andon.ico'
+        UninstallString = '"{0}" -NoProfile -ExecutionPolicy Bypass -File "{1}" -Uninstall -PauseOnError' -f $PowerShell, (Join-Path $InstallDir 'install.ps1')
+        URLInfoAbout    = 'https://github.com/tbshiki/andon'
+        InstallDate     = $Date.ToString('yyyyMMdd')
+        EstimatedSize   = [int][Math]::Ceiling($SizeBytes / 1024)   # KB
+        NoModify        = [int]1
+        NoRepair        = [int]1
+    }
+    if ($Version) { $values['DisplayVersion'] = $Version }
+    return $values
+}
+
+function Set-AndonUninstallEntry {
+    <# 「インストールされているアプリ」に andon を登録する。あれば書き直す（入れるたびに書き、バージョンをそろえる） #>
+    param([string]$Key, [System.Collections.IDictionary]$Values)
+    if (-not (Test-Path -LiteralPath $Key)) { New-Item -Path $Key -Force | Out-Null }
+    foreach ($name in $Values.Keys) {
+        $value = $Values[$name]
+        $type = 'String'
+        if ($value -is [int]) { $type = 'DWord' }
+        New-ItemProperty -LiteralPath $Key -Name $name -PropertyType $type -Value $value -Force | Out-Null
+    }
+}
+
 function Remove-AndonRegistry {
     <# andon と Windows が作ったレジストリのキーと値を消す。消したものを返す。
        - アプリ ID の表示名（andon が起動のたびに書く）と、通知の設定（最初の通知で Windows が作る）。
          表示名を登録できなかったときに andon が使う ID（andon）の通知の設定も消す
+       - 「インストールされているアプリ」への登録（install.ps1 が入れるたびに書く）
        - スタートアップのショートカットの有効・無効（Windows がショートカットの名前 andon.lnk で記録する。
          タスク マネージャーの「スタートアップ アプリ」で切り替えるもの）。残すと、入れ直したときに前の状態を引き継ぐ #>
     param(
         [string]$ClassesRoot = 'HKCU:\Software\Classes\AppUserModelId',
         [string]$NotificationsRoot = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings',
+        [string]$UninstallRoot = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
         [string]$StartupApprovedKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder'
     )
     $removed = @()
-    foreach ($key in @((Join-Path $ClassesRoot 'tbshiki.andon'), (Join-Path $NotificationsRoot 'tbshiki.andon'), (Join-Path $NotificationsRoot 'andon'))) {
+    foreach ($key in @((Join-Path $ClassesRoot 'tbshiki.andon'), (Join-Path $NotificationsRoot 'tbshiki.andon'), (Join-Path $NotificationsRoot 'andon'), (Join-Path $UninstallRoot 'tbshiki.andon'))) {
         if (Test-Path -LiteralPath $key) {
             Remove-Item -LiteralPath $key -Recurse -Force
             $removed += $key
@@ -281,11 +329,18 @@ if ($MyInvocation.InvocationName -eq '.') { return }
 # 実行
 # ---------------------------------------------------------------------------
 
+function Exit-Install {
+    <# 終了コードを返して終わる。-PauseOnError を付けたときは、失敗したら、理由を読めるよう Enter キーを押すまで閉じない #>
+    param([int]$Code)
+    if ($Code -ne 0 -and $PauseOnError) { [void](Read-Host 'Enter キーで閉じます') }
+    exit $Code
+}
+
 # 署名のないスクリプトが Constrained Language Mode で動く PC（App Control など）では、andon は Add-Type と
 # Windows Forms を使えないので動かない。入れても動かないので、ここで止める
 if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') {
     Write-Host 'この PC では PowerShell が制限された言語モード（Constrained Language Mode）で動くため、andon は動きません。' -ForegroundColor Red
-    exit 1
+    Exit-Install 1
 }
 
 $ErrorActionPreference = 'Stop'
@@ -329,7 +384,7 @@ try {
     $notStopped = 'andon を終わらせられませんでした。トレイのアイコンを右クリックして「終了」を選んでから、もう一度実行してください。'
 
     if ($Uninstall) {
-        if (-not (Stop-RunningAndon)) { Write-Host $notStopped -ForegroundColor Red; exit 1 }
+        if (-not (Stop-RunningAndon)) { Write-Host $notStopped -ForegroundColor Red; Exit-Install 1 }
         foreach ($lnk in @($layout.StartMenu, $layout.Startup)) {
             if (Remove-AndonShortcut -Path $lnk) { Write-Host "消しました: $lnk" }
         }
@@ -348,13 +403,13 @@ try {
             }
         }
         Write-Host 'andon を消しました。'
-        exit 0
+        Exit-Install 0
     }
 
     $source = $PSScriptRoot
     if (-not $source -or -not (Test-Path -LiteralPath (Join-Path $source 'andon.ps1') -PathType Leaf)) {
         Write-Host 'andon.ps1 が見つかりません。install.ps1 は、andon.ps1 と同じフォルダに置いたまま、ファイルとして実行してください。' -ForegroundColor Red
-        exit 1
+        Exit-Install 1
     }
     $version = Get-AndonVersion -Path (Join-Path $source 'andon.ps1')
 
@@ -368,13 +423,13 @@ try {
     catch { }   # 調べられなければ、起動できるものとして進める
     if (-not (Test-ExecutionPolicyAllowed -MachinePolicy $machinePolicy -UserPolicy $userPolicy)) {
         Write-Host "グループ ポリシーで実行ポリシーが決められているため（MachinePolicy: $machinePolicy、UserPolicy: $userPolicy）、署名のない andon は起動できません。" -ForegroundColor Red
-        exit 1
+        Exit-Install 1
     }
 
     # 起動に使うものは、ショートカットを作る前に確かめる
     $launch = Get-AndonLaunch -InstallDir $layout.InstallDir
     foreach ($required in @($launch.FilePath, $launch.PowerShell)) {
-        if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { Write-Host "見つかりません: $required" -ForegroundColor Red; exit 1 }
+        if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { Write-Host "見つかりません: $required" -ForegroundColor Red; Exit-Install 1 }
     }
     # なくても入れられる（後から入れればよい）。andon は、起動したときに見つからなければメッセージを出して終わる
     if (-not (Get-Command claude -CommandType Application -ErrorAction SilentlyContinue)) {
@@ -393,12 +448,23 @@ try {
     $launch = Get-AndonLaunch -InstallDir $layout.InstallDir -ExtraArguments (Get-ExtraArguments -Arguments $previous)
     $startupAction = Get-StartupAction -NoStartup $NoStartup.IsPresent -IsUpdate $isUpdate -Exists (Test-AndonShortcut -Path $layout.Startup)
 
-    if (-not (Stop-RunningAndon)) { Write-Host $notStopped -ForegroundColor Red; exit 1 }
-    [void](Copy-AndonFiles -SourceDir $source -InstallDir $layout.InstallDir)
+    if (-not (Stop-RunningAndon)) { Write-Host $notStopped -ForegroundColor Red; Exit-Install 1 }
+    $placed = @(Copy-AndonFiles -SourceDir $source -InstallDir $layout.InstallDir)
     New-AndonShortcut -Path $layout.StartMenu -Launch $launch
     switch ($startupAction) {
         'create' { New-AndonShortcut -Path $layout.Startup -Launch $launch }
         'remove' { [void](Remove-AndonShortcut -Path $layout.Startup) }
+    }
+
+    # 「インストールされているアプリ」に登録する。登録できなくても andon は動くので、止めずに知らせる
+    try {
+        $size = 0
+        foreach ($file in $placed) { $size += (Get-Item -LiteralPath $file).Length }
+        $entry = Get-AndonUninstallEntry -InstallDir $layout.InstallDir -Version $version -PowerShell $launch.PowerShell -SizeBytes $size
+        Set-AndonUninstallEntry -Key $layout.UninstallKey -Values $entry
+    }
+    catch {
+        Write-Host ('注意: 「インストールされているアプリ」に登録できませんでした: ' + $_.Exception.Message) -ForegroundColor Yellow
     }
 
     # 手で置いた別のショートカット（clone を起動するものなど）が残っていると、どちらが起動するか決まらない
@@ -420,10 +486,11 @@ try {
         if (Test-StartupDisabled) { Write-Host 'スタートアップは、タスク マネージャーで無効にしてあるので、ログオンしたときには起動しません。' }
         else { Write-Host 'ログオンしたときにも起動します（スタートアップ）。' }
     }
-    Write-Host ('消すときは: powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{0}" -Uninstall' -f (Join-Path $layout.InstallDir 'install.ps1'))
-    exit 0
+    Write-Host '消すときは、Windows の「設定」→「アプリ」→「インストールされているアプリ」で andon を選びます。'
+    Write-Host ('PowerShell から消すときは: powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{0}" -Uninstall' -f (Join-Path $layout.InstallDir 'install.ps1'))
+    Exit-Install 0
 }
 catch {
     Write-Host ('失敗しました: ' + $_.Exception.Message) -ForegroundColor Red
-    exit 1
+    Exit-Install 1
 }
