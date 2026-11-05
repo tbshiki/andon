@@ -66,16 +66,18 @@ jobs:
           $zip = New-AndonPackage -SourceDir . -OutDir $env:RUNNER_TEMP -Version $env:VERSION
           Get-FileHash -Algorithm SHA256 -LiteralPath $zip | Format-List Algorithm, Hash, Path
           $notes = @'
-          ## インストールと更新
+          ## 更新
+
+          andon（0.1.1 から）が動いていれば、andon が新しい版を知らせます。通知をクリックするか、トレイのメニューの「更新（v{version}）」を選び、「更新する」を選ぶと入れ替わります。ここから落とす必要はありません。
+
+          ## インストール（初めて入れるとき、0.1.0 から上げるとき）
 
           1. 下の Assets から `andon-{version}.zip` を落として、展開します。
-          2. PowerShell で次を実行します。更新も同じ手順です。
+          2. PowerShell で次を実行します。
 
           ```powershell
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<展開したフォルダ>\install.ps1"
           ```
-
-          andon のトレイのメニューに「更新（v{version}）」が出ていれば、そこからも入れられます。
 
           アンインストールと、動かないときのことは [README](https://github.com/tbshiki/andon/blob/v{version}/README.md#インストール) にあります。
 
