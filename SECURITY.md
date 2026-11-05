@@ -25,8 +25,10 @@
 - セッションの作業フォルダとその周辺の `*.code-workspace` を読み、開く対象を VS Code（`Code.exe`）に渡す
 - 通知の送り元を `andon` と表示させるため、`HKCU\Software\Classes\AppUserModelId\tbshiki.andon` に表示名を書く
 - 名前付きのイベント `Local\andon-exit` の合図を受けたら終わる（同じ Windows のセッションのプロセスなら、andon を終わらせられる）
+- 起動して少し後と、その後 1 日 1 回、`https://api.github.com/repos/tbshiki/andon/releases/latest` を取得して、新しい版があるかを確かめる。送るのは普通の HTTP の要求（User-Agent は `andon/<版>`）だけで、セッションやファイルの情報は送らない。`-NoUpdateCheck` を付けたときと、`andon.ps1` の隣に `.git` があるときは確かめない
+- トレイの「更新」を選んだときだけ、その版の `andon-<版>.zip` を、このリポジトリの Release から落とす。使うのは、公開済みで immutable の Release だけ。zip が、Release が示す sha256 と同じかを確かめてから一時フォルダ（`%TEMP%\andon-update-*`）に展開し、新しい版の `install.ps1` を実行するコンソールを開いて、andon は終わる
 
-andon 自身はネットワークに通信せず、認証情報も読みません。
+andon が通信するのは、上の GitHub だけです。GitHub にはログインせずに問い合わせ、認証情報は読みません。
 
 `install.ps1` が行うのは次のことだけです。ネットワークには通信しません。
 

@@ -297,6 +297,76 @@ Assert-Equal (Get-AndonVersion -Path (Join-Path $root 'andon.ps1')) $script:Ando
 Assert-Equal (Get-AndonVersion -Path (Join-Path $root 'no-such-file.ps1')) $null '読めなければ $null'
 
 # ---------------------------------------------------------------------------
+Write-Host '== 更新の確認: 版を比べる（Test-NewerVersion）'
+Assert-True (Test-NewerVersion -Version '0.1.1' -Current '0.1.0') 'PATCH が上がれば新しい'
+Assert-True (Test-NewerVersion -Version '0.2.0' -Current '0.1.9') 'MINOR が上がれば新しい'
+Assert-True (Test-NewerVersion -Version '1.0.0' -Current '0.9.9') 'MAJOR が上がれば新しい'
+Assert-True (Test-NewerVersion -Version '0.1.10' -Current '0.1.9') '文字ではなく数として比べる'
+Assert-Equal (Test-NewerVersion -Version '0.1.0' -Current '0.1.0') $false '同じ版は新しくない'
+Assert-Equal (Test-NewerVersion -Version '0.0.9' -Current '0.1.0') $false '古い版は新しくない'
+Assert-Equal (Test-NewerVersion -Version 'v0.2.0' -Current '0.1.0') $false 'v の付いた形は扱わない（tag の v を外してから比べる）'
+Assert-Equal (Test-NewerVersion -Version '0.2' -Current '0.1.0') $false 'MAJOR.MINOR.PATCH でなければ新しくない'
+Assert-Equal (Test-NewerVersion -Version '99999999999.0.0' -Current '0.1.0') $false '版として読めない大きな数は新しくない'
+
+Write-Host '== 更新の確認: Release を読む（Get-UpdateInfo）'
+function New-Release {
+    <# GitHub の releases/latest の応答と同じ形（使う項目だけ）を ConvertFrom-Json して返す。値は JSON のまま渡す #>
+    param([string]$Tag = 'v0.2.0', [string]$Draft = 'false', [string]$Prerelease = 'false', [string]$Immutable = 'true',
+        [string]$AssetName, [string]$Url, [string]$Digest = ('"sha256:' + ('AB' * 32) + '"'))
+    $version = $Tag.TrimStart('v')
+    if (-not $AssetName) { $AssetName = "andon-$version.zip" }
+    if (-not $Url) { $Url = "https://github.com/tbshiki/andon/releases/download/$Tag/$AssetName" }
+    return ConvertFrom-Json -InputObject @"
+{
+  "html_url": "https://github.com/tbshiki/andon/releases/tag/$Tag",
+  "tag_name": "$Tag",
+  "name": "andon $version",
+  "draft": $Draft,
+  "immutable": $Immutable,
+  "prerelease": $Prerelease,
+  "assets": [
+    { "name": "notes.txt", "digest": "sha256:$('0' * 64)", "browser_download_url": "https://github.com/tbshiki/andon/releases/download/$Tag/notes.txt" },
+    { "name": "$AssetName", "state": "uploaded", "size": 133847, "digest": $Digest, "browser_download_url": "$Url" }
+  ]
+}
+"@
+}
+$info = Get-UpdateInfo -Release (New-Release) -CurrentVersion '0.1.0'
+Assert-Equal $info.Version '0.2.0' '新しい版を見つける'
+Assert-Equal $info.ZipUrl 'https://github.com/tbshiki/andon/releases/download/v0.2.0/andon-0.2.0.zip' 'zip を落とす場所'
+Assert-Equal $info.Sha256 ('ab' * 32) 'digest の sha256（小文字にそろえる）'
+Assert-Equal $info.PageUrl 'https://github.com/tbshiki/andon/releases/tag/v0.2.0' 'その版の Release のページ'
+Assert-Equal (Get-UpdateInfo -Release (New-Release) -CurrentVersion '0.2.0') $null '入っている版と同じなら $null'
+Assert-Equal (Get-UpdateInfo -Release (New-Release) -CurrentVersion '0.3.0') $null '入っている版より古ければ $null'
+Assert-Equal (Get-UpdateInfo -Release (New-Release -Immutable 'false') -CurrentVersion '0.1.0') $null 'immutable でない Release は使わない'
+Assert-Equal (Get-UpdateInfo -Release (New-Release -Immutable 'null') -CurrentVersion '0.1.0') $null 'immutable か分からない Release は使わない'
+Assert-Equal (Get-UpdateInfo -Release (New-Release -Draft 'true') -CurrentVersion '0.1.0') $null '下書きは使わない'
+Assert-Equal (Get-UpdateInfo -Release (New-Release -Prerelease 'true') -CurrentVersion '0.1.0') $null 'pre-release は使わない'
+Assert-Equal (Get-UpdateInfo -Release (New-Release -Tag 'andon-0.2.0') -CurrentVersion '0.1.0') $null 'tag が v<版> の形でなければ使わない'
+Assert-Equal (Get-UpdateInfo -Release (New-Release -Tag 'v0.2') -CurrentVersion '0.1.0') $null 'tag の版が MAJOR.MINOR.PATCH でなければ使わない'
+Assert-Equal (Get-UpdateInfo -Release (New-Release -AssetName 'andon.zip') -CurrentVersion '0.1.0') $null 'andon-<版>.zip がなければ使わない'
+Assert-Equal (Get-UpdateInfo -Release (New-Release -Url 'https://github.com/someone/andon/releases/download/v0.2.0/andon-0.2.0.zip') -CurrentVersion '0.1.0') $null 'ほかのリポジトリから落とす zip は使わない'
+Assert-Equal (Get-UpdateInfo -Release (New-Release -Url 'http://github.com/tbshiki/andon/releases/download/v0.2.0/andon-0.2.0.zip') -CurrentVersion '0.1.0') $null 'https でなければ使わない'
+Assert-Equal (Get-UpdateInfo -Release (New-Release -Digest 'null') -CurrentVersion '0.1.0') $null 'digest がなければ使わない'
+Assert-Equal (Get-UpdateInfo -Release (New-Release -Digest ('"sha1:' + ('a' * 40) + '"')) -CurrentVersion '0.1.0') $null 'sha256 でない digest は使わない'
+Assert-Equal (Get-UpdateInfo -Release $null -CurrentVersion '0.1.0') $null '応答がなければ $null'
+
+Write-Host '== 更新の確認: 新しい版の install.ps1 を起動するコマンド（Get-UpdateCommand）'
+$updateCmd = Get-UpdateCommand -InstallScript "C:\Users\o'neil\AppData\Local\Temp\andon-update-0.2.0-x\install.ps1" -SystemRoot 'C:\Windows'
+Assert-Equal $updateCmd.FilePath 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' 'Windows PowerShell 5.1 で実行する'
+Assert-True ($updateCmd.Arguments.StartsWith('-NoProfile -ExecutionPolicy Bypass -EncodedCommand ')) '実行ポリシーはそのプロセスだけ Bypass にし、スクリプトは -EncodedCommand で渡す'
+Assert-Equal ($updateCmd.Arguments -match '-WindowStyle') $false 'コンソールを隠さない（install.ps1 の結果を読めるように）'
+$decoded = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String(($updateCmd.Arguments -split ' ')[-1]))
+Assert-True ($decoded.Contains("& 'C:\Users\o''neil\AppData\Local\Temp\andon-update-0.2.0-x\install.ps1';")) 'パスの単一引用符を重ね、引数を付けずに install.ps1 を実行する'
+$curly = Get-UpdateCommand -InstallScript ('C:\x\a' + [char]0x2019 + 'b\install.ps1')
+$decoded = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String(($curly.Arguments -split ' ')[-1]))
+Assert-True ($decoded.Contains("& 'C:\x\a" + [char]0x2019 + [char]0x2019 + "b\install.ps1'")) '単一引用符として扱われる U+2019 も重ねる'
+
+Write-Host '== 更新の確認: -NoUpdateCheck'
+Assert-True ((Get-Command (Join-Path $root 'andon.ps1')).Parameters.ContainsKey('NoUpdateCheck')) 'andon.ps1 は -NoUpdateCheck を受け取る'
+Assert-Equal (Get-ExtraArguments -Arguments ((Get-AndonLaunch -InstallDir 'C:\Apps\andon' -SystemRoot 'C:\Windows').Arguments + ' -NoUpdateCheck')) '-NoUpdateCheck' 'ショートカットに付けた -NoUpdateCheck は、更新しても引き継ぐ'
+
+# ---------------------------------------------------------------------------
 Write-Host '== install.ps1: 実行ポリシー'
 Assert-True (Test-ExecutionPolicyAllowed -MachinePolicy 'Undefined' -UserPolicy 'Undefined') 'グループ ポリシーがなければ起動できる（-ExecutionPolicy Bypass が効く）'
 Assert-True (Test-ExecutionPolicyAllowed -MachinePolicy 'RemoteSigned' -UserPolicy 'Undefined') 'RemoteSigned なら、印を外したファイルは動く'
@@ -482,6 +552,124 @@ try {
     New-Item -ItemType Directory -Path $partial -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $root 'andon.ps1') -Destination $partial
     Assert-Throws { New-AndonPackage -SourceDir $partial -OutDir (Join-Path $installTmp 'out') -Version $script:AndonVersion } '配るファイルが欠けていれば例外にする（欠けた zip を配らない）'
+
+    Write-Host '== 更新の確認: 確かめるか（Test-UpdateCheckEnabled）'
+    $plain = Join-Path $installTmp 'plain'
+    $cloned = Join-Path $installTmp 'cloned'
+    $worktree = Join-Path $installTmp 'worktree'
+    foreach ($d in @($plain, (Join-Path $cloned '.git'), $worktree)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
+    [IO.File]::WriteAllText((Join-Path $worktree '.git'), 'gitdir: C:/work/repo/.git/worktrees/x')
+    Assert-True (Test-UpdateCheckEnabled -ScriptDir $plain -Disabled $false) 'インストールした andon は確かめる'
+    Assert-Equal (Test-UpdateCheckEnabled -ScriptDir $plain -Disabled $true) $false '-NoUpdateCheck を付けたら確かめない'
+    Assert-Equal (Test-UpdateCheckEnabled -ScriptDir $cloned -Disabled $false) $false 'andon.ps1 の隣に .git があれば（clone で開発しているとき）確かめない'
+    Assert-Equal (Test-UpdateCheckEnabled -ScriptDir $worktree -Disabled $false) $false 'worktree（.git がファイル）でも確かめない'
+    Assert-Equal (Test-UpdateCheckEnabled -ScriptDir '' -Disabled $false) $false 'andon.ps1 の場所が分からなければ確かめない'
+
+    Write-Host '== 更新の確認: 展開するフォルダ（New-UpdateWorkDir）'
+    $tempRoot = Join-Path $installTmp 'temp'
+    foreach ($d in @('andon-update-0.1.0-old\sub', 'other')) { New-Item -ItemType Directory -Path (Join-Path $tempRoot $d) -Force | Out-Null }
+    $work = New-UpdateWorkDir -Version '0.2.0' -TempDir $tempRoot
+    Assert-True (Test-Path -LiteralPath $work -PathType Container) '展開するフォルダを作る'
+    Assert-True ((Split-Path -Leaf $work) -like 'andon-update-0.2.0-*') 'フォルダの名前に版を入れる'
+    Assert-Equal (Test-Path -LiteralPath (Join-Path $tempRoot 'andon-update-0.1.0-old')) $false '前の更新で残ったフォルダを消す'
+    Assert-True (Test-Path -LiteralPath (Join-Path $tempRoot 'other')) 'ほかのフォルダは消さない'
+
+    Write-Host '== 更新の確認: 落とした zip を確かめて展開する（Expand-UpdatePackage）'
+    function Get-TestSha256 {
+        param([byte[]]$Bytes)
+        $h = [Security.Cryptography.SHA256]::Create()
+        try { return -join ($h.ComputeHash($Bytes) | ForEach-Object { $_.ToString('x2') }) }
+        finally { $h.Dispose() }
+    }
+    function New-TestZip {
+        <# 名前と中身を並べた zip をメモリに作る。名前はそのまま項目の名前になる（フォルダやパスを含む項目も作れる） #>
+        param([System.Collections.IDictionary]$Files)
+        Add-Type -AssemblyName System.IO.Compression
+        $ms = New-Object IO.MemoryStream
+        $archive = New-Object IO.Compression.ZipArchive($ms, [IO.Compression.ZipArchiveMode]::Create, $true)
+        try {
+            foreach ($name in $Files.Keys) {
+                $writer = New-Object IO.StreamWriter($archive.CreateEntry($name).Open())
+                try { $writer.Write([string]$Files[$name]) } finally { $writer.Dispose() }
+            }
+        }
+        finally { $archive.Dispose() }
+        return , $ms.ToArray()
+    }
+    # Release の workflow と同じく作った zip（上の「配る zip」）
+    $released = [IO.File]::ReadAllBytes($zip)
+    $installer = Expand-UpdatePackage -Bytes $released -Sha256 (Get-TestSha256 $released).ToUpperInvariant() -WorkDir (Join-Path $work 'released')
+    Assert-PathEqual $installer (Join-Path $work 'released\install.ps1') '展開した install.ps1 のパスを返す'
+    Assert-Equal ((@(Get-ChildItem -LiteralPath (Join-Path $work 'released') -Name) | Sort-Object) -join ',') ((Get-AndonPayload | Sort-Object) -join ',') '配る zip を展開すると、配るファイルがそろう'
+    Assert-True ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $work 'released\andon.ps1'))) -ceq [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $root 'andon.ps1')))) '展開した andon.ps1 は元と同じ（BOM と CRLF を保つ）'
+
+    $more = New-TestZip ([ordered]@{ 'andon.ps1' = 'a'; 'install.ps1' = 'i'; 'new-file.txt' = 'n' })
+    [void](Expand-UpdatePackage -Bytes $more -Sha256 (Get-TestSha256 $more) -WorkDir (Join-Path $work 'more'))
+    Assert-True (Test-Path -LiteralPath (Join-Path $work 'more\new-file.txt')) '配るファイルを足した版の zip も展開できる'
+
+    $plainZip = New-TestZip ([ordered]@{ 'andon.ps1' = 'a'; 'install.ps1' = 'i' })
+    Assert-Throws { Expand-UpdatePackage -Bytes $plainZip -Sha256 ('0' * 64) -WorkDir (Join-Path $work 'x1') } 'sha256 が Release の値と違えば例外にする'
+    Assert-Throws { Expand-UpdatePackage -Bytes $plainZip -Sha256 '' -WorkDir (Join-Path $work 'x2') } 'sha256 が分からなければ例外にする'
+    Assert-Equal (Test-Path -LiteralPath (Join-Path $work 'x1')) $false 'sha256 が違えば何も展開しない'
+    Assert-Throws { Expand-UpdatePackage -Bytes $plainZip -Sha256 (Get-TestSha256 $plainZip) -WorkDir (Join-Path $work 'x3') -MaxBytes 10 } '大きすぎる zip は例外にする'
+    $notZip = [Text.Encoding]::UTF8.GetBytes('not a zip')
+    Assert-Throws { Expand-UpdatePackage -Bytes $notZip -Sha256 (Get-TestSha256 $notZip) -WorkDir (Join-Path $work 'x4') } 'zip でなければ例外にする'
+    Assert-Throws { Expand-UpdatePackage -Bytes ([byte[]]@()) -Sha256 ('0' * 64) -WorkDir (Join-Path $work 'x5') } '空なら例外にする'
+    # ハッシュの式は大文字小文字を区別しないので、同じ名前を 2 つ並べる zip は別に作る
+    $sameName = New-Object System.Collections.Specialized.OrderedDictionary ([StringComparer]::Ordinal)
+    $sameName['andon.ps1'] = 'a'; $sameName['install.ps1'] = 'i'; $sameName['ANDON.PS1'] = 'b'
+    $cases = [ordered]@{
+        'install.ps1 がなければ例外にする'                        = [ordered]@{ 'andon.ps1' = 'a' }
+        'andon.ps1 がなければ例外にする'                          = [ordered]@{ 'install.ps1' = 'i' }
+        'フォルダの中の項目は例外にする'                          = [ordered]@{ 'andon.ps1' = 'a'; 'install.ps1' = 'i'; 'sub/x.txt' = 'x' }
+        '上のフォルダに書かせる項目（..）は例外にする'            = [ordered]@{ 'andon.ps1' = 'a'; 'install.ps1' = 'i'; '../evil.ps1' = 'x' }
+        '\ で区切った項目は例外にする'                            = [ordered]@{ 'andon.ps1' = 'a'; 'install.ps1' = 'i'; '..\evil.ps1' = 'x' }
+        'フォルダの項目は例外にする'                              = [ordered]@{ 'andon.ps1' = 'a'; 'install.ps1' = 'i'; 'docs/' = '' }
+        '大文字小文字だけが違う同じ名前の項目は例外にする'        = $sameName
+    }
+    $n = 0
+    foreach ($case in $cases.Keys) {
+        $n++
+        $bytes = New-TestZip $cases[$case]
+        Assert-Throws { Expand-UpdatePackage -Bytes $bytes -Sha256 (Get-TestSha256 $bytes) -WorkDir (Join-Path $work "case$n") } $case
+    }
+    Assert-Equal (Test-Path -LiteralPath (Join-Path $work 'evil.ps1')) $false '上のフォルダには何も書かない'
+
+    Write-Host '== 更新の確認: 起動するコマンドを実際に動かす'
+    # 空白と、単一引用符として扱われる ' と U+2019 を含むフォルダに、終了コードを選べる偽の install.ps1 を置く
+    $fakeDir = Join-Path $installTmp ("o'neil " + [char]0x2019 + 'dir')
+    New-Item -ItemType Directory -Path $fakeDir -Force | Out-Null
+    $fakeInstaller = Join-Path $fakeDir 'install.ps1'
+    [IO.File]::WriteAllText($fakeInstaller, "[IO.File]::WriteAllText((Join-Path `$PSScriptRoot 'ran.txt'), [string]`$args.Count)`r`nexit [int]`$env:ANDON_TEST_EXIT`r`n", (New-Object Text.UTF8Encoding($true)))
+    $savedExit = $env:ANDON_TEST_EXIT
+    try {
+        foreach ($code in @(0, 4)) {
+            Remove-Item -LiteralPath (Join-Path $fakeDir 'ran.txt') -ErrorAction SilentlyContinue
+            $env:ANDON_TEST_EXIT = [string]$code
+            $c = Get-UpdateCommand -InstallScript $fakeInstaller
+            $psi = New-Object Diagnostics.ProcessStartInfo $c.FilePath, $c.Arguments
+            $psi.UseShellExecute = $false
+            $psi.CreateNoWindow = $true
+            # 失敗のときは Enter キーを待つので、入力を閉じて先へ進ませる
+            $psi.RedirectStandardInput = $true
+            # 出力を渡さないと、PowerShell が進行状況を XML で書き、テストの表示に混ざる
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $proc = [Diagnostics.Process]::Start($psi)
+            try {
+                $proc.StandardInput.Close()
+                [void]$proc.StandardOutput.ReadToEndAsync()
+                [void]$proc.StandardError.ReadToEndAsync()
+                $exited = $proc.WaitForExit(30000)
+                if (-not $exited) { $proc.Kill() }
+                Assert-True $exited "終了コード $code の install.ps1 のあと、コンソールは閉じる"
+                Assert-Equal $proc.ExitCode $code "install.ps1 の終了コード $code を返す"
+            }
+            finally { $proc.Dispose() }
+            Assert-Equal ([IO.File]::ReadAllText((Join-Path $fakeDir 'ran.txt'))) '0' "引用符を含むパスの install.ps1 を、引数なしで実行する（終了コード $code）"
+        }
+    }
+    finally { $env:ANDON_TEST_EXIT = $savedExit }
 }
 finally {
     if (Test-Path -LiteralPath $installTmp) { Remove-Item -LiteralPath $installTmp -Recurse -Force }
