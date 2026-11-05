@@ -519,10 +519,9 @@ function Get-UpdatePrompt {
     <# 更新するかを尋ねる画面の文。通知のクリックとトレイの「更新」の両方で、同じ画面を出す #>
     param([string]$Version, [string]$CurrentVersion)
     return (@(
-            "andon v$Version があります（今の版は v$CurrentVersion）。"
+            "andon v$Version があります（今のバージョンは v$CurrentVersion）。"
             ''
-            '更新すると、andon を終わらせて新しい版を入れ、起動し直します。'
-            '入れる様子は、別のウィンドウに表示します。'
+            '更新すると、andon を終わらせて新しいバージョンを入れ、起動し直します。'
         ) -join "`r`n")
 }
 
@@ -1003,7 +1002,7 @@ function Show-UpdateAvailable {
         $script:NotifiedUpdate = $Info.Version
         $script:NoticeKey = $null
         $script:NoticeUpdate = $true
-        $tray.ShowBalloonTip(10000, 'andon の新しい版があります',
+        $tray.ShowBalloonTip(10000, 'andon の新しいバージョンがあります',
             ('クリックすると、v{0} に更新するかを選べます。あとで更新するときは、トレイのメニューの「更新（v{0}）」を選びます。' -f $Info.Version),
             [System.Windows.Forms.ToolTipIcon]::None)
     }

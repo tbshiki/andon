@@ -352,8 +352,8 @@ Assert-Equal (Get-UpdateInfo -Release $null -CurrentVersion '0.1.0') $null '応�
 
 Write-Host '== 更新の確認: 更新するかを尋ねる画面の文（Get-UpdatePrompt）'
 $prompt = Get-UpdatePrompt -Version '0.2.0' -CurrentVersion '0.1.1'
-Assert-True ($prompt.StartsWith('andon v0.2.0 があります（今の版は v0.1.1）。')) '新しい版と今の版を出す'
-Assert-True ($prompt.Contains('andon を終わらせて新しい版を入れ、起動し直します。')) '更新すると何が起きるかを書く'
+Assert-True ($prompt.StartsWith('andon v0.2.0 があります（今のバージョンは v0.1.1）。')) '新しい版と今の版を出す'
+Assert-True ($prompt.EndsWith('andon を終わらせて新しいバージョンを入れ、起動し直します。')) '更新すると何が起きるかを書く'
 
 Write-Host '== 更新の確認: 新しい版の install.ps1 を起動するコマンド（Get-UpdateCommand）'
 $updateCmd = Get-UpdateCommand -InstallScript "C:\Users\o'neil\AppData\Local\Temp\andon-update-0.2.0-x\install.ps1" -SystemRoot 'C:\Windows'
