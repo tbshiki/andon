@@ -26,8 +26,8 @@
     - install.ps1 が更新や削除の前に終わらせられるよう、名前付きのイベント（Local\andon-exit）の合図を受けたら終わる。
     - 起動して少し後と、その後 1 日 1 回、GitHub の Release（releases/latest）に新しい版があるかを確かめる。
       あれば、トレイのメニューに「更新（v<版>）」を出し、起動ごとに 1 回だけ通知する。自動では入れ替えない。
-      「更新」を選んだときだけ zip を落とし、Release が示す sha256 と照らして展開し、新しい版の install.ps1 を
-      見えるコンソールで起動して終わる。-NoUpdateCheck を付けたときと、andon.ps1 の隣に .git があるとき
+      通知のクリックとトレイの「更新」は、どちらも更新するかを尋ねる画面を出す。「更新する」を選んだときだけ
+      zip を落とし、Release が示す sha256 と照らして展開し、新しい版の install.ps1 を見えるコンソールで起動して終わる。-NoUpdateCheck を付けたときと、andon.ps1 の隣に .git があるとき
       （clone で開発しているとき）は確かめない。
 
 .PARAMETER FallbackSec
@@ -512,8 +512,18 @@ function Get-UpdateInfo {
         Version = $version
         ZipUrl  = $url
         Sha256  = $d.Groups[1].Value.ToLowerInvariant()
-        PageUrl = "https://github.com/$Repository/releases/tag/$tag"
     }
+}
+
+function Get-UpdatePrompt {
+    <# 更新するかを尋ねる画面の文。通知のクリックとトレイの「更新」の両方で、同じ画面を出す #>
+    param([string]$Version, [string]$CurrentVersion)
+    return (@(
+            "andon v$Version があります（今の版は v$CurrentVersion）。"
+            ''
+            '更新すると、andon を終わらせて新しい版を入れ、起動し直します。'
+            '入れる様子は、別のウィンドウに表示します。'
+        ) -join "`r`n")
 }
 
 function Test-UpdateCheckEnabled {
@@ -846,7 +856,7 @@ $miExit = $trayMenu.Items.Add('終了')
 $tray.ContextMenuStrip = $trayMenu
 $script:Exiting = $false
 $script:NoticeKey = $null
-$script:NoticeUpdate = $false   # 最後に出した通知が、新しい版の知らせか（クリックで Release のページを開く）
+$script:NoticeUpdate = $false   # 最後に出した通知が、新しい版の知らせか（クリックで、更新するかを尋ねる）
 
 $lv = New-Object System.Windows.Forms.ListView
 $lv.Dock = 'Fill'
@@ -994,9 +1004,72 @@ function Show-UpdateAvailable {
         $script:NoticeKey = $null
         $script:NoticeUpdate = $true
         $tray.ShowBalloonTip(10000, 'andon の新しい版があります',
-            ('v{0} を入れるには、トレイのアイコンを右クリックして「更新（v{0}）」を選びます。' -f $Info.Version),
+            ('クリックすると、v{0} に更新するかを選べます。あとで更新するときは、トレイのメニューの「更新（v{0}）」を選びます。' -f $Info.Version),
             [System.Windows.Forms.ToolTipIcon]::None)
     }
+}
+
+function Confirm-AndonUpdate {
+    <# 新しい版に更新するかを尋ねる。「更新する」なら $true。Enter で「更新する」、Esc で「しない」 #>
+    param($Info)
+    $dlg = New-Object System.Windows.Forms.Form
+    try {
+        $dlg.Text = 'andon の更新'
+        $dlg.Font = $form.Font
+        $dlg.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+        $dlg.MaximizeBox = $false
+        $dlg.MinimizeBox = $false
+        $dlg.ShowInTaskbar = $true   # andon のウィンドウを隠していても、見失わないように
+        $dlg.TopMost = $true
+        $dlg.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
+        $dlg.AutoSize = $true
+        $dlg.AutoSizeMode = [System.Windows.Forms.AutoSizeMode]::GrowAndShrink
+        $dlg.Padding = New-Object System.Windows.Forms.Padding([int](12 * $scale))
+        if ($script:AppIcon) { $dlg.Icon = $script:AppIcon }
+
+        $layout = New-Object System.Windows.Forms.TableLayoutPanel
+        $layout.AutoSize = $true
+        $layout.ColumnCount = 1
+        $text = New-Object System.Windows.Forms.Label
+        $text.AutoSize = $true
+        $text.MaximumSize = New-Object System.Drawing.Size([int](420 * $scale), 0)
+        $text.Text = Get-UpdatePrompt -Version $Info.Version -CurrentVersion $script:AndonVersion
+        $text.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, [int](12 * $scale))
+        $buttons = New-Object System.Windows.Forms.FlowLayoutPanel
+        $buttons.AutoSize = $true
+        $buttons.FlowDirection = [System.Windows.Forms.FlowDirection]::RightToLeft
+        $buttons.Dock = [System.Windows.Forms.DockStyle]::Fill
+        $buttons.Margin = New-Object System.Windows.Forms.Padding(0)
+        $no = New-Object System.Windows.Forms.Button
+        $no.Text = 'しない'
+        $no.AutoSize = $true
+        $no.DialogResult = [System.Windows.Forms.DialogResult]::No
+        $yes = New-Object System.Windows.Forms.Button
+        $yes.Text = '更新する'
+        $yes.AutoSize = $true
+        $yes.DialogResult = [System.Windows.Forms.DialogResult]::Yes
+        $buttons.Controls.AddRange(@($no, $yes))   # 右から並ぶので、「更新する」が左、「しない」が右
+        $layout.Controls.Add($text)
+        $layout.Controls.Add($buttons)
+        $dlg.Controls.Add($layout)
+        $dlg.AcceptButton = $yes
+        $dlg.CancelButton = $no
+        $dlg.Add_Shown({ param($source) $source.Activate() })   # 通知から開いたときも、前面に出して操作できるように
+        return ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::Yes)
+    }
+    finally { $dlg.Dispose() }
+}
+
+$script:Confirming = $false
+function Request-AndonUpdate {
+    <# 通知のクリックとトレイの「更新」。更新するかを尋ね、「更新する」なら zip を落とし始める。
+       尋ねている間は、もう 1 つの画面を出さない（トレイのメニューは、画面を出している間も開ける） #>
+    if (-not $script:Update -or $script:DownloadTask -or $script:Confirming) { return }
+    $script:Confirming = $true
+    try {
+        if (Confirm-AndonUpdate -Info $script:Update) { Start-AndonUpdate }
+    }
+    finally { $script:Confirming = $false }
 }
 
 function Start-AndonUpdate {
@@ -1113,14 +1186,14 @@ $tray.Add_MouseClick({
     })
 $tray.Add_BalloonTipClicked({
         if ($script:NoticeUpdate) {
-            # 新しい版の知らせは、何が変わったかを読めるよう、その版の Release のページを開く
-            if ($script:Update) { try { Start-Process -FilePath $script:Update.PageUrl } catch { } }
+            # 新しい版の知らせは、トレイの「更新」と同じく、更新するかを尋ねる
+            Request-AndonUpdate
             return
         }
         $e = $script:State[[string]$script:NoticeKey]
         if ($e) { Open-Session -Entry $e; Update-ListView }
     })
-$miUpdate.Add_Click({ Start-AndonUpdate })
+$miUpdate.Add_Click({ Request-AndonUpdate })
 $miShow.Add_Click({ Show-AndonWindow })
 $miTrayRead.Add_Click({ Set-AllRead })
 $miExit.Add_Click({
