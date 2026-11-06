@@ -23,6 +23,9 @@
 - `claude agents --json` を実行し、セッションの一覧を読む
 - Claude Code の設定ディレクトリ（既定は `~/.claude`）にある `sessions/*.json` の、ファイル名と更新時刻を見る（中身は読まない。`*.key` には触れない）
 - セッションの作業フォルダとその周辺の `*.code-workspace` を読み、開く対象を VS Code（`Code.exe`）に渡す
+- プロセスの一覧（`Win32_Process` の PID、親の PID、起動時刻、名前）を読み、セッションのプロセスから親へたどる。新しいセッションが出たときは、拡張機能のパネルのセッションかを見分けるため、そのプロセスの起動引数も読む
+- セッションの行や通知をクリックしたときと、点滅を始めるときに、コンソールのウィンドウ（Windows Terminal や VS Code の統合ターミナルが持つ、隠れたウィンドウを含む）を数え、そのクラスと持ち主を見る。クリックしたときは、セッションを映しているウィンドウを前面に出す（最小化していれば元に戻す）。Windows が断ったときは、前面のウィンドウの入力に一時的につないで（`AttachThreadInput`）、もう一度試す
+- 点滅を止めるため、前面のウィンドウを調べ、VS Code のウィンドウなら題名を読む
 - 通知の送り元を `andon` と表示させるため、`HKCU\Software\Classes\AppUserModelId\tbshiki.andon` に表示名を書く
 - ウィンドウの位置と大きさ、「常に手前」、テーマ、縦表示を、`HKCU\Software\tbshiki\andon` に書き、起動したときに読む（数値だけ。読めない値は使わない）
 - テーマを「Windows に合わせる」にしているときは、Windows のアプリ モード（`HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize` の `AppsUseLightTheme`）を読む（書かない）

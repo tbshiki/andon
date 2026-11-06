@@ -464,10 +464,11 @@ try {
     if (-not (Get-Command claude -CommandType Application -ErrorAction SilentlyContinue)) {
         Write-Host '注意: claude が PATH に見つかりません。andon は claude agents --json でセッションの状態を読みます。' -ForegroundColor Yellow
     }
+    # VS Code はなくても動く。クリックで VS Code を開けないだけ（VS Code の外のターミナルのウィンドウは前面に出せる）
     $codeCmd = @((Join-Path $env:LOCALAPPDATA 'Programs\Microsoft VS Code\bin\code.cmd'), (Join-Path $env:ProgramFiles 'Microsoft VS Code\bin\code.cmd')) |
         Where-Object { Test-Path -LiteralPath $_ }
     if (-not (Get-Command code.cmd -CommandType Application -ErrorAction SilentlyContinue) -and -not $codeCmd) {
-        Write-Host '注意: VS Code の code.cmd が見つかりません。andon は、これを手がかりに VS Code を探します。' -ForegroundColor Yellow
+        Write-Host '注意: VS Code の code.cmd が見つかりません。andon は動きますが、クリックしても VS Code では開けません（cmd や PowerShell のウィンドウは前面に出せます）。' -ForegroundColor Yellow
     }
 
     # andon.ps1 の後ろに付けた引数（-ScanMs など）は、ショートカットごとに、前のショートカットから引き継ぐ。

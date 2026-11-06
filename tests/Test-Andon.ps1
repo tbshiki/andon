@@ -235,20 +235,112 @@ Assert-Equal (Test-VSCodeWindowTitle 'a.ps1 - project2 - Visual Studio Code' 'pr
 Assert-Equal (Test-VSCodeWindowTitle '' 'proj') $false '前面が VS Code でなければ（題名が空なら）数えない'
 Assert-Equal (Test-VSCodeWindowTitle 'proj - Visual Studio Code' $null) $false '名前が分からなければ数えない'
 
+function New-FlashMark { param($RootName, [long]$Window = 0) return [pscustomobject]@{ RootName = $RootName; Window = $Window } }
 $flashState = @{
     '1' = [pscustomobject]@{ Key = '1'; Status = 'waiting'; Unread = $true }
     '2' = [pscustomobject]@{ Key = '2'; Status = 'idle'; Unread = $true }
     '3' = [pscustomobject]@{ Key = '3'; Status = 'busy'; Unread = $false }
+    '5' = [pscustomobject]@{ Key = '5'; Status = 'waiting'; Unread = $true }
 }
-$flashKeys = @{ '1' = 'p1'; '2' = 'p2'; '3' = 'p3'; '4' = 'p4' }
+$flashKeys = @{ '1' = (New-FlashMark 'p1'); '2' = (New-FlashMark 'p2'); '3' = (New-FlashMark 'p3'); '4' = (New-FlashMark 'p4'); '5' = (New-FlashMark $null 5005) }
 $kept = Get-PendingFlashKeys -FlashKeys $flashKeys -State $flashState -ForegroundTitle $null
-Assert-Equal ((@($kept.Keys) | Sort-Object) -join ',') '1,2' '待ちと完了は残し、実行中に戻ったものと終わったものは外す'
-$kept = Get-PendingFlashKeys -FlashKeys $flashKeys -State $flashState -ForegroundTitle 'a.ps1 - p1 - Visual Studio Code'
-Assert-Equal ((@($kept.Keys) | Sort-Object) -join ',') '2' '前面の VS Code のウィンドウで開いているものは外す'
-Assert-Equal $kept['2'] 'p2' '残したものは名前を保つ'
+Assert-Equal ((@($kept.Keys) | Sort-Object) -join ',') '1,2,5' '待ちと完了は残し、実行中に戻ったものと終わったものは外す'
+$kept = Get-PendingFlashKeys -FlashKeys $flashKeys -State $flashState -ForegroundTitle 'a.ps1 - p1 - Visual Studio Code' -ForegroundWindow 7007
+Assert-Equal ((@($kept.Keys) | Sort-Object) -join ',') '2,5' '前面の VS Code のウィンドウで開いているものは外す（ほかのウィンドウが前面でも、ターミナルのセッションは残す）'
+Assert-Equal $kept['2'].RootName 'p2' '残したものは見分け方を保つ'
+$kept = Get-PendingFlashKeys -FlashKeys $kept -State $flashState -ForegroundTitle $null -ForegroundWindow 5005
+Assert-Equal ((@($kept.Keys) | Sort-Object) -join ',') '2' 'VS Code の外のターミナルのセッションは、そのウィンドウが前面にあれば外す'
+$kept = Get-PendingFlashKeys -FlashKeys @{ '5' = (New-FlashMark 'p5' 5005) } -State $flashState -ForegroundTitle 'a.ps1 - p5 - Visual Studio Code'
+Assert-Equal $kept.Count 1 'ターミナルのセッションは、題名に同じ名前の VS Code のウィンドウが前面にあっても外さない（ウィンドウで見分ける）'
 $flashState['2'].Unread = $false
-$kept = Get-PendingFlashKeys -FlashKeys $kept -State $flashState -ForegroundTitle $null
+$kept = Get-PendingFlashKeys -FlashKeys @{ '2' = (New-FlashMark 'p2') } -State $flashState -ForegroundTitle $null
 Assert-Equal $kept.Count 0 '既読にした完了も外す（残りがなければ点滅を止める）'
+
+$markCwd = Join-Path ([IO.Path]::GetTempPath()) ('andon-mark-' + [guid]::NewGuid().ToString('N'))
+$markEntry = [pscustomobject]@{ Key = '1'; Cwd = $markCwd }
+$mark = Get-FlashMark -Entry $markEntry -SessionWindow ([pscustomobject]@{ Handle = [long]4242; IsCode = $false })
+Assert-Equal "$($mark.RootName)|$($mark.Window)" '|4242' 'VS Code の外のターミナルのセッションは、ウィンドウで見分ける'
+$mark = Get-FlashMark -Entry $markEntry -SessionWindow ([pscustomobject]@{ Handle = [long]4242; IsCode = $true })
+Assert-Equal "$($mark.RootName)|$($mark.Window)" ((Split-Path -Leaf $markCwd) + '|0') 'VS Code のターミナルのセッションは、これまでどおり VS Code の題名で見分ける'
+$mark = Get-FlashMark -Entry $markEntry -SessionWindow $null
+Assert-Equal "$($mark.RootName)|$($mark.Window)" ((Split-Path -Leaf $markCwd) + '|0') 'ウィンドウが分からないセッションは、VS Code の題名で見分ける'
+
+# ---------------------------------------------------------------------------
+Write-Host '== セッションを映しているウィンドウ（Find-SessionConsoleWindow）'
+$t0 = [datetime]'2026-01-01T12:00:00'
+function New-Proc { param([int]$Id, [int]$Parent, [string]$Name, [int]$At) return [pscustomobject]@{ ProcessId = $Id; ParentProcessId = $Parent; Name = $Name; CreationDate = $t0.AddSeconds($At) } }
+function New-ConsoleWin {
+    param([long]$Handle, [string]$Class, [int]$ProcessId, [bool]$Visible = $true, [long]$Owner = 0, [int]$OwnerProcessId = 0, [bool]$OwnerVisible = $true)
+    return [pscustomobject]@{ Handle = $Handle; ClassName = $Class; ProcessId = $ProcessId; Visible = $Visible; OwnerHandle = $Owner; OwnerProcessId = $OwnerProcessId; OwnerVisible = $OwnerVisible }
+}
+$sessionProcs = @(
+    (New-Proc 1 0 'explorer.exe' 0)
+    (New-Proc 2 1 'Code.exe' 1)              # VS Code
+    (New-Proc 3 2 'Code.exe' 2)              # VS Code のターミナルを持つプロセス
+    (New-Proc 4 3 'pwsh.exe' 3)              # VS Code の統合ターミナルのシェル
+    (New-Proc 5 4 'claude.exe' 4)            # VS Code の統合ターミナルのセッション
+    (New-Proc 6 4 'powershell.exe' 5)        # VS Code のターミナルから、別のウィンドウ（Windows Terminal）で開いたシェル
+    (New-Proc 7 6 'claude.exe' 6)            # そのセッション
+    (New-Proc 8 1 'WindowsTerminal.exe' 1)
+    (New-Proc 9 2 'Code.exe' 2)              # VS Code の拡張機能を動かすプロセス
+    (New-Proc 10 9 'claude.exe' 7)           # 拡張機能のパネルのセッション
+    (New-Proc 11 1 'cmd.exe' 1)              # conhost が描く cmd のウィンドウ
+    (New-Proc 12 11 'claude.exe' 8)          # そのセッション
+    (New-Proc 20 1 'cmd.exe' 0)              # VS Code を起動した cmd（ウィンドウがある）
+    (New-Proc 21 20 'Code.exe' 1)
+    (New-Proc 22 21 'claude.exe' 2)          # その VS Code の拡張機能のパネルのセッション
+    (New-Proc 30 31 'claude.exe' 10)         # 親が終わり、親の PID がほかのプロセスに使い回された
+    (New-Proc 31 1 'cmd.exe' 20)
+    (New-Proc 40 41 'claude.exe' 3)
+    (New-Proc 41 42 'powershell.exe' 2)      # 持ち主のない PseudoConsoleWindow（映しているウィンドウが分からない）
+    (New-Proc 42 1 'cmd.exe' 1)
+    (New-Proc 50 51 'claude.exe' 3)
+    (New-Proc 51 1 'cmd.exe' 2)              # 隠れたコンソール
+    (New-Proc 60 8 'claude.exe' 3)           # Windows Terminal が直接起動したセッション（コンソールを作ったのがセッション）
+    (New-Proc 70 71 'claude.exe' 3)
+    (New-Proc 71 8 'pwsh.exe' 2)             # 持ち主（Windows Terminal のウィンドウ）が隠れている
+)
+$sessionWins = @(
+    (New-ConsoleWin 104 'PseudoConsoleWindow' 4 -Visible $false -Owner 2002 -OwnerProcessId 2)
+    (New-ConsoleWin 106 'PseudoConsoleWindow' 6 -Owner 8008 -OwnerProcessId 8)
+    (New-ConsoleWin 1011 'ConsoleWindowClass' 11)
+    (New-ConsoleWin 1020 'ConsoleWindowClass' 20)
+    (New-ConsoleWin 1031 'ConsoleWindowClass' 31)
+    (New-ConsoleWin 141 'PseudoConsoleWindow' 41 -Visible $false)
+    (New-ConsoleWin 1042 'ConsoleWindowClass' 42)
+    (New-ConsoleWin 1051 'ConsoleWindowClass' 51 -Visible $false)
+    (New-ConsoleWin 160 'PseudoConsoleWindow' 60 -Visible $false -Owner 8009 -OwnerProcessId 8)
+    (New-ConsoleWin 171 'PseudoConsoleWindow' 71 -Visible $false -Owner 8010 -OwnerProcessId 8 -OwnerVisible $false)
+)
+function Format-SessionWindow { param($W) if ($null -eq $W) { return 'null' } return '{0}|{1}' -f $W.Handle, $W.IsCode }
+function Find-TestSessionWindow { param([int]$Id, [string]$Code = 'Code') return Format-SessionWindow (Find-SessionConsoleWindow -Processes $sessionProcs -Windows $sessionWins -Id $Id -CodeProcessName $Code) }
+Assert-Equal (Find-TestSessionWindow 5) '2002|True' 'VS Code の統合ターミナルのセッションは、そのターミナルを映している VS Code のウィンドウ（VS Code のもの）'
+Assert-Equal (Find-TestSessionWindow 7) '8008|False' '親をたどると VS Code に着いても、Windows Terminal に映っていれば、その Windows Terminal のウィンドウ'
+Assert-Equal (Find-TestSessionWindow 10) 'null' '拡張機能のパネルのセッション（VS Code が起動した）は、ターミナルのウィンドウを持たない'
+Assert-Equal (Find-TestSessionWindow 12) '1011|False' 'conhost が描く cmd のウィンドウは、そのウィンドウ'
+Assert-Equal (Find-TestSessionWindow 22) 'null' 'たどる途中で VS Code に着いたら、それより上（VS Code を起動した cmd のウィンドウ）はたどらない'
+Assert-Equal (Find-TestSessionWindow 30) 'null' '子より後に起動した「親」（PID の使い回し）はたどらない'
+Assert-Equal (Find-TestSessionWindow 40) 'null' '持ち主のない PseudoConsoleWindow では、映しているウィンドウが分からない（それより上の cmd のウィンドウもたどらない）'
+Assert-Equal (Find-TestSessionWindow 50) 'null' '隠れたコンソールのウィンドウは前面に出さない'
+Assert-Equal (Find-TestSessionWindow 60) '8009|False' 'セッションがコンソールを作ったときは、セッションのウィンドウの持ち主'
+Assert-Equal (Find-TestSessionWindow 70) 'null' '持ち主のウィンドウが隠れていれば、前面に出さない'
+Assert-Equal (Find-TestSessionWindow 99) 'null' '一覧にないプロセス（終わったセッション）は $null'
+Assert-Equal (Find-TestSessionWindow 5 'Code - Insiders') '2002|False' 'VS Code かどうかは、見つけた VS Code のプロセス名で見分ける'
+$kindEntry = [pscustomobject]@{ Key = '7'; Kind = 'background' }
+Assert-Equal (Format-SessionWindow (Find-SessionWindow -Entry $kindEntry -Processes $sessionProcs -Windows $sessionWins)) 'null' 'background のセッションは、ターミナルのウィンドウを探さない（作業フォルダを VS Code で開く）'
+$kindEntry.Kind = 'interactive'
+Assert-Equal (Format-SessionWindow (Find-SessionWindow -Entry $kindEntry -Processes $sessionProcs -Windows $sessionWins)) '8008|False' '対話のセッションは、ターミナルのウィンドウを探す'
+$kindEntry.Kind = ''
+Assert-Equal (Format-SessionWindow (Find-SessionWindow -Entry $kindEntry -Processes $sessionProcs -Windows $sessionWins)) '8008|False' 'kind が分からなければ、対話のセッションとして探す'
+
+Write-Host '== コンソールのウィンドウの一覧（Get-ConsoleWindowList。C# の型を、この PowerShell で定義できるか）'
+$consoleWins = $null
+try { $consoleWins = @(Get-ConsoleWindowList) } catch { Write-Host "       $($_.Exception.Message)" }
+Assert-True ($null -ne $consoleWins) 'コンソールのウィンドウの一覧を取れる（AndonSessionWindow を定義できる）'
+Assert-Equal @($consoleWins | Where-Object { @('ConsoleWindowClass', 'PseudoConsoleWindow') -notcontains $_.ClassName }).Count 0 '一覧には、コンソールのウィンドウだけが入る'
+$showResult = $null
+try { $showResult = [AndonSessionWindow]::Show(0) } catch { }
+Assert-Equal $showResult $false 'ないウィンドウは前面に出さない（false を返す）'
 
 # ---------------------------------------------------------------------------
 Write-Host '== 拡張機能のパネルのセッション（Test-SdkCommandLine / Test-SessionVisible / Get-ProcessCommandLine）'
@@ -496,6 +588,14 @@ Assert-Equal (Test-AndonRunning -MutexName $mutexName) $false '調べるため�
 $andonText = Get-Content -LiteralPath (Join-Path $root 'andon.ps1') -Raw -Encoding UTF8
 Assert-True ($andonText.Contains("'Local\andon'")) 'andon.ps1 は、install.ps1 が見る mutex（Local\andon）を使う'
 Assert-True ($andonText.Contains("'Local\andon-exit'")) 'andon.ps1 は、install.ps1 が送る合図（Local\andon-exit）を受ける'
+
+Write-Host '== VS Code がなくても起動する・セッションを映しているウィンドウを開く'
+Assert-Equal ($andonText.Contains("MessageBox]::Show('VS Code の code.cmd")) $false 'VS Code（code.cmd）が見つからなくても起動する（メッセージを出して終わらない）'
+Assert-True ($andonText.Contains("`$miOpen = `$menu.Items.Add('開く')")) '行の右クリックのメニューは「開く」（VS Code の外のセッションも開く）'
+Assert-True ($andonText -match '(?s)function Open-Session \{.{0,900}?Find-SessionWindow -Entry \$Entry') 'セッションを開くときは、まずセッションを映しているウィンドウを探す'
+Assert-True ($andonText -match '(?m)^try \{ Initialize-SessionWindowType \} catch \{ \}') '起動したときに、ウィンドウを探す型を定義しておく（初めてクリックしたときに待たせない）'
+Assert-Equal ([regex]::Matches($andonText, '-ForegroundWindow \(\[AndonWindow\]::GetForegroundWindow\(\)\.ToInt64\(\)\)').Count) 2 '点滅を始めるときと止めるときに、前面のウィンドウも渡す（ターミナルのセッションを見分ける）'
+Assert-True ($installText.Contains('注意: VS Code の code.cmd が見つかりません。andon は動きますが、クリックしても VS Code では開けません（cmd や PowerShell のウィンドウは前面に出せます）。')) 'install.ps1 は、VS Code がなくても andon が動くことを伝える'
 
 # ---------------------------------------------------------------------------
 Write-Host '== install.ps1: レジストリ'
