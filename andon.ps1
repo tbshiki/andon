@@ -31,10 +31,15 @@
       その表示名を HKCU に登録して「andon」と表示させる。
       ID はプロセス全体に付くので、andon のためだけに起動した PowerShell で動かしたときだけ付ける。
     - ウィンドウを表示していれば、タイトルバーも点滅させる。点滅は、andon を前面に出したときのほか、
-      きっかけになったセッションの VS Code のウィンドウ（題名のフォルダ名や workspace 名で見分ける）を前面に出したときや、
-      そのセッションが待ちでも完了でもなくなったときに止める。
-    - 行をクリックすると、cwd を含む *.code-workspace（なければ repository の root）を VS Code で開く。
-      既に開いているウィンドウがあれば、そのウィンドウが前面に出る。ターミナルのタブまでは選ばない。
+      きっかけになったセッションのウィンドウを前面に出したときや、そのセッションが待ちでも完了でもなくなったときに止める。
+      VS Code のウィンドウは題名のフォルダ名や workspace 名で、VS Code の外のターミナルのウィンドウはウィンドウそのもので見分ける。
+    - 行をクリックすると、そのセッションを開く。VS Code の外のターミナル（Windows Terminal、cmd や PowerShell のウィンドウ）で
+      動いていれば、そのウィンドウを前面に出す（最小化していれば元に戻す）。どのウィンドウかは、セッションのプロセスから親へたどり、
+      コンソールを映しているウィンドウで決める。VS Code の中（統合ターミナル、拡張機能のパネル）のセッションと、ウィンドウが
+      分からないセッション（background のセッションを含む）は、cwd を含む *.code-workspace（なければ repository の root）を
+      VS Code で開く。既に開いているウィンドウがあれば、そのウィンドウが前面に出る。ターミナルのタブまでは選ばない。
+    - VS Code（code.cmd）が見つからなくても起動する。そのときは、VS Code のウィンドウもそのまま前面に出し、
+      ウィンドウが分からないセッションは、クリックで既読にするだけにする。VS Code を探すのは起動したときだけ。
     - install.ps1 がアップデートや削除の前に終わらせられるよう、名前付きのイベント（Local\andon-exit）の合図を受けたら終わる。
     - 起動して少し後と、その後 1 日 1 回、GitHub の Release（releases/latest）に新しい版があるかを確かめる。
       あれば、トレイのメニューに「アップデート（v<版>）」を出し、起動ごとに 1 回だけ通知する。自動では入れ替えない。
@@ -234,16 +239,21 @@ function Get-AlertNotice {
 }
 
 function Get-PendingFlashKeys {
-    <# 点滅のきっかけになったセッション（キー -> VS Code の題名に出る名前）のうち、まだ点滅を続ける理由があるもの。
-       終わったもの、待ちでも完了でもなくなったもの、前面の VS Code のウィンドウ（題名 $ForegroundTitle）で
-       開いているものは外す。$ForegroundTitle は、前面が VS Code でなければ空 #>
-    param([hashtable]$FlashKeys, [hashtable]$State, [string]$ForegroundTitle)
+    <# 点滅のきっかけになったセッション（キー -> ウィンドウの見分け方。Get-FlashMark）のうち、まだ点滅を続ける理由があるもの。
+       終わったもの、待ちでも完了でもなくなったもの、そのセッションのウィンドウが前面にあるものは外す。
+       VS Code の外のターミナルのセッション（Window あり）は前面のウィンドウ（$ForegroundWindow）で、それ以外は前面の
+       VS Code のウィンドウの題名（$ForegroundTitle。前面が VS Code でなければ空）で見分ける #>
+    param([hashtable]$FlashKeys, [hashtable]$State, [string]$ForegroundTitle, [long]$ForegroundWindow = 0)
     $keep = @{}
     foreach ($k in @($FlashKeys.Keys)) {
         $e = $State[$k]
         if (-not $e -or (Get-Rank $e) -gt 1) { continue }
-        if (Test-VSCodeWindowTitle -Title $ForegroundTitle -RootName $FlashKeys[$k]) { continue }
-        $keep[$k] = $FlashKeys[$k]
+        $mark = $FlashKeys[$k]
+        if ($mark.Window) {
+            if ($ForegroundWindow -ne 0 -and [long]$mark.Window -eq $ForegroundWindow) { continue }
+        }
+        elseif (Test-VSCodeWindowTitle -Title $ForegroundTitle -RootName $mark.RootName) { continue }
+        $keep[$k] = $mark
     }
     return $keep
 }
@@ -448,6 +458,170 @@ function Start-VSCode {
     }
     $p = [Diagnostics.Process]::Start($psi)
     if ($p) { $p.Dispose() }
+}
+
+# ---------------------------------------------------------------------------
+# セッションを映しているウィンドウの特定（VS Code の外のターミナル）
+# ---------------------------------------------------------------------------
+
+function Find-SessionConsoleWindow {
+    <# セッション（PID $Id）を映しているウィンドウを、プロセスの一覧（ProcessId、ParentProcessId、CreationDate、Name）と、
+       コンソールのウィンドウの一覧（Get-ConsoleWindowList）から探す。見つからなければ $null。
+       セッションから親へたどり、最初にコンソールのウィンドウを持つプロセスで決める。Windows は、コンソールのウィンドウを、
+       そのコンソールを作ったプロセス（シェルなど）のものとして返すため。
+       - ConsoleWindowClass（conhost が自分で描くコンソール）は、そのウィンドウ
+       - PseudoConsoleWindow（Windows Terminal や VS Code のターミナルが持つ、隠れたウィンドウ）は、その持ち主（映しているウィンドウ）
+       見えていないウィンドウと、持ち主のない PseudoConsoleWindow は、映しているウィンドウが分からないので $null（それより上はたどらない）。
+       たどる途中で VS Code（$CodeProcessName）に着いたら、VS Code が動かしているセッション（拡張機能のパネルなど）なので $null。
+       親は、子より前に起動したものだけをたどる（終わった親の PID が使い回されていても、無関係なプロセスをたどらない）。
+       見つかれば、Handle（前面に出すウィンドウ）と、そのウィンドウが VS Code のものか（IsCode）を返す。
+       親のプロセスでは決めない。VS Code のターミナルから別のウィンドウ（Windows Terminal など）で開いたシェルは、親をたどると
+       VS Code に着くが、映しているのはそのウィンドウのため #>
+    param([object[]]$Processes, [object[]]$Windows, [int]$Id, [string]$CodeProcessName = 'Code')
+    $byId = @{}
+    foreach ($p in $Processes) { if ($null -ne $p) { $byId[[int]$p.ProcessId] = $p } }
+    $cur = $byId[$Id]
+    for ($depth = 0; $cur -and $depth -lt 32; $depth++) {
+        $curId = [int]$cur.ProcessId
+        if ($depth -gt 0 -and [IO.Path]::GetFileNameWithoutExtension([string]$cur.Name) -ieq $CodeProcessName) { return $null }
+        foreach ($w in $Windows) {
+            if ($null -eq $w -or [int]$w.ProcessId -ne $curId) { continue }
+            if ($w.ClassName -eq 'ConsoleWindowClass') {
+                if (-not $w.Visible) { return $null }
+                return [pscustomobject]@{ Handle = [long]$w.Handle; IsCode = $false }
+            }
+            if ($w.ClassName -eq 'PseudoConsoleWindow') {
+                if (-not [long]$w.OwnerHandle -or -not $w.OwnerVisible) { return $null }
+                $owner = $byId[[int]$w.OwnerProcessId]
+                $isCode = [bool]($owner -and [IO.Path]::GetFileNameWithoutExtension([string]$owner.Name) -ieq $CodeProcessName)
+                return [pscustomobject]@{ Handle = [long]$w.OwnerHandle; IsCode = $isCode }
+            }
+        }
+        $parent = $byId[[int]$cur.ParentProcessId]
+        if (-not $parent -or [int]$parent.ProcessId -eq $curId -or $null -eq $cur.CreationDate -or
+            $null -eq $parent.CreationDate -or $parent.CreationDate -gt $cur.CreationDate) { return $null }
+        $cur = $parent
+    }
+    return $null
+}
+
+function Initialize-SessionWindowType {
+    <# コンソールのウィンドウを数え、ウィンドウを前面に出す型（AndonSessionWindow）を定義する。
+       AndonNative と別の型にするのは、AndonAppId と同じ理由（同じセッションに前の版の型が残っていると、定義し直せない）。
+       Windows PowerShell 5.1 は C# 5 でコンパイルするので、それより新しい書き方を使わない #>
+    if ('AndonSessionWindow' -as [type]) { return }
+    Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+public class AndonConsoleWindow {
+    public long Handle;
+    public string ClassName;
+    public int ProcessId;
+    public bool Visible;
+    public long OwnerHandle;
+    public int OwnerProcessId;
+    public bool OwnerVisible;
+}
+public static class AndonSessionWindow {
+    delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+    [DllImport("user32.dll")] static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr hWnd, StringBuilder name, int max);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+    [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr hWnd, uint cmd);
+    [DllImport("user32.dll")] static extern bool IsWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hWnd);
+    [DllImport("user32.dll")] static extern bool IsIconic(IntPtr hWnd);
+    [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr hWnd, int cmd);
+    [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr hWnd);
+    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] static extern bool AttachThreadInput(uint attach, uint attachTo, bool on);
+    [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+
+    // コンソールのウィンドウ。ConsoleWindowClass は conhost が自分で描くコンソール、PseudoConsoleWindow は Windows Terminal や
+    // VS Code のターミナルが持つ隠れたウィンドウ（持ち主が、映しているウィンドウ）。どちらも、コンソールを作ったプロセスのものとして返る
+    public static List<AndonConsoleWindow> GetConsoleWindows() {
+        List<AndonConsoleWindow> list = new List<AndonConsoleWindow>();
+        EnumWindows(delegate (IntPtr h, IntPtr l) {
+            StringBuilder sb = new StringBuilder(256);
+            GetClassName(h, sb, sb.Capacity);
+            string cls = sb.ToString();
+            if (cls != "ConsoleWindowClass" && cls != "PseudoConsoleWindow") return true;
+            uint pid;
+            GetWindowThreadProcessId(h, out pid);
+            IntPtr owner = GetWindow(h, 4);   // GW_OWNER
+            uint ownerPid = 0;
+            if (owner != IntPtr.Zero) GetWindowThreadProcessId(owner, out ownerPid);
+            AndonConsoleWindow w = new AndonConsoleWindow();
+            w.Handle = h.ToInt64();
+            w.ClassName = cls;
+            w.ProcessId = (int)pid;
+            w.Visible = IsWindowVisible(h);
+            w.OwnerHandle = owner.ToInt64();
+            w.OwnerProcessId = (int)ownerPid;
+            w.OwnerVisible = owner != IntPtr.Zero && IsWindowVisible(owner);
+            list.Add(w);
+            return true;
+        }, IntPtr.Zero);
+        return list;
+    }
+
+    // ウィンドウを前面に出す。最小化していれば元に戻す。andon が前面にないとき（通知のクリックなど）は Windows が断ることがあるので、
+    // 前面のウィンドウの入力に一時的につないでから、もう一度試す。前面に出せたら true
+    public static bool Show(long handle) {
+        IntPtr h = new IntPtr(handle);
+        if (!IsWindow(h)) return false;
+        if (IsIconic(h)) ShowWindow(h, 9);   // SW_RESTORE
+        if (SetForegroundWindow(h) && GetForegroundWindow() == h) return true;
+        IntPtr fg = GetForegroundWindow();
+        uint unused;
+        uint fgThread = fg == IntPtr.Zero ? 0u : GetWindowThreadProcessId(fg, out unused);
+        uint self = GetCurrentThreadId();
+        bool attached = fgThread != 0u && fgThread != self && AttachThreadInput(self, fgThread, true);
+        try {
+            BringWindowToTop(h);
+            SetForegroundWindow(h);
+        }
+        finally {
+            if (attached) AttachThreadInput(self, fgThread, false);
+        }
+        return GetForegroundWindow() == h;
+    }
+}
+'@
+}
+
+function Get-ConsoleWindowList {
+    <# コンソールのウィンドウ（ConsoleWindowClass と PseudoConsoleWindow）の一覧。Find-SessionConsoleWindow に渡す。
+       1 件だけのときに配列でなくならないよう、呼ぶ側は @() で囲む #>
+    Initialize-SessionWindowType
+    return @([AndonSessionWindow]::GetConsoleWindows())
+}
+
+function Find-SessionWindow {
+    <# 今のプロセスとウィンドウから、セッションを映しているウィンドウを探す（Find-SessionConsoleWindow）。見つからなければ $null。
+       $Processes と $Windows を渡せば、それを使う（点滅を始めるときに、何件かをまとめて調べるため）。
+       background のセッション（claude agents --json の kind が interactive でないもの）は、起動したターミナルで動いていないので
+       探さない（README のとおり、作業フォルダを VS Code で開く）。kind が分からなければ、対話のセッションとして探す #>
+    param($Entry, [string]$CodeProcessName = 'Code', [object[]]$Processes = $null, [object[]]$Windows = $null)
+    if ($Entry.Kind -and $Entry.Kind -ne 'interactive') { return $null }
+    if ($null -eq $Processes) {
+        $Processes = @(Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, CreationDate, Name -ErrorAction Stop)
+    }
+    if ($null -eq $Windows) { $Windows = @(Get-ConsoleWindowList) }
+    return Find-SessionConsoleWindow -Processes $Processes -Windows $Windows -Id ([int]$Entry.Key) -CodeProcessName $CodeProcessName
+}
+
+function Get-FlashMark {
+    <# 点滅を止めるときの、セッションのウィンドウの見分け方。VS Code の外のターミナルで動いていれば、そのウィンドウ（Window）。
+       そうでなければ、VS Code のウィンドウの題名に出る名前（RootName）。$SessionWindow は Find-SessionWindow の結果 #>
+    param($Entry, $SessionWindow)
+    if ($SessionWindow -and -not $SessionWindow.IsCode) {
+        return [pscustomobject]@{ RootName = $null; Window = [long]$SessionWindow.Handle }
+    }
+    return [pscustomobject]@{ RootName = (Get-VSCodeRootName (Find-VSCodeTarget -Cwd $Entry.Cwd)); Window = [long]0 }
 }
 
 function Test-DedicatedProcess {
@@ -982,10 +1156,7 @@ if (-not $script:ClaudeExe) {
     [void][System.Windows.Forms.MessageBox]::Show('claude が PATH に見つかりません。', 'andon')
     return
 }
-if (-not $script:CodeCmd) {
-    [void][System.Windows.Forms.MessageBox]::Show('VS Code の code.cmd が見つかりません。', 'andon')
-    return
-}
+# VS Code（code.cmd）は、なくても起動する。クリックで VS Code を開けないだけ（ターミナルのウィンドウは前面に出せる）
 $script:CodeExe = Find-CodeExe -CodeCmd $script:CodeCmd
 $script:SessionsDir = Join-Path (Get-ClaudeConfigDir) 'sessions'
 
@@ -1065,6 +1236,10 @@ public static class AndonWindow {
 '@
 }
 
+# セッションを映しているターミナルのウィンドウを探し、前面に出す型。起動したときに定義しておく（初めてクリックしたときに待たせない）。
+# 定義できなければ、ウィンドウが分からないセッションとして扱う（VS Code で開く）
+try { Initialize-SessionWindowType } catch { }
+
 # ダークのとき、タイトルバーと、一覧のスクロールバー・見出しを暗くする。AndonNative と別の型にするのは、AndonAppId と同じ理由
 if (-not ('AndonThemeNative' -as [type])) {
     Add-Type -TypeDefinition @'
@@ -1110,7 +1285,21 @@ function Start-Poll {
 }
 
 function Open-Session {
+    <# セッションを開く。VS Code の外のターミナルで動いていれば、そのウィンドウを前面に出す。VS Code の中のセッションと、
+       ウィンドウが分からないセッションは、作業フォルダを VS Code で開く。VS Code が見つからなければ、VS Code のウィンドウも
+       そのまま前面に出し、ウィンドウが分からなければ既読にするだけ #>
     param($Entry)
+    $window = $null
+    try { $window = Find-SessionWindow -Entry $Entry -CodeProcessName $script:CodeProcessName } catch { }
+    if ($window -and (-not $window.IsCode -or -not $script:CodeCmd)) {
+        try { [void][AndonSessionWindow]::Show([long]$window.Handle) } catch { }
+        $Entry.Unread = $false
+        return
+    }
+    if (-not $script:CodeCmd) {
+        $Entry.Unread = $false
+        return
+    }
     $target = Find-VSCodeTarget -Cwd $Entry.Cwd
     if (-not $target) { return }
     Start-VSCode -Target $target -CodeExe $script:CodeExe -CodeCmd $script:CodeCmd
@@ -1119,7 +1308,7 @@ function Open-Session {
 
 $script:CodeProcessName = 'Code'
 if ($script:CodeExe) { $script:CodeProcessName = [IO.Path]::GetFileNameWithoutExtension($script:CodeExe) }
-$script:FlashKeys = @{}   # 点滅のきっかけになったセッション -> その VS Code のウィンドウの題名に出る名前
+$script:FlashKeys = @{}   # 点滅のきっかけになったセッション -> そのウィンドウの見分け方（Get-FlashMark）
 
 function Get-ForegroundCodeTitle {
     <# 前面のウィンドウが VS Code なら、その題名。そうでなければ $null #>
@@ -1137,14 +1326,30 @@ function Get-ForegroundCodeTitle {
 
 function Start-Flash {
     <# 時刻 $Now に新しく待ち・完了になったセッションのために、andon のウィンドウを点滅させる。
-       そのセッションの VS Code のウィンドウがすでに前面にあれば、点滅させない #>
+       そのセッションのウィンドウ（VS Code のウィンドウか、VS Code の外のターミナルのウィンドウ）がすでに前面にあれば、点滅させない #>
     param([datetime]$Now)
     try {
+        $hits = @($script:State.Values | Where-Object { $_.AlertAt -eq $Now -and (Get-Rank $_) -le 1 })
         $keys = @{}
-        foreach ($e in $script:State.Values) {
-            if ($e.AlertAt -eq $Now -and (Get-Rank $e) -le 1) { $keys[$e.Key] = Get-VSCodeRootName (Find-VSCodeTarget -Cwd $e.Cwd) }
+        if ($hits.Count -gt 0) {
+            # ターミナルのウィンドウは、プロセスとウィンドウを 1 回だけ調べて探す。調べられなければ、VS Code の題名で見分ける
+            $procs = $null
+            $wins = $null
+            try {
+                $procs = @(Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, CreationDate, Name -ErrorAction Stop)
+                $wins = @(Get-ConsoleWindowList)
+            }
+            catch { $procs = $null }
+            foreach ($e in $hits) {
+                $window = $null
+                if ($null -ne $procs) {
+                    $window = Find-SessionWindow -Entry $e -CodeProcessName $script:CodeProcessName -Processes $procs -Windows $wins
+                }
+                $keys[$e.Key] = Get-FlashMark -Entry $e -SessionWindow $window
+            }
         }
-        $keys = Get-PendingFlashKeys -FlashKeys $keys -State $script:State -ForegroundTitle (Get-ForegroundCodeTitle)
+        $keys = Get-PendingFlashKeys -FlashKeys $keys -State $script:State -ForegroundTitle (Get-ForegroundCodeTitle) `
+            -ForegroundWindow ([AndonWindow]::GetForegroundWindow().ToInt64())
         if ($keys.Count -eq 0) { return }
         foreach ($k in $keys.Keys) { $script:FlashKeys[$k] = $keys[$k] }
     }
@@ -1154,11 +1359,12 @@ function Start-Flash {
 
 function Update-Flash {
     <# 点滅のきっかけになったセッションが、どれも点滅を続ける理由をなくしたら、点滅を止める。
-       そのセッションの VS Code のウィンドウを前面に出した、待ちでも完了でもなくなった、終わった、のいずれか #>
+       そのセッションのウィンドウを前面に出した、待ちでも完了でもなくなった、終わった、のいずれか #>
     if ($script:FlashKeys.Count -eq 0) { return }
     if ($form.ContainsFocus) { $script:FlashKeys = @{}; return }   # andon を前面に出すと、Windows が点滅を止める
     try {
-        $script:FlashKeys = Get-PendingFlashKeys -FlashKeys $script:FlashKeys -State $script:State -ForegroundTitle (Get-ForegroundCodeTitle)
+        $script:FlashKeys = Get-PendingFlashKeys -FlashKeys $script:FlashKeys -State $script:State -ForegroundTitle (Get-ForegroundCodeTitle) `
+            -ForegroundWindow ([AndonWindow]::GetForegroundWindow().ToInt64())
         if ($script:FlashKeys.Count -eq 0) { [AndonWindow]::StopFlash($form.Handle) }
     }
     catch { $script:FlashKeys = @{} }   # 調べられなければ、andon を前面に出すまで点滅を続ける（これまでと同じ）
@@ -1331,7 +1537,7 @@ $form.Controls.Add($lvV)
 $form.Controls.Add($panel)
 
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
-$miOpen = $menu.Items.Add('VS Code で開く')
+$miOpen = $menu.Items.Add('開く')
 $miRead = $menu.Items.Add('既読にする')
 $lv.ContextMenuStrip = $menu
 $lvV.ContextMenuStrip = $menu
