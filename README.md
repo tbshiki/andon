@@ -173,7 +173,7 @@ clone で `install.ps1` を実行すると、clone の `andon.ps1` を `%LOCALAP
 - `~/.claude/sessions` は Claude Code の内部のディレクトリなので、書き方が変わるかもしれません。その場合も `-FallbackSec` ごとの取得で状態には追従します。
 - 新しいバージョンを確かめるには、`api.github.com` と `github.com` に接続できる必要があります。接続できなくても、andon のほかの動きは変わりません。
 - background セッション（`claude --bg` など）も一覧に出ますが、クリックで開けるのは作業フォルダの VS Code ウィンドウです（VS Code がなければ、既読にするだけです）。会話そのものは `claude agents` で開いてください。
-- 動作確認は Windows の VS Code でのみ行っています。
+- 動作確認は Windows で、VS Code、Windows Terminal の PowerShell、cmd のウィンドウで起動したセッションについて行っています。VS Code が見つからない状態でも、起動してウィンドウを前面に出せることを確かめています。
 
 ## 開発
 
