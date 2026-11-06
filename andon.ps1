@@ -1601,6 +1601,13 @@ $lvV.Add_ClientSizeChanged({
         if ($lvV.IsHandleCreated) { [void]$lvV.BeginInvoke([Action] { Update-VerticalColumn }) }
         else { Update-VerticalColumn }
     })
+# ウィンドウの幅を縮めるときは、一覧が縮む前に列を縮める（フォームは、子の大きさを変える前に Layout を出す）。
+# 一覧が先に縮むと、合わせ直すまでの間、列の方が広くて横のスクロールバーが一瞬出る。縦のスクロールバーの有無は、今のままと見なす
+$form.Add_Layout({
+        if (-not $lvV.Visible -or -not $lvV.IsHandleCreated) { return }
+        $target = $form.ClientSize.Width - ($lvV.Width - $lvV.ClientSize.Width)
+        if ($target -gt 0 -and $target -lt $lvV.Columns[0].Width) { $lvV.Columns[0].Width = $target }
+    })
 
 function Get-ActiveList {
     <# 表示している一覧（縦表示なら縦の一覧） #>

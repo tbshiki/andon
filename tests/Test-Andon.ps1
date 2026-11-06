@@ -761,6 +761,7 @@ Assert-True ($andonText -match '\$lvV\.ContextMenuStrip = \$menu') '縦の一覧
 Assert-True ($andonText -match 'if \(\$script:Vertical\) \{ \$name = Get-VerticalName ') '縦の一覧の中の段は、Get-VerticalName で作る（名前がなければフォルダの名前）'
 Assert-True ($andonText -match '\$lvV\.BeginInvoke\(\[Action\] \{ Update-VerticalColumn \}\)') '縦の一覧の列は、一覧が大きさを変え終えてから合わせる（途中で変えると、横のスクロールバーが残る）'
 Assert-True ($andonText -match '\$lvV\.GetType\(\)\.GetProperty\(''DoubleBuffered''') '縦の一覧は二重バッファで描く（マウスを乗せた行を描き直すときに、ちらつかない）'
+Assert-True ($andonText -match '(?s)\$form\.Add_Layout\(\{.{0,600}?\$lvV\.Columns\[0\]\.Width = \$target') 'ウィンドウの幅を縮めるときは、一覧が縮む前に列を縮める（横のスクロールバーが一瞬出ない）'
 # ListView は DoubleBuffered を受け持ち、LVS_EX_DOUBLEBUFFER として一覧に渡す（リフレクションで立てる先がある）
 Add-Type -AssemblyName System.Windows.Forms
 $dbProp = [System.Windows.Forms.ListView].GetProperty('DoubleBuffered', [Reflection.BindingFlags]'Instance, NonPublic')
