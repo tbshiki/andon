@@ -475,11 +475,36 @@ function Register-AppUserModelId {
     catch { return $false }
 }
 
+function Get-ProcessDescendant {
+    <# $Processes（ProcessId、ParentProcessId、CreationDate を持つもの。Win32_Process の一覧）から、$Id のプロセスの子孫を、
+       止める順（深いものから）に返す。$StartTime は $Id のプロセスの起動時刻。
+       親より前に起動したプロセスは、子として扱わない。Windows は親が終わっても子の ParentProcessId を書き換えないので、
+       親の PID が使い回されると、無関係なプロセスが子に見えるため。起動時刻が分からないものも扱わない #>
+    param([object[]]$Processes, [int]$Id, [datetime]$StartTime)
+    $result = @()
+    foreach ($p in $Processes) {
+        if ($null -eq $p -or [int]$p.ParentProcessId -ne $Id -or [int]$p.ProcessId -eq $Id) { continue }
+        if ($null -eq $p.CreationDate -or $p.CreationDate -lt $StartTime) { continue }
+        $result += @(Get-ProcessDescendant -Processes $Processes -Id ([int]$p.ProcessId) -StartTime $p.CreationDate)
+        $result += $p
+    }
+    return $result
+}
+
 function Stop-ProcessTree {
-    <# プロセスと、その子孫のプロセスを止める。claude が .cmd の場合、cmd.exe だけを止めると node が残るため #>
-    param([int]$Id)
-    foreach ($child in @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$Id" -ErrorAction SilentlyContinue)) {
-        Stop-ProcessTree -Id ([int]$child.ProcessId)
+    <# プロセスと、その子孫のプロセスを止める。claude が .cmd の場合、cmd.exe だけを止めると node が残るため。
+       $StartTime は $Id のプロセスの起動時刻（Process.StartTime）。渡さなければ、いま動いているそのプロセスの起動時刻を使う。
+       どちらも分からなければ（もう終わっていれば）、子孫は止めない。子孫を起動時刻で見分けられず、無関係なプロセスを止めうるため #>
+    param([int]$Id, $StartTime = $null)
+    $all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+    if ($null -eq $StartTime) {
+        $self = @($all | Where-Object { [int]$_.ProcessId -eq $Id })
+        if ($self.Count -gt 0) { $StartTime = $self[0].CreationDate }
+    }
+    if ($null -ne $StartTime) {
+        foreach ($p in @(Get-ProcessDescendant -Processes $all -Id $Id -StartTime ([datetime]$StartTime))) {
+            try { (Get-Process -Id ([int]$p.ProcessId) -ErrorAction Stop).Kill() } catch { }
+        }
     }
     try { (Get-Process -Id $Id -ErrorAction Stop).Kill() } catch { }
 }
@@ -1076,6 +1101,9 @@ function Start-Poll {
     $psi.RedirectStandardError = $true
     $psi.StandardOutputEncoding = [Text.Encoding]::UTF8
     $script:PollProc = [Diagnostics.Process]::Start($psi)
+    # 止めるときに、子孫を起動時刻で見分ける（Stop-ProcessTree）。取れなければ、止めるときに調べる
+    $script:PollStartTime = $null
+    try { $script:PollStartTime = $script:PollProc.StartTime } catch { }
     $script:PollTask = $script:PollProc.StandardOutput.ReadToEndAsync()
     [void]$script:PollProc.StandardError.ReadToEndAsync()
     $script:PollStarted = Get-Date
@@ -2025,6 +2053,7 @@ $form.Add_FormClosing({
 
 $script:PollTask = $null
 $script:PollProc = $null
+$script:PollStartTime = $null
 $script:LastSignature = $null
 $script:NextPoll = Get-Date
 $script:NextRender = Get-Date
@@ -2054,7 +2083,7 @@ $timer.Add_Tick({
             if ($script:PollTask) {
                 if (-not $script:PollTask.IsCompleted) {
                     if (($now - $script:PollStarted).TotalSeconds -gt 30) {
-                        try { Stop-ProcessTree -Id $script:PollProc.Id } catch { }
+                        try { Stop-ProcessTree -Id $script:PollProc.Id -StartTime $script:PollStartTime } catch { }
                         $script:PollProc.Dispose()
                         $script:PollProc = $null
                         $script:PollTask = $null
@@ -2118,7 +2147,7 @@ $form.Add_FormClosed({
         $tray.Visible = $false
         $tray.Dispose()
         if ($script:AppIcon) { $script:AppIcon.Dispose() }
-        if ($script:PollProc -and -not $script:PollProc.HasExited) { try { Stop-ProcessTree -Id $script:PollProc.Id } catch { } }
+        if ($script:PollProc -and -not $script:PollProc.HasExited) { try { Stop-ProcessTree -Id $script:PollProc.Id -StartTime $script:PollStartTime } catch { } }
         foreach ($client in @($script:CheckClient, $script:DownloadClient)) { if ($client) { try { $client.Dispose() } catch { } } }
         $script:Mutex.ReleaseMutex()
         $script:Mutex.Dispose()
