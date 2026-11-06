@@ -1256,6 +1256,11 @@ $lvV.MultiSelect = $false
 $lvV.HideSelection = $true
 $lvV.Activation = 'OneClick'
 $lvV.OwnerDraw = $true
+# マウスを乗せた行などを描き直すとき、地の色で消してから描くので、ちらつく。画面の外で描いてから一度に出す（二重バッファ）。
+# ListView は DoubleBuffered を LVS_EX_DOUBLEBUFFER として一覧に渡すが、外からは設定できないので、リフレクションで立てる。
+# 立てられなくても、少しちらつくだけなので続ける
+try { $lvV.GetType().GetProperty('DoubleBuffered', [Reflection.BindingFlags]'Instance, NonPublic').SetValue($lvV, $true, $null) }
+catch { }
 [void]$lvV.Columns.Add('', [int](300 * $scale))   # 幅は、一覧の幅に合わせ直す（Update-VerticalColumn）
 $script:VerticalLine = [Math]::Max([System.Windows.Forms.TextRenderer]::MeasureText('漢Ag', $form.Font).Height,
     [System.Windows.Forms.TextRenderer]::MeasureText('漢Ag', $boldFont).Height)

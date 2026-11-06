@@ -760,6 +760,11 @@ Assert-True ($andonText -match '\$lvV\.Add_ItemActivate\(') '縦の一覧も、�
 Assert-True ($andonText -match '\$lvV\.ContextMenuStrip = \$menu') '縦の一覧も、右クリックのメニューを出す'
 Assert-True ($andonText -match 'if \(\$script:Vertical\) \{ \$name = Get-VerticalName ') '縦の一覧の中の段は、Get-VerticalName で作る（名前がなければフォルダの名前）'
 Assert-True ($andonText -match '\$lvV\.BeginInvoke\(\[Action\] \{ Update-VerticalColumn \}\)') '縦の一覧の列は、一覧が大きさを変え終えてから合わせる（途中で変えると、横のスクロールバーが残る）'
+Assert-True ($andonText -match '\$lvV\.GetType\(\)\.GetProperty\(''DoubleBuffered''') '縦の一覧は二重バッファで描く（マウスを乗せた行を描き直すときに、ちらつかない）'
+# ListView は DoubleBuffered を受け持ち、LVS_EX_DOUBLEBUFFER として一覧に渡す（リフレクションで立てる先がある）
+Add-Type -AssemblyName System.Windows.Forms
+$dbProp = [System.Windows.Forms.ListView].GetProperty('DoubleBuffered', [Reflection.BindingFlags]'Instance, NonPublic')
+Assert-True ($dbProp -and $dbProp.DeclaringType -eq [System.Windows.Forms.ListView]) 'ListView は DoubleBuffered を自分で受け持つ（二重バッファを一覧に渡す）'
 Assert-True ($andonText -match 'Set-ThemeColors -Control \$lvV ') 'テーマを変えると、縦の一覧も塗る'
 Assert-True ($andonText -match '\[AndonThemeNative\]::SetTheme\(\$lvV\.Handle') 'ダークでは、縦の一覧のスクロールバーも暗くする'
 $subItemHandler = [regex]::Match($andonText, '\$lvV\.Add_DrawSubItem\(\{[^}]*\}\)')
