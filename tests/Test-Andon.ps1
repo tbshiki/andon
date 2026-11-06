@@ -433,6 +433,17 @@ Assert-Equal (Get-ExtraArguments -Arguments $launch.Arguments) '' '引数を付�
 Assert-Equal (Get-ExtraArguments -Arguments ($launch.Arguments + ' -ScanMs 500 -FallbackSec 60')) '-ScanMs 500 -FallbackSec 60' 'andon.ps1 の後ろの引数を引き継ぐ'
 Assert-Equal (Get-ExtraArguments -Arguments '--headless powershell.exe -File C:\work\andon\andon.ps1 -ScanMs 500') '-ScanMs 500' '引用符のないパスでも引き継ぐ'
 Assert-Equal (Get-ExtraArguments -Arguments $null) '' 'ショートカットがなければ空'
+# スタートメニューとスタートアップのショートカットは、アップデートしても、それぞれ自分の引数を引き継ぐ
+$withExtra = $launch.Arguments + ' -NoUpdateCheck -ScanMs 500'
+Assert-Equal (Get-InheritedExtraArguments -Own $withExtra -Other $launch.Arguments) '-NoUpdateCheck -ScanMs 500' '自分のショートカットの引数を引き継ぐ（スタートアップの方にだけ付けた -NoUpdateCheck を消さない）'
+Assert-Equal (Get-InheritedExtraArguments -Own $launch.Arguments -Other $withExtra) '' 'もう一方のショートカットの引数は足さない'
+Assert-Equal (Get-InheritedExtraArguments -Own $null -Other $withExtra) '-NoUpdateCheck -ScanMs 500' '自分のショートカットがなければ（新しく作るとき）、もう一方の引数を使う'
+Assert-Equal (Get-InheritedExtraArguments -Own $null -Other $null) '' 'どちらのショートカットもなければ空'
+$installText = Get-Content -LiteralPath (Join-Path $root 'install.ps1') -Raw -Encoding UTF8
+Assert-True ($installText -match '\$menuArguments = Get-ShortcutArguments -Path \$layout\.StartMenu\s+\$startupArguments = Get-ShortcutArguments -Path \$layout\.Startup') 'install.ps1 は、2 つのショートカットの引数を別々に読む'
+Assert-True ($installText -match '\$launch = Get-AndonLaunch -InstallDir \$layout\.InstallDir -ExtraArguments \(Get-InheritedExtraArguments -Own \$menuArguments -Other \$startupArguments\)') 'スタートメニューのショートカットと、インストールしたあとの起動は、スタートメニューの引数を使う'
+Assert-True ($installText -match '\$startupLaunch = Get-AndonLaunch -InstallDir \$layout\.InstallDir -ExtraArguments \(Get-InheritedExtraArguments -Own \$startupArguments -Other \$menuArguments\)') 'スタートアップのショートカットは、スタートアップの引数を使う'
+Assert-True ($installText -match '''create'' \{ New-AndonShortcut -Path \$layout\.Startup -Launch \$startupLaunch \}') 'アップデートでスタートアップのショートカットを書き直すときは、スタートアップの引数を使う'
 
 Assert-True (Test-AndonCommandLine -CommandLine 'powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File .\andon\andon.ps1') 'README の起動方法（相対パス）は andon'
 Assert-True (Test-AndonCommandLine -CommandLine 'pwsh -File andon.ps1 -ScanMs 500') 'フォルダのない andon.ps1 も andon'
@@ -911,7 +922,9 @@ try {
     $cmdText = [Text.Encoding]::ASCII.GetString($cmdBytes)
     Assert-Equal @($cmdBytes | Where-Object { $_ -ge 0x80 }).Count 0 'install.cmd は ASCII だけ（cmd.exe はコンソールのコード ページで読む）'
     Assert-True (-not [regex]::IsMatch($cmdText, "(?<!`r)`n")) 'install.cmd の改行は CRLF（LF だけだと goto の飛び先を読み違える）'
-    Assert-True ($cmdText.Contains('"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1"')) 'install.cmd は Windows PowerShell 5.1 を絶対パスで起動し、隣の install.ps1 を引用符で囲んで渡す'
+    Assert-True ($cmdText.Contains('set "ANDON_PS=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"')) 'install.cmd は Windows PowerShell 5.1 を絶対パスで起動する'
+    Assert-True ($cmdText.Contains('if exist "%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe" set "ANDON_PS=%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe"')) 'install.cmd は、32 ビットの cmd.exe で動いたときは、64 ビットの PowerShell（Sysnative）を起動する'
+    Assert-True ($cmdText.Contains('"%ANDON_PS%" -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1"')) 'install.cmd は、隣の install.ps1 を引用符で囲んで渡す'
     Assert-Equal ([regex]::IsMatch($cmdText, '(?im)^\s*(rem|::).*%')) $false 'install.cmd の注釈に % を書かない（rem の行も % を展開する）'
     $readmeTxt = Get-Content -LiteralPath (Join-Path $root 'README.txt') -Raw -Encoding UTF8
     Assert-Equal ([regex]::IsMatch($readmeTxt, '入れ|入る|入り')) $false 'README.txt は「入れる」ではなく「インストール」「アップデート」と書く'
@@ -1160,6 +1173,30 @@ try {
     }
     finally { $t.Process.Dispose() }
 
+    # 32 ビットのプログラム（アーカイバなど）から開くと、32 ビットの cmd.exe で動く。32 ビットの PowerShell からは
+    # System32\conhost.exe が見えずインストールできないので、そのときも 64 ビットの PowerShell で install.ps1 を実行する
+    $wowCmd = Join-Path $env:SystemRoot 'SysWOW64\cmd.exe'
+    if (-not [Environment]::Is64BitOperatingSystem -or -not (Test-Path -LiteralPath $wowCmd)) {
+        Write-Host '[SKIP] 64 ビットの Windows でないので、32 ビットの cmd.exe から開く場合を確かめられない'
+    }
+    else {
+        $wowDir = Join-Path $installTmp 'cmd-wow64\a b&c'
+        New-Item -ItemType Directory -Path $wowDir -Force | Out-Null
+        Copy-Item -LiteralPath $cmdSource -Destination $wowDir
+        [IO.File]::WriteAllText((Join-Path $wowDir 'install.ps1'), "[IO.File]::WriteAllText((Join-Path `$PSScriptRoot 'ran.txt'), [string][Environment]::Is64BitProcess)`r`nexit 0`r`n", (New-Object Text.UTF8Encoding($true)))
+        $t = Start-TestProcess -FilePath $wowCmd -Arguments ('/c ""' + (Join-Path $wowDir 'install.cmd') + '""')
+        try {
+            $before = $t.Process.WaitForExit(30000)
+            Assert-True ($before -and (Stop-TestProcess $t)) '32 ビットの cmd.exe から開いても、成功したら閉じる'
+            if ($before) { Assert-Equal $t.Process.ExitCode 0 '32 ビットの cmd.exe から開いても、成功したら終了コード 0' }
+        }
+        finally { $t.Process.Dispose() }
+        $ran = Join-Path $wowDir 'ran.txt'
+        $ranText = ''
+        if (Test-Path -LiteralPath $ran) { $ranText = [IO.File]::ReadAllText($ran) }
+        Assert-Equal $ranText 'True' '32 ビットの cmd.exe から開いても、install.ps1 は 64 ビットの PowerShell で動く'
+    }
+
     Write-Host '== install.ps1: -PauseOnError'
     # install.ps1 だけを写したフォルダで動かす。隣に andon.ps1 がないので、実際の場所に触れる前に、失敗して終わる。
     # 念のため、インストール先（%LOCALAPPDATA%）もテスト用のフォルダに向ける
@@ -1184,6 +1221,24 @@ try {
         Assert-Equal $t.Process.ExitCode 1 '-PauseOnError を付けても、失敗したら終了コード 1'
     }
     finally { $t.Process.Dispose() }
+
+    Write-Host '== install.ps1: 32 ビットの PowerShell'
+    # 64 ビットの Windows の 32 ビットの PowerShell からは System32\conhost.exe が見えないので、理由を出して終わる。
+    # 上と同じく、隣に andon.ps1 がないフォルダで動かす（確かめが外れても、実際の場所に触れる前に失敗して終わる）
+    $ps32 = Join-Path $env:SystemRoot 'SysWOW64\WindowsPowerShell\v1.0\powershell.exe'
+    if (-not [Environment]::Is64BitOperatingSystem -or -not (Test-Path -LiteralPath $ps32)) {
+        Write-Host '[SKIP] 64 ビットの Windows でないので、32 ビットの PowerShell の場合を確かめられない'
+    }
+    else {
+        $t = Start-TestProcess -FilePath $ps32 -Arguments $lonelyArgs -Environment $lonelyEnv
+        try {
+            $before = $t.Process.WaitForExit(30000)
+            Assert-True ($before -and (Stop-TestProcess $t)) '32 ビットの PowerShell なら、キーを待たずに閉じる'
+            if ($before) { Assert-Equal $t.Process.ExitCode 1 '32 ビットの PowerShell なら、終了コード 1' }
+            Assert-True ((Get-TestOutput $t) -match 'SysWOW64') '32 ビットの PowerShell なら、その場所を示して、インストールできない理由を出す'
+        }
+        finally { $t.Process.Dispose() }
+    }
 }
 finally {
     if (Test-Path -LiteralPath $installTmp) { Remove-Item -LiteralPath $installTmp -Recurse -Force }
@@ -1328,29 +1383,89 @@ try {
     }
 
     Write-Host '== Stop-ProcessTree'
-    $psi = New-Object Diagnostics.ProcessStartInfo 'cmd.exe', '/c powershell.exe -NoProfile -Command Start-Sleep -Seconds 60'
+    # andon と同じく、起動したときの Process.StartTime を渡すとき（子の起動時刻は WMI から取るので、2 つの時刻の基準が
+    # 揃っていないと、子孫を止めなくなる）と、渡さずに、動いている相手の起動時刻を調べるとき
+    foreach ($passStart in @($true, $false)) {
+        $how = '起動時刻を渡さないとき'
+        if ($passStart) { $how = '起動時刻を渡したとき' }
+        $psi = New-Object Diagnostics.ProcessStartInfo 'cmd.exe', '/c powershell.exe -NoProfile -Command Start-Sleep -Seconds 60'
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $parentProc = [Diagnostics.Process]::Start($psi)
+        $child = $null
+        $deadline = (Get-Date).AddSeconds(10)
+        while (-not $child -and (Get-Date) -lt $deadline) {
+            $child = Get-CimInstance Win32_Process -Filter "ParentProcessId=$($parentProc.Id) AND Name='powershell.exe'" | Select-Object -First 1
+            if (-not $child) { Start-Sleep -Milliseconds 200 }
+        }
+        Assert-True $child "子プロセスが起動した（$how）"
+        if ($passStart) { Stop-ProcessTree -Id $parentProc.Id -StartTime $parentProc.StartTime }
+        else { Stop-ProcessTree -Id $parentProc.Id }
+        Assert-True ($parentProc.WaitForExit(5000)) "親プロセスを止める（$how）"
+        if ($child) {
+            $childGone = $false
+            $deadline = (Get-Date).AddSeconds(5)
+            while (-not $childGone -and (Get-Date) -lt $deadline) {
+                $childGone = -not (Get-Process -Id $child.ProcessId -ErrorAction SilentlyContinue)
+                if (-not $childGone) { Start-Sleep -Milliseconds 200 }
+            }
+            Assert-True $childGone "子孫のプロセスも止める（$how）"
+        }
+        $parentProc.Dispose()
+    }
+
+    Write-Host '== Get-ProcessDescendant（親の PID の使い回し）'
+    $t0 = [datetime]'2026-01-01T12:00:00'
+    $procs = @(
+        [pscustomobject]@{ ProcessId = 100; ParentProcessId = 1; CreationDate = $t0 }                     # 止める相手
+        [pscustomobject]@{ ProcessId = 200; ParentProcessId = 100; CreationDate = $t0.AddSeconds(1) }    # 子
+        [pscustomobject]@{ ProcessId = 300; ParentProcessId = 200; CreationDate = $t0.AddSeconds(2) }    # 孫
+        [pscustomobject]@{ ProcessId = 400; ParentProcessId = 100; CreationDate = $t0.AddSeconds(-10) }  # 前に同じ PID だったプロセスの子
+        [pscustomobject]@{ ProcessId = 500; ParentProcessId = 400; CreationDate = $t0.AddSeconds(-5) }   # その子
+        [pscustomobject]@{ ProcessId = 600; ParentProcessId = 1; CreationDate = $t0.AddSeconds(3) }      # 無関係
+        [pscustomobject]@{ ProcessId = 700; ParentProcessId = 100; CreationDate = $null }                # 起動時刻が分からない
+    )
+    $found = @(Get-ProcessDescendant -Processes $procs -Id 100 -StartTime $t0 | ForEach-Object { $_.ProcessId }) -join ','
+    Assert-Equal $found '300,200' '子孫を深いものから返す。止める相手より前に起動した「子」とその子孫、起動時刻の分からないものは含めない'
+    Assert-Equal @(Get-ProcessDescendant -Processes $procs -Id 100 -StartTime $t0.AddSeconds(5)).Count 0 '止める相手が「子」より後に起動していれば（PID の使い回し）、子孫はない'
+
+    Write-Host '== Stop-ProcessTree: 親が終わったあとの子'
+    # 親（cmd.exe）が終わったあとも動き続ける子を作る。子の ParentProcessId は、終わった親の PID のまま残る。
+    # 親の Process を Dispose するまで、その PID はほかのプロセスに使い回されない（テストが無関係なプロセスを止めない）
+    function Test-SameProcess {
+        param($Cim)
+        $now = Get-CimInstance Win32_Process -Filter "ProcessId=$($Cim.ProcessId)" -ErrorAction SilentlyContinue
+        return [bool]($now -and $now.CreationDate -eq $Cim.CreationDate)
+    }
+    $psi = New-Object Diagnostics.ProcessStartInfo 'cmd.exe', '/c start "" /b powershell.exe -NoProfile -Command Start-Sleep -Seconds 60'
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
-    $parentProc = [Diagnostics.Process]::Start($psi)
-    $child = $null
-    $deadline = (Get-Date).AddSeconds(10)
-    while (-not $child -and (Get-Date) -lt $deadline) {
-        $child = Get-CimInstance Win32_Process -Filter "ParentProcessId=$($parentProc.Id) AND Name='powershell.exe'" | Select-Object -First 1
-        if (-not $child) { Start-Sleep -Milliseconds 200 }
-    }
-    Assert-True $child '子プロセスが起動した'
-    Stop-ProcessTree -Id $parentProc.Id
-    Assert-True ($parentProc.WaitForExit(5000)) '親プロセスを止める'
-    if ($child) {
-        $childGone = $false
-        $deadline = (Get-Date).AddSeconds(5)
-        while (-not $childGone -and (Get-Date) -lt $deadline) {
-            $childGone = -not (Get-Process -Id $child.ProcessId -ErrorAction SilentlyContinue)
-            if (-not $childGone) { Start-Sleep -Milliseconds 200 }
+    $goneProc = [Diagnostics.Process]::Start($psi)
+    $orphan = $null
+    try {
+        [void]$goneProc.WaitForExit(10000)
+        $deadline = (Get-Date).AddSeconds(10)
+        while (-not $orphan -and (Get-Date) -lt $deadline) {
+            $orphan = Get-CimInstance Win32_Process -Filter "ParentProcessId=$($goneProc.Id) AND Name='powershell.exe'" | Select-Object -First 1
+            if (-not $orphan) { Start-Sleep -Milliseconds 200 }
         }
-        Assert-True $childGone '子孫のプロセスも止める'
+        Assert-True ($goneProc.HasExited -and $orphan) '親が終わったあとも動き続ける子ができた'
+        if ($orphan) {
+            Stop-ProcessTree -Id $goneProc.Id
+            Start-Sleep -Milliseconds 500
+            Assert-True (Test-SameProcess $orphan) '止める相手がもう終わっていて、起動時刻が分からなければ、子孫は止めない'
+            # 同じ PID を新しいプロセスが使い回したときと同じ（止める相手は、子より後に起動した）
+            Stop-ProcessTree -Id $goneProc.Id -StartTime (Get-Date)
+            Start-Sleep -Milliseconds 500
+            Assert-True (Test-SameProcess $orphan) '止める相手より前に起動した「子」は止めない（PID の使い回し）'
+        }
     }
-    $parentProc.Dispose()
+    finally {
+        if ($orphan -and (Test-SameProcess $orphan)) { try { Stop-Process -Id $orphan.ProcessId -Force -ErrorAction Stop } catch { } }
+        $goneProc.Dispose()
+    }
+    Assert-True ($andonText -match 'try \{ \$script:PollStartTime = \$script:PollProc\.StartTime \}') 'claude agents --json を起動したときに、その起動時刻を覚える'
+    Assert-Equal ([regex]::Matches($andonText, 'Stop-ProcessTree -Id \$script:PollProc\.Id -StartTime \$script:PollStartTime').Count) 2 'claude agents --json を止めるとき（応答しないとき、andon を終了するとき）は、起動時刻を渡す'
 }
 finally {
     if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Recurse -Force }

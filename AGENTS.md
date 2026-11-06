@@ -67,6 +67,9 @@
 3. tag `v<版>` を作る前に、ユーザーに確認する。確認を得たら、`main` のそのコミットに `git tag -a v<版> -m "andon <版>"` で tag を付けて push する。
 4. workflow `release`（`.github/workflows/release.yml`）が、tag のコミットでテストし、tag と `$script:AndonVersion` が一致するか、tag のコミットが `main` にあるかを確かめて、`andon-<版>.zip` を付けた下書きの Release を作る。zip の中身は `install.ps1` の `Get-AndonPayload`。
 5. 下書きは AI が公開しない。ユーザーが GitHub で中身を確かめて公開する。公開すると、asset と tag は変えられなくなる。
+   - 下書きのノートを AI が直すときは、`gh release edit v<版> --notes-file <ファイル>` を使う。`gh api` で `body` だけを送らない。GitHub の API は、`tag_name` を渡さない更新で Release から tag を外す。そのまま公開すると `untagged-…` という tag の Release になり、どの andon もアップデートを知らせない（0.2.2 で一度起きた。そのときは、Release と `untagged-…` の tag を消して、同じ版で出し直した）。
+   - ノートを直したあと、下書きの `tag_name` が `v<版>` のままかを確かめてから、公開をお願いする。下書きの URL が `untagged-…` なのは普通のことで、見るのは `tag_name`。
+   - 公開されたら、`releases/latest` の `tag_name` が `v<版>` かを確かめる。
 6. workflow が失敗したときや、下書きのうちに誤りに気付いたときは、下書きと tag を消して（ruleset で admin だけができる）、直してから付け直す。公開したあとに誤りに気付いたときは、同じ版を作り直せないので、次の版を出す。
 
 ## GitHub の設定

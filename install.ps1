@@ -109,6 +109,16 @@ function Get-ExtraArguments {
     return ''
 }
 
+function Get-InheritedExtraArguments {
+    <# 書き直すショートカットに引き継ぐ、andon.ps1 の後ろの引数。スタートメニューとスタートアップのショートカットは、
+       それぞれ自分の引数を引き継ぐ（ログオンで動くスタートアップの方にだけ -NoUpdateCheck などを付けた人の設定を消さない）。
+       自分のショートカットがなければ（新しく作るとき）、もう一方のショートカットの引数を使う。
+       $Own と $Other は、ショートカットの引数（Get-ShortcutArguments。ショートカットがなければ $null） #>
+    param([string]$Own, [string]$Other)
+    if ($Own) { return Get-ExtraArguments -Arguments $Own }
+    return Get-ExtraArguments -Arguments $Other
+}
+
 function Get-AndonLaunch {
     <# andon を起動するコマンド。ショートカットにも、入れたあとの起動にも使う。
        - Windows PowerShell 5.1 に固定する。どの Windows にもあり、Windows はトレイのアイコンの表示の設定を
@@ -418,6 +428,13 @@ try {
         Exit-Install 0
     }
 
+    # 64 ビットの Windows で 32 ビットの PowerShell から実行すると、System32 が SysWOW64 に読み替えられ、andon を起動する
+    # conhost.exe が見えない（32 ビットのプログラムから開いたときなど）。install.cmd は、64 ビットの PowerShell で実行する
+    if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
+        Write-Host ('この PowerShell（{0}）は 32 ビットなので、andon をインストールできません。install.cmd をダブルクリックするか、64 ビットの PowerShell（{1}）で実行してください。' -f $PSHOME, (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe')) -ForegroundColor Red
+        Exit-Install 1
+    }
+
     $source = $PSScriptRoot
     if (-not $source -or -not (Test-Path -LiteralPath (Join-Path $source 'andon.ps1') -PathType Leaf)) {
         Write-Host 'andon.ps1 が見つかりません。install.ps1 は、andon.ps1 と同じフォルダに置いたまま、ファイルとして実行してください。' -ForegroundColor Red
@@ -453,18 +470,20 @@ try {
         Write-Host '注意: VS Code の code.cmd が見つかりません。andon は、これを手がかりに VS Code を探します。' -ForegroundColor Yellow
     }
 
-    # andon.ps1 の後ろに付けた引数（-ScanMs など）は、前のショートカットから引き継ぐ
+    # andon.ps1 の後ろに付けた引数（-ScanMs など）は、ショートカットごとに、前のショートカットから引き継ぐ。
+    # インストールしたあとの起動には、スタートメニューの方を使う
     $isUpdate = Test-Path -LiteralPath (Join-Path $layout.InstallDir 'andon.ps1') -PathType Leaf
-    $previous = Get-ShortcutArguments -Path $layout.StartMenu
-    if (-not $previous) { $previous = Get-ShortcutArguments -Path $layout.Startup }
-    $launch = Get-AndonLaunch -InstallDir $layout.InstallDir -ExtraArguments (Get-ExtraArguments -Arguments $previous)
+    $menuArguments = Get-ShortcutArguments -Path $layout.StartMenu
+    $startupArguments = Get-ShortcutArguments -Path $layout.Startup
+    $launch = Get-AndonLaunch -InstallDir $layout.InstallDir -ExtraArguments (Get-InheritedExtraArguments -Own $menuArguments -Other $startupArguments)
+    $startupLaunch = Get-AndonLaunch -InstallDir $layout.InstallDir -ExtraArguments (Get-InheritedExtraArguments -Own $startupArguments -Other $menuArguments)
     $startupAction = Get-StartupAction -NoStartup $NoStartup.IsPresent -IsUpdate $isUpdate -Exists (Test-AndonShortcut -Path $layout.Startup)
 
     if (-not (Stop-RunningAndon)) { Write-Host $notStopped -ForegroundColor Red; Exit-Install 1 }
     $placed = @(Copy-AndonFiles -SourceDir $source -InstallDir $layout.InstallDir)
     New-AndonShortcut -Path $layout.StartMenu -Launch $launch
     switch ($startupAction) {
-        'create' { New-AndonShortcut -Path $layout.Startup -Launch $launch }
+        'create' { New-AndonShortcut -Path $layout.Startup -Launch $startupLaunch }
         'remove' { [void](Remove-AndonShortcut -Path $layout.Startup) }
     }
 
