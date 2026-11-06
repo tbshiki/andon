@@ -4,7 +4,7 @@
 
 ## プロジェクト概要
 
-- andon は、Claude Code の対話セッションの状態（実行中・許可待ち・質問待ち・完了）を一覧し、クリックでそのセッションの VS Code ウィンドウを前面に出す、Windows 向けの小さな GUI ツールである。
+- andon は、Claude Code の対話セッションの状態（実行中・許可待ち・質問待ち・完了）を一覧し、クリックでそのセッションのウィンドウ（VS Code や Windows Terminal など）を前面に出す、Windows 向けの小さな GUI ツールである。
 - 技術スタック: PowerShell + Windows Forms。Windows PowerShell 5.1 と PowerShell 7 の両方で動かす。ビルドはない。
 - 状態の正本は公式の `claude agents --json` とする。Claude Code の設定ディレクトリ（既定は `~/.claude`）の内部ファイルは、変化の検知（ファイル名と更新時刻）にだけ使い、中身を解釈しない。内部の形式が変わっても定期取得で動き続けること（フェイルソフト）を必須とする。
 - 公開リポジトリである。実在のパス、user 名、セッション名、メールアドレスなどの個人の値を、コード、テスト、文書、コミットメッセージに書かない。例には placeholder を使う。
