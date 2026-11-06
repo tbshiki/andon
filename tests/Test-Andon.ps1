@@ -1383,29 +1383,36 @@ try {
     }
 
     Write-Host '== Stop-ProcessTree'
-    $psi = New-Object Diagnostics.ProcessStartInfo 'cmd.exe', '/c powershell.exe -NoProfile -Command Start-Sleep -Seconds 60'
-    $psi.UseShellExecute = $false
-    $psi.CreateNoWindow = $true
-    $parentProc = [Diagnostics.Process]::Start($psi)
-    $child = $null
-    $deadline = (Get-Date).AddSeconds(10)
-    while (-not $child -and (Get-Date) -lt $deadline) {
-        $child = Get-CimInstance Win32_Process -Filter "ParentProcessId=$($parentProc.Id) AND Name='powershell.exe'" | Select-Object -First 1
-        if (-not $child) { Start-Sleep -Milliseconds 200 }
-    }
-    Assert-True $child '子プロセスが起動した'
-    Stop-ProcessTree -Id $parentProc.Id
-    Assert-True ($parentProc.WaitForExit(5000)) '親プロセスを止める'
-    if ($child) {
-        $childGone = $false
-        $deadline = (Get-Date).AddSeconds(5)
-        while (-not $childGone -and (Get-Date) -lt $deadline) {
-            $childGone = -not (Get-Process -Id $child.ProcessId -ErrorAction SilentlyContinue)
-            if (-not $childGone) { Start-Sleep -Milliseconds 200 }
+    # andon と同じく、起動したときの Process.StartTime を渡すとき（子の起動時刻は WMI から取るので、2 つの時刻の基準が
+    # 揃っていないと、子孫を止めなくなる）と、渡さずに、動いている相手の起動時刻を調べるとき
+    foreach ($passStart in @($true, $false)) {
+        $how = '起動時刻を渡さないとき'
+        if ($passStart) { $how = '起動時刻を渡したとき' }
+        $psi = New-Object Diagnostics.ProcessStartInfo 'cmd.exe', '/c powershell.exe -NoProfile -Command Start-Sleep -Seconds 60'
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $parentProc = [Diagnostics.Process]::Start($psi)
+        $child = $null
+        $deadline = (Get-Date).AddSeconds(10)
+        while (-not $child -and (Get-Date) -lt $deadline) {
+            $child = Get-CimInstance Win32_Process -Filter "ParentProcessId=$($parentProc.Id) AND Name='powershell.exe'" | Select-Object -First 1
+            if (-not $child) { Start-Sleep -Milliseconds 200 }
         }
-        Assert-True $childGone '子孫のプロセスも止める'
+        Assert-True $child "子プロセスが起動した（$how）"
+        if ($passStart) { Stop-ProcessTree -Id $parentProc.Id -StartTime $parentProc.StartTime }
+        else { Stop-ProcessTree -Id $parentProc.Id }
+        Assert-True ($parentProc.WaitForExit(5000)) "親プロセスを止める（$how）"
+        if ($child) {
+            $childGone = $false
+            $deadline = (Get-Date).AddSeconds(5)
+            while (-not $childGone -and (Get-Date) -lt $deadline) {
+                $childGone = -not (Get-Process -Id $child.ProcessId -ErrorAction SilentlyContinue)
+                if (-not $childGone) { Start-Sleep -Milliseconds 200 }
+            }
+            Assert-True $childGone "子孫のプロセスも止める（$how）"
+        }
+        $parentProc.Dispose()
     }
-    $parentProc.Dispose()
 
     Write-Host '== Get-ProcessDescendant（親の PID の使い回し）'
     $t0 = [datetime]'2026-01-01T12:00:00'
