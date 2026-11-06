@@ -23,7 +23,7 @@
       覚えた位置が画面の外なら、一番近い画面に収める。読めなければ既定（主画面の右下）。
     - トレイのメニューの「テーマ」で、ライト・ダーク・Windows に合わせる（既定）を選ぶ。選んだものも同じ場所に覚える。
       Windows に合わせるときは、Windows のアプリ モードが変わったら、すぐに塗り直す。ライトは、これまでと同じ見た目。
-    - トレイのメニューの「縦表示」で、1 件を 2 段（上の段に状態と経過、下の段にセッション名とフォルダ）で出す一覧に切り替える。
+    - トレイのメニューの「縦表示」で、1 件を 3 段（上の段に状態と経過、中の段にセッション名、下の段にフォルダ）で出す一覧に切り替える。
       縦に細長いウィンドウ向け。フォルダが入りきらなければ、途中を「…」で省略して最後のフォルダ名を残す。選んだものも同じ場所に覚える。
       切り替えても、ウィンドウの位置と大きさは変えない。
     - 新しい待ちや完了が出たとき、このウィンドウが前面になければ Windows の通知を出す。
@@ -891,27 +891,33 @@ function Get-WindowPlacement {
 }
 
 # ---------------------------------------------------------------------------
-# 縦表示（トレイのメニューの「縦表示」。D-35、D-74〜D-78）。1 件を 2 段で出す。上の段に状態（左）と経過（右端）、
-# 下の段にセッション名とフォルダ。設定の Vertical に 1（縦）か 0（横）を書く。行は GUI の部分で描く（Show-VerticalItem）
+# 縦表示（トレイのメニューの「縦表示」。D-35、D-74〜D-79）。1 件を 3 段で出す。上の段に状態（左）と経過（右端）、
+# 中の段にセッション名、下の段にフォルダ。設定の Vertical に 1（縦）か 0（横）を書く。行は GUI の部分で描く（Show-VerticalItem）
 # ---------------------------------------------------------------------------
 
-function Get-VerticalSubLine {
-    <# 縦表示の下の段の文。セッション名とフォルダ（cwd）を「 · 」でつなぐ。名前がなければフォルダだけ、フォルダがなければ名前だけ。
-       幅に収まらないときは、描くときにフォルダの途中を「…」で省略し、最後のフォルダ名を残す（PathEllipsis。D-75） #>
+function Get-VerticalName {
+    <# 縦表示の中の段の文。セッション名。名前がなければ、フォルダの名前（cwd の最後のフォルダ。通知の題と同じ決め方）。
+       ドライブの直下などで、フォルダの名前が取れなければ cwd のまま。下の段には、どちらのときも cwd を出す #>
     param([string]$Name, [string]$Cwd)
-    return (@($Name, $Cwd) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join ' · '
+    if (-not [string]::IsNullOrWhiteSpace($Name)) { return $Name }
+    if (-not $Cwd) { return '' }
+    $leaf = ''
+    try { $leaf = [IO.Path]::GetFileName($Cwd.TrimEnd('\', '/')) }
+    catch { }   # パスに使えない文字があれば、cwd のまま出す
+    if (-not $leaf) { return $Cwd }
+    return $leaf
 }
 
 function Get-VerticalRowHeight {
-    <# 縦表示の 1 件の高さ。2 段の字（1 段の高さ $LineHeight）と、上下の余白 #>
+    <# 縦表示の 1 件の高さ。3 段の字（1 段の高さ $LineHeight）と、上下の余白 #>
     param([int]$LineHeight, [int]$Padding)
-    return 2 * $LineHeight + 2 * $Padding
+    return 3 * $LineHeight + 2 * $Padding
 }
 
 function Get-VerticalItemLayout {
     <# 縦表示の 1 件の中で、字を置く場所（Left、Top、Width、Height）。$Left、$Top、$Width は、行の場所と幅。
        上の段は、状態を左に、経過を右端に置く（経過は、上の段の幅いっぱいの場所に右寄せで描く）。状態は、経過の幅（$ElapsedWidth）と
-       間（$Gap）の分だけ狭めて、重ならないようにする。下の段は、セッション名とフォルダ。幅が足りなければ 0 で止める #>
+       間（$Gap）の分だけ狭めて、重ならないようにする。中の段はセッション名、下の段はフォルダ。幅が足りなければ 0 で止める #>
     param([int]$Left, [int]$Top, [int]$Width, [int]$LineHeight, [int]$Padding, [int]$ElapsedWidth, [int]$Gap)
     $x = $Left + $Padding
     $w = [Math]::Max(0, $Width - 2 * $Padding)
@@ -921,7 +927,8 @@ function Get-VerticalItemLayout {
     return [pscustomobject]@{
         Status  = [pscustomobject]@{ Left = $x; Top = $y; Width = $statusWidth; Height = $LineHeight }
         Elapsed = [pscustomobject]@{ Left = $x; Top = $y; Width = $w; Height = $LineHeight }
-        Sub     = [pscustomobject]@{ Left = $x; Top = $y + $LineHeight; Width = $w; Height = $LineHeight }
+        Name    = [pscustomobject]@{ Left = $x; Top = $y + $LineHeight; Width = $w; Height = $LineHeight }
+        Folder  = [pscustomobject]@{ Left = $x; Top = $y + 2 * $LineHeight; Width = $w; Height = $LineHeight }
     }
 }
 
@@ -1237,7 +1244,7 @@ $lv.Activation = 'OneClick'
 [void]$lv.Columns.Add('セッション', [int](170 * $scale))
 [void]$lv.Columns.Add('フォルダ', [int](300 * $scale))
 
-# 縦表示の一覧（D-78）。見出しのない 1 列の一覧で、行の高さを 2 段分に広げ、行を自分で描く（Show-VerticalItem）。
+# 縦表示の一覧（D-78、D-79）。見出しのない 1 列の一覧で、行の高さを 3 段分に広げ、行を自分で描く（Show-VerticalItem）。
 # 横の一覧とは別に作り、表示する方を入れ替える（広げた行の高さは、一覧を作り直さないと戻せないため）
 $script:Vertical = $script:Settings.Vertical -eq $true
 $lvV = New-Object System.Windows.Forms.ListView
@@ -1483,9 +1490,10 @@ $lv.Add_DrawItem({ param($source, $e) $e.DrawDefault = $true })
 $lv.Add_DrawSubItem({ param($source, $e) $e.DrawDefault = $true })
 
 function Show-VerticalItem {
-    <# 縦表示の 1 件を 2 段で描く（D-78）。上の段に状態と経過（待ちと完了は太字）、下の段にセッション名とフォルダ（太字にしない。
-       入りきらなければ、フォルダの途中を「…」で省略して最後のフォルダ名を残す。D-75）。行の下に区切りの線を引く。
-       選んだ行は、一覧にフォーカスがあるときだけ Windows の強調色にする（横の一覧と同じ）。マウスを乗せた行は、色の組の Hover にする（D-77） #>
+    <# 縦表示の 1 件を 3 段で描く（D-78、D-79）。上の段に状態と経過（待ちと完了は太字）。中の段にセッション名（入りきらなければ末尾を
+       「…」で省略）、下の段にフォルダ（入りきらなければ途中を「…」で省略して最後のフォルダ名を残す。D-75）。中と下の段は太字にしない。
+       行の下に区切りの線を引く。選んだ行は、一覧にフォーカスがあるときだけ Windows の強調色にする（横の一覧と同じ）。
+       マウスを乗せた行は、色の組の Hover にする（D-77） #>
     param($DrawArgs)
     $item = $DrawArgs.Item
     $g = $DrawArgs.Graphics
@@ -1512,9 +1520,11 @@ function Show-VerticalItem {
         $g.DrawLine($pen, $rect.Left, $rect.Bottom - 1, $rect.Right, $rect.Bottom - 1)
         $flags = [System.Windows.Forms.TextFormatFlags]'SingleLine, NoPrefix, VerticalCenter'
         $elapsed = ''
-        $sub = ''
+        $name = ''
+        $folder = ''
         if ($item.SubItems.Count -gt 1) { $elapsed = $item.SubItems[1].Text }
-        if ($item.SubItems.Count -gt 2) { $sub = $item.SubItems[2].Text }
+        if ($item.SubItems.Count -gt 2) { $name = $item.SubItems[2].Text }
+        if ($item.SubItems.Count -gt 3) { $folder = $item.SubItems[3].Text }
         $elapsedWidth = 0
         if ($elapsed) {
             $elapsedWidth = [System.Windows.Forms.TextRenderer]::MeasureText($g, $elapsed, $item.Font, (New-Object System.Drawing.Size([int]::MaxValue, [int]::MaxValue)), $flags).Width
@@ -1528,8 +1538,12 @@ function Show-VerticalItem {
             [System.Windows.Forms.TextRenderer]::DrawText($g, $elapsed, $item.Font, (& $toRect $layout.Elapsed), $fore,
                 ($flags -bor [System.Windows.Forms.TextFormatFlags]::Right))
         }
-        if ($sub) {
-            [System.Windows.Forms.TextRenderer]::DrawText($g, $sub, $lvV.Font, (& $toRect $layout.Sub), $fore,
+        if ($name) {
+            [System.Windows.Forms.TextRenderer]::DrawText($g, $name, $lvV.Font, (& $toRect $layout.Name), $fore,
+                ($flags -bor [System.Windows.Forms.TextFormatFlags]::EndEllipsis))
+        }
+        if ($folder) {
+            [System.Windows.Forms.TextRenderer]::DrawText($g, $folder, $lvV.Font, (& $toRect $layout.Folder), $fore,
                 ($flags -bor [System.Windows.Forms.TextFormatFlags]::PathEllipsis))
         }
     }
@@ -1576,8 +1590,12 @@ $lvV.Add_MouseLeave({ Set-VerticalHot -Index -1 })
 # 選んだ行は、フォーカスがあるときだけ強調色で描くので、フォーカスが変わったら描き直す
 $lvV.Add_GotFocus({ $lvV.Invalidate() })
 $lvV.Add_LostFocus({ $lvV.Invalidate() })
-# 縦のスクロールバーが出たり消えたり、ウィンドウの大きさを変えたりしたら、列を一覧の幅に合わせる
-$lvV.Add_ClientSizeChanged({ Update-VerticalColumn })
+# 縦のスクロールバーが出たり消えたり、ウィンドウの大きさを変えたりしたら、列を一覧の幅に合わせる。
+# 一覧が大きさを変えている途中で列の幅を変えると、一覧が横のスクロールバーを消さないので、変え終えてから合わせる
+$lvV.Add_ClientSizeChanged({
+        if ($lvV.IsHandleCreated) { [void]$lvV.BeginInvoke([Action] { Update-VerticalColumn }) }
+        else { Update-VerticalColumn }
+    })
 
 function Get-ActiveList {
     <# 表示している一覧（縦表示なら縦の一覧） #>
@@ -1607,14 +1625,11 @@ function Update-ListView {
         if ($e.Since) { $elapsed = Format-Elapsed ($now - $e.Since) }
         $item = New-Object System.Windows.Forms.ListViewItem((Get-StatusLabel $e))
         [void]$item.SubItems.Add($elapsed)
-        if ($script:Vertical) {
-            # 縦は、下の段の文を 1 つにまとめて持つ（Show-VerticalItem が描く）
-            [void]$item.SubItems.Add((Get-VerticalSubLine -Name $e.Name -Cwd $e.Cwd))
-        }
-        else {
-            [void]$item.SubItems.Add($e.Name)
-            [void]$item.SubItems.Add($e.Cwd)
-        }
+        # 縦の中の段は、名前がなければフォルダの名前にする（Show-VerticalItem が描く）
+        $name = $e.Name
+        if ($script:Vertical) { $name = Get-VerticalName -Name $e.Name -Cwd $e.Cwd }
+        [void]$item.SubItems.Add($name)
+        [void]$item.SubItems.Add($e.Cwd)
         $item.Tag = $e.Key
         # 行の色はテーマの色の組（Get-ThemePalette）から。実行中は見てほしい行ではないので、太字にしない
         $style = $script:Palette.Rows[(Get-Rank $e)]

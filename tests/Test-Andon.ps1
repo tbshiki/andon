@@ -729,29 +729,37 @@ $ratio = Get-ContrastRatio -Fore $light.Rows[3].Fore -Back $light.Rows[3].Hover
 Assert-True ($ratio -ge 3) ("ライトの待機の行は、マウスを乗せても 3 以上で読める（コントラスト比 {0:0.0}）" -f $ratio)
 
 # ---------------------------------------------------------------------------
-Write-Host '== andon.ps1: 縦表示（Get-VerticalSubLine / Get-VerticalRowHeight / Get-VerticalItemLayout）'
-Assert-Equal (Get-VerticalSubLine -Name 'api-refactor' -Cwd 'C:\work\backend') 'api-refactor · C:\work\backend' '下の段は、セッション名とフォルダを「 · 」でつなぐ'
-Assert-Equal (Get-VerticalSubLine -Name '' -Cwd 'C:\work\backend') 'C:\work\backend' '名前がなければ、フォルダだけ'
-Assert-Equal (Get-VerticalSubLine -Name '  ' -Cwd 'C:\work\backend') 'C:\work\backend' '空白だけの名前は、ないものとして扱う'
-Assert-Equal (Get-VerticalSubLine -Name 'api-refactor' -Cwd '') 'api-refactor' 'フォルダがなければ、名前だけ'
-Assert-Equal (Get-VerticalSubLine -Name '' -Cwd '') '' 'どちらもなければ空'
-Assert-Equal (Get-VerticalRowHeight -LineHeight 15 -Padding 4) 38 '1 件の高さは、2 段の字と上下の余白'
+Write-Host '== andon.ps1: 縦表示（Get-VerticalName / Get-VerticalRowHeight / Get-VerticalItemLayout）'
+Assert-Equal (Get-VerticalName -Name 'api-refactor' -Cwd 'C:\work\backend') 'api-refactor' '中の段は、セッション名'
+Assert-Equal (Get-VerticalName -Name '' -Cwd 'C:\work\backend') 'backend' '名前がなければ、フォルダの名前（cwd の最後のフォルダ。D-79）'
+Assert-Equal (Get-VerticalName -Name '  ' -Cwd 'C:\work\backend') 'backend' '空白だけの名前は、ないものとして扱う'
+Assert-Equal (Get-VerticalName -Name '' -Cwd 'C:\work\backend\') 'backend' 'cwd の末尾の区切りは無視する'
+Assert-Equal (Get-VerticalName -Name '' -Cwd 'C:\') 'C:\' 'ドライブの直下で、フォルダの名前がなければ cwd のまま'
+Assert-Equal (Get-VerticalName -Name '' -Cwd '\\server\share\proj') 'proj' '共有フォルダの中でも、最後のフォルダの名前'
+Assert-Equal (Get-VerticalName -Name 'api-refactor' -Cwd '') 'api-refactor' 'フォルダがなくても、名前は出す'
+Assert-Equal (Get-VerticalName -Name '' -Cwd '') '' 'どちらもなければ空'
+$noticeEntry = [pscustomobject]@{ Key = '9'; Status = 'waiting'; Unread = $true; Name = ''; Cwd = 'C:\work\proj'; WaitingFor = ''; AlertAt = $t0 }
+Assert-True ((Get-AlertNotice -Entries @($noticeEntry) -Now $t0).Text.EndsWith((Get-VerticalName -Name '' -Cwd 'C:\work\proj'))) '名前がないときの中の段は、通知の題と同じ（フォルダの名前）'
+Assert-Equal (Get-VerticalRowHeight -LineHeight 15 -Padding 4) 53 '1 件の高さは、3 段の字と上下の余白'
 function Format-Box { param($B) return '{0},{1},{2},{3}' -f $B.Left, $B.Top, $B.Width, $B.Height }
-$layout = Get-VerticalItemLayout -Left 0 -Top 38 -Width 251 -LineHeight 15 -Padding 4 -ElapsedWidth 40 -Gap 8
-Assert-Equal (Format-Box $layout.Status) '4,42,195,15' '上の段の状態は、余白の内側で、経過と間の分だけ狭める（重ならない）'
-Assert-Equal (Format-Box $layout.Elapsed) '4,42,243,15' '経過は、上の段の幅いっぱいの場所に、右寄せで描く'
-Assert-Equal (Format-Box $layout.Sub) '4,57,243,15' '下の段は、上の段のすぐ下に、幅いっぱい'
-Assert-Equal ($layout.Sub.Top + $layout.Sub.Height + 4) (38 + (Get-VerticalRowHeight -LineHeight 15 -Padding 4)) '下の段は、1 件の高さの中に収まる'
+$layout = Get-VerticalItemLayout -Left 0 -Top 53 -Width 251 -LineHeight 15 -Padding 4 -ElapsedWidth 40 -Gap 8
+Assert-Equal (Format-Box $layout.Status) '4,57,195,15' '上の段の状態は、余白の内側で、経過と間の分だけ狭める（重ならない）'
+Assert-Equal (Format-Box $layout.Elapsed) '4,57,243,15' '経過は、上の段の幅いっぱいの場所に、右寄せで描く'
+Assert-Equal (Format-Box $layout.Name) '4,72,243,15' '中の段（セッション名）は、上の段のすぐ下に、幅いっぱい'
+Assert-Equal (Format-Box $layout.Folder) '4,87,243,15' '下の段（フォルダ）は、中の段のすぐ下に、幅いっぱい'
+Assert-Equal ($layout.Folder.Top + $layout.Folder.Height + 4) (53 + (Get-VerticalRowHeight -LineHeight 15 -Padding 4)) '下の段は、1 件の高さの中に収まる'
 Assert-Equal (Get-VerticalItemLayout -Left 0 -Top 0 -Width 251 -LineHeight 15 -Padding 4 -ElapsedWidth 0 -Gap 8).Status.Width 243 '経過がなければ、状態は幅いっぱい'
 $narrow = Get-VerticalItemLayout -Left 0 -Top 0 -Width 30 -LineHeight 15 -Padding 4 -ElapsedWidth 40 -Gap 8
-Assert-Equal "$($narrow.Status.Width),$($narrow.Sub.Width)" '0,22' '経過より狭くても、状態の幅はマイナスにしない'
+Assert-Equal "$($narrow.Status.Width),$($narrow.Name.Width),$($narrow.Folder.Width)" '0,22,22' '経過より狭くても、状態の幅はマイナスにしない'
 $tiny = Get-VerticalItemLayout -Left 0 -Top 0 -Width 5 -LineHeight 15 -Padding 4 -ElapsedWidth 0 -Gap 8
-Assert-Equal "$($tiny.Status.Width),$($tiny.Elapsed.Width),$($tiny.Sub.Width)" '0,0,0' '余白より狭ければ、どれも 0'
+Assert-Equal "$($tiny.Status.Width),$($tiny.Elapsed.Width),$($tiny.Name.Width),$($tiny.Folder.Width)" '0,0,0,0' '余白より狭ければ、どれも 0'
 
 # 縦の一覧は GUI の部分（ドットソースの境界より後ろ）で作るので、つなぎ方を本文で確かめる
 Assert-True ($andonText -match '\$lvV\.Activation = ''OneClick''') '縦の一覧も、1 回のクリックで開く（Activation = OneClick）'
 Assert-True ($andonText -match '\$lvV\.Add_ItemActivate\(') '縦の一覧も、行のクリックでセッションを開く（ItemActivate）'
 Assert-True ($andonText -match '\$lvV\.ContextMenuStrip = \$menu') '縦の一覧も、右クリックのメニューを出す'
+Assert-True ($andonText -match 'if \(\$script:Vertical\) \{ \$name = Get-VerticalName ') '縦の一覧の中の段は、Get-VerticalName で作る（名前がなければフォルダの名前）'
+Assert-True ($andonText -match '\$lvV\.BeginInvoke\(\[Action\] \{ Update-VerticalColumn \}\)') '縦の一覧の列は、一覧が大きさを変え終えてから合わせる（途中で変えると、横のスクロールバーが残る）'
 Assert-True ($andonText -match 'Set-ThemeColors -Control \$lvV ') 'テーマを変えると、縦の一覧も塗る'
 Assert-True ($andonText -match '\[AndonThemeNative\]::SetTheme\(\$lvV\.Handle') 'ダークでは、縦の一覧のスクロールバーも暗くする'
 $subItemHandler = [regex]::Match($andonText, '\$lvV\.Add_DrawSubItem\(\{[^}]*\}\)')
