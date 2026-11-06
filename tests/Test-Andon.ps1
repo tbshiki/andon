@@ -573,7 +573,7 @@ $settingsBase = 'HKCU:\Software\andon-test-' + [guid]::NewGuid().ToString('N')
 $settingsKey = Join-Path $settingsBase 'andon'
 try {
     $s = Read-AndonSettings -Key $settingsKey
-    Assert-Equal @(@($s.Left, $s.Top, $s.Width, $s.Height, $s.TopMost) | Where-Object { $null -ne $_ }).Count 0 'キーがなければ、どれも覚えていない（既定を使う）'
+    Assert-Equal @(@($s.Left, $s.Top, $s.Width, $s.Height, $s.TopMost, $s.Vertical) | Where-Object { $null -ne $_ }).Count 0 'キーがなければ、どれも覚えていない（既定を使う）'
     Write-AndonSettings -Key $settingsKey -Values ([ordered]@{ Left = -1500; Top = -200; Width = 700; Height = 300; TopMost = 0 })
     $s = Read-AndonSettings -Key $settingsKey
     Assert-Equal "$($s.Left),$($s.Top),$($s.Width),$($s.Height)" '-1500,-200,700,300' '書いた位置と大きさを読める（主画面の左や上の、マイナスの位置も）'
@@ -597,6 +597,18 @@ try {
     Assert-True ($null -eq $s.Left -and $null -eq $s.Top -and $s.Width -eq 700) 'ありえない位置は使わない（位置の組ごと既定にする）'
     Write-AndonSettings -Key $settingsKey -Values ([ordered]@{ TopMost = 2 })
     Assert-Equal (Read-AndonSettings -Key $settingsKey).TopMost $null '「常に手前」が 0 か 1 でなければ使わない'
+
+    # 縦表示（D-74）。0 か 1 の DWORD だけを使い、ほかは横表示（既定）にする
+    Write-AndonSettings -Key $settingsKey -Values ([ordered]@{ Vertical = 1 })
+    Assert-Equal (Read-AndonSettings -Key $settingsKey).Vertical $true 'Vertical が 1 なら縦表示'
+    Write-AndonSettings -Key $settingsKey -Values ([ordered]@{ Vertical = 0 })
+    Assert-Equal (Read-AndonSettings -Key $settingsKey).Vertical $false 'Vertical が 0 なら横表示'
+    Write-AndonSettings -Key $settingsKey -Values ([ordered]@{ Vertical = 2 })
+    Assert-Equal (Read-AndonSettings -Key $settingsKey).Vertical $null 'Vertical が 0 か 1 でなければ使わない（横表示）'
+    Write-AndonSettings -Key $settingsKey -Values ([ordered]@{ Vertical = -1 })
+    Assert-Equal (Read-AndonSettings -Key $settingsKey).Vertical $null 'Vertical がマイナスでも使わない'
+    New-ItemProperty -LiteralPath $settingsKey -Name 'Vertical' -PropertyType String -Value '1' -Force | Out-Null
+    Assert-Equal (Read-AndonSettings -Key $settingsKey).Vertical $null 'DWORD でない Vertical は使わない'
 }
 finally {
     if (Test-Path -LiteralPath $settingsBase) { Remove-Item -LiteralPath $settingsBase -Recurse -Force }
@@ -686,10 +698,84 @@ foreach ($pair in @(@('Text', 'Back'), @('ListText', 'List'), @('HeaderText', 'H
 Assert-True ((Get-ContrastRatio -Fore $dark.MenuDisabled -Back $dark.Menu) -ge 3) 'ダークの選べないメニュー（版の表示）も、3 以上で読める'
 foreach ($p in @($light, $dark)) {
     $colors = @(foreach ($prop in $p.PSObject.Properties) { if ($prop.Value -is [array]) { , $prop.Value } })
-    $colors += @(foreach ($rank in 0..3) { foreach ($c in @($p.Rows[$rank].Back, $p.Rows[$rank].Fore)) { if ($c) { , $c } } })
+    $colors += @(foreach ($rank in 0..3) { foreach ($c in @($p.Rows[$rank].Back, $p.Rows[$rank].Fore, $p.Rows[$rank].Hover)) { if ($c) { , $c } } })
     Assert-Equal @($colors | Where-Object { $_.Count -ne 3 -or @($_ | Where-Object { $_ -lt 0 -or $_ -gt 255 }).Count -gt 0 }).Count 0 "$($p.Name) の色は、どれも 0〜255 の R, G, B"
 }
 Assert-Equal ('{0:0.00}' -f (Get-ContrastRatio -Fore @(0, 0, 0) -Back @(255, 255, 255))) '21.00' 'コントラスト比の計算: 黒と白は 21'
+
+# 縦表示の色（D-77、D-78）。行の区切りの線と、マウスを乗せたときの背景
+foreach ($p in @($light, $dark)) {
+    Assert-Equal @(0..3 | Where-Object { $null -eq $p.Rows[$_].Hover }).Count 0 "$($p.Name) は、どの行にも、マウスを乗せたときの背景を持つ"
+}
+Assert-True ((Format-Rgb $light.RowLine) -ne '255,255,255') 'ライトの行の区切りの線は、一覧の地（白）と違う色'
+Assert-True ((Format-Rgb $dark.RowLine) -ne (Format-Rgb $dark.List)) 'ダークの行の区切りの線は、一覧の地と違う色'
+foreach ($rank in 0..3) {
+    $back = $light.Rows[$rank].Back
+    if (-not $back) { $back = @(255, 255, 255) }   # ライトの待機は、Windows の既定の地（白）
+    $diff = @(0..2 | ForEach-Object { $back[$_] - $light.Rows[$rank].Hover[$_] })
+    Assert-True (@($diff | Where-Object { $_ -lt 0 -or $_ -gt 32 }).Count -eq 0 -and @($diff | Where-Object { $_ -gt 0 }).Count -gt 0) "ライトの行（$rank）は、マウスを乗せると少し暗くなる（状態の色は残る）"
+    $diff = @(0..2 | ForEach-Object { $dark.Rows[$rank].Hover[$_] - $dark.Rows[$rank].Back[$_] })
+    Assert-True (@($diff | Where-Object { $_ -lt 0 -or $_ -gt 32 }).Count -eq 0 -and @($diff | Where-Object { $_ -gt 0 }).Count -gt 0) "ダークの行（$rank）は、マウスを乗せると少し明るくなる（状態の色は残る）"
+    $ratio = Get-ContrastRatio -Fore $dark.Rows[$rank].Fore -Back $dark.Rows[$rank].Hover
+    Assert-True ($ratio -ge 4.5) ("ダークの行（{0}）は、マウスを乗せても字が読める（コントラスト比 {1:0.0} が 4.5 以上）" -f $rank, $ratio)
+}
+foreach ($rank in 0..2) {
+    # ライトの字は、Windows の既定（黒）
+    $ratio = Get-ContrastRatio -Fore @(0, 0, 0) -Back $light.Rows[$rank].Hover
+    Assert-True ($ratio -ge 4.5) ("ライトの行（{0}）は、マウスを乗せても字が読める（コントラスト比 {1:0.0} が 4.5 以上）" -f $rank, $ratio)
+}
+# ライトの待機は灰色の字で、もともとコントラスト比が 4.5 未満（これまでと同じ見た目）。マウスを乗せても 3 以上は保つ
+$ratio = Get-ContrastRatio -Fore $light.Rows[3].Fore -Back $light.Rows[3].Hover
+Assert-True ($ratio -ge 3) ("ライトの待機の行は、マウスを乗せても 3 以上で読める（コントラスト比 {0:0.0}）" -f $ratio)
+
+# ---------------------------------------------------------------------------
+Write-Host '== andon.ps1: 縦表示（Get-VerticalName / Get-VerticalRowHeight / Get-VerticalItemLayout）'
+Assert-Equal (Get-VerticalName -Name 'api-refactor' -Cwd 'C:\work\backend') 'api-refactor' '中の段は、セッション名'
+Assert-Equal (Get-VerticalName -Name '' -Cwd 'C:\work\backend') 'backend' '名前がなければ、フォルダの名前（cwd の最後のフォルダ。D-79）'
+Assert-Equal (Get-VerticalName -Name '  ' -Cwd 'C:\work\backend') 'backend' '空白だけの名前は、ないものとして扱う'
+Assert-Equal (Get-VerticalName -Name '' -Cwd 'C:\work\backend\') 'backend' 'cwd の末尾の区切りは無視する'
+Assert-Equal (Get-VerticalName -Name '' -Cwd 'C:\') 'C:\' 'ドライブの直下で、フォルダの名前がなければ cwd のまま'
+Assert-Equal (Get-VerticalName -Name '' -Cwd '\\server\share\proj') 'proj' '共有フォルダの中でも、最後のフォルダの名前'
+Assert-Equal (Get-VerticalName -Name 'api-refactor' -Cwd '') 'api-refactor' 'フォルダがなくても、名前は出す'
+Assert-Equal (Get-VerticalName -Name '' -Cwd '') '' 'どちらもなければ空'
+$noticeEntry = [pscustomobject]@{ Key = '9'; Status = 'waiting'; Unread = $true; Name = ''; Cwd = 'C:\work\proj'; WaitingFor = ''; AlertAt = $t0 }
+Assert-True ((Get-AlertNotice -Entries @($noticeEntry) -Now $t0).Text.EndsWith((Get-VerticalName -Name '' -Cwd 'C:\work\proj'))) '名前がないときの中の段は、通知の題と同じ（フォルダの名前）'
+Assert-Equal (Get-VerticalRowHeight -LineHeight 15 -Padding 4) 53 '1 件の高さは、3 段の字と上下の余白'
+function Format-Box { param($B) return '{0},{1},{2},{3}' -f $B.Left, $B.Top, $B.Width, $B.Height }
+$layout = Get-VerticalItemLayout -Left 0 -Top 53 -Width 251 -LineHeight 15 -Padding 4 -ElapsedWidth 40 -Gap 8
+Assert-Equal (Format-Box $layout.Status) '4,57,195,15' '上の段の状態は、余白の内側で、経過と間の分だけ狭める（重ならない）'
+Assert-Equal (Format-Box $layout.Elapsed) '4,57,243,15' '経過は、上の段の幅いっぱいの場所に、右寄せで描く'
+Assert-Equal (Format-Box $layout.Name) '4,72,243,15' '中の段（セッション名）は、上の段のすぐ下に、幅いっぱい'
+Assert-Equal (Format-Box $layout.Folder) '4,87,243,15' '下の段（フォルダ）は、中の段のすぐ下に、幅いっぱい'
+Assert-Equal ($layout.Folder.Top + $layout.Folder.Height + 4) (53 + (Get-VerticalRowHeight -LineHeight 15 -Padding 4)) '下の段は、1 件の高さの中に収まる'
+Assert-Equal (Get-VerticalItemLayout -Left 0 -Top 0 -Width 251 -LineHeight 15 -Padding 4 -ElapsedWidth 0 -Gap 8).Status.Width 243 '経過がなければ、状態は幅いっぱい'
+$narrow = Get-VerticalItemLayout -Left 0 -Top 0 -Width 30 -LineHeight 15 -Padding 4 -ElapsedWidth 40 -Gap 8
+Assert-Equal "$($narrow.Status.Width),$($narrow.Name.Width),$($narrow.Folder.Width)" '0,22,22' '経過より狭くても、状態の幅はマイナスにしない'
+$tiny = Get-VerticalItemLayout -Left 0 -Top 0 -Width 5 -LineHeight 15 -Padding 4 -ElapsedWidth 0 -Gap 8
+Assert-Equal "$($tiny.Status.Width),$($tiny.Elapsed.Width),$($tiny.Name.Width),$($tiny.Folder.Width)" '0,0,0,0' '余白より狭ければ、どれも 0'
+
+# 縦の一覧は GUI の部分（ドットソースの境界より後ろ）で作るので、つなぎ方を本文で確かめる
+Assert-True ($andonText -match '\$lvV\.Activation = ''OneClick''') '縦の一覧も、1 回のクリックで開く（Activation = OneClick）'
+Assert-True ($andonText -match '\$lvV\.Add_ItemActivate\(') '縦の一覧も、行のクリックでセッションを開く（ItemActivate）'
+Assert-True ($andonText -match '\$lvV\.ContextMenuStrip = \$menu') '縦の一覧も、右クリックのメニューを出す'
+Assert-True ($andonText -match 'if \(\$script:Vertical\) \{ \$name = Get-VerticalName ') '縦の一覧の中の段は、Get-VerticalName で作る（名前がなければフォルダの名前）'
+Assert-True ($andonText -match '\$lvV\.BeginInvoke\(\[Action\] \{ Update-VerticalColumn \}\)') '縦の一覧の列は、一覧が大きさを変え終えてから合わせる（途中で変えると、横のスクロールバーが残る）'
+Assert-True ($andonText -match '\$lvV\.GetType\(\)\.GetProperty\(''DoubleBuffered''') '縦の一覧は二重バッファで描く（マウスを乗せた行を描き直すときに、ちらつかない）'
+Assert-True ($andonText -match '(?s)\$form\.Add_Layout\(\{.{0,600}?\$lvV\.Columns\[0\]\.Width = \$target') 'ウィンドウの幅を縮めるときは、一覧が縮む前に列を縮める（横のスクロールバーが一瞬出ない）'
+# ListView は DoubleBuffered を受け持ち、LVS_EX_DOUBLEBUFFER として一覧に渡す（リフレクションで立てる先がある）
+Add-Type -AssemblyName System.Windows.Forms
+$dbProp = [System.Windows.Forms.ListView].GetProperty('DoubleBuffered', [Reflection.BindingFlags]'Instance, NonPublic')
+Assert-True ($dbProp -and $dbProp.DeclaringType -eq [System.Windows.Forms.ListView]) 'ListView は DoubleBuffered を自分で受け持つ（二重バッファを一覧に渡す）'
+Assert-True ($andonText -match 'Set-ThemeColors -Control \$lvV ') 'テーマを変えると、縦の一覧も塗る'
+Assert-True ($andonText -match '\[AndonThemeNative\]::SetTheme\(\$lvV\.Handle') 'ダークでは、縦の一覧のスクロールバーも暗くする'
+$subItemHandler = [regex]::Match($andonText, '\$lvV\.Add_DrawSubItem\(\{[^}]*\}\)')
+Assert-True ($subItemHandler.Success -and $subItemHandler.Value -notmatch 'DrawDefault') '縦の一覧の列は、Windows に描かせない（描いた行の上に描かれないように）'
+$verticalAst = $andonAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Show-VerticalItem' }, $true)
+Assert-True ($verticalAst -and $verticalAst.Extent.Text.Contains('PathEllipsis')) '下の段は、フォルダの途中を省略して最後のフォルダ名を残す（PathEllipsis。D-75）'
+$themeAdd = $andonText.IndexOf('$trayMenu.Items.Add($miTheme)')
+$verticalAdd = $andonText.IndexOf('$trayMenu.Items.Add($miVertical)')
+$exitAdd = $andonText.IndexOf('$trayMenu.Items.Add(''終了'')')
+Assert-True ($themeAdd -ge 0 -and $verticalAdd -gt $themeAdd -and $exitAdd -gt $verticalAdd) 'トレイのメニューの「縦表示」は、「テーマ」の下、「終了」の上（D-40）'
 
 # ---------------------------------------------------------------------------
 $installTmp = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) ('andon-install-' + [guid]::NewGuid().ToString('N'))))

@@ -24,7 +24,7 @@
 - Claude Code の設定ディレクトリ（既定は `~/.claude`）にある `sessions/*.json` の、ファイル名と更新時刻を見る（中身は読まない。`*.key` には触れない）
 - セッションの作業フォルダとその周辺の `*.code-workspace` を読み、開く対象を VS Code（`Code.exe`）に渡す
 - 通知の送り元を `andon` と表示させるため、`HKCU\Software\Classes\AppUserModelId\tbshiki.andon` に表示名を書く
-- ウィンドウの位置と大きさ、「常に手前」、テーマを、`HKCU\Software\tbshiki\andon` に書き、起動したときに読む（数値だけ。読めない値は使わない）
+- ウィンドウの位置と大きさ、「常に手前」、テーマ、縦表示を、`HKCU\Software\tbshiki\andon` に書き、起動したときに読む（数値だけ。読めない値は使わない）
 - テーマを「Windows に合わせる」にしているときは、Windows のアプリ モード（`HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize` の `AppsUseLightTheme`）を読む（書かない）
 - トレイのメニューの「ログオン時に起動」を選んだときだけ、スタートアップのフォルダに `andon.lnk`（スタートメニューの `andon` のショートカットの写し）を作る、または消す。あわせて、タスク マネージャーの有効・無効の記録（`HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder` の値 `andon.lnk`）を消す。インストールした andon だけが行い、clone から動かしている andon は行わない
 - 名前付きのイベント `Local\andon-exit` の合図を受けたら終了する（同じ Windows のセッションのプロセスなら、andon を終了できる）
