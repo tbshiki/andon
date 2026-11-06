@@ -1,7 +1,9 @@
 andon のインストール・アップデート
 
 andon は、Claude Code のセッションの状態（実行中・許可待ち・質問待ち・完了）を一覧し、
-クリックでそのセッションの VS Code のウィンドウを前面に出す、Windows 向けの小さなツールです。
+クリックでそのセッションのウィンドウ（VS Code や Windows Terminal など）を前面に出す、
+Windows 向けの小さなツールです。
+VS Code のほか、cmd や PowerShell で起動したセッションも一覧に出ます。
 使い方と詳しいことは、GitHub の README にあります。
 https://github.com/tbshiki/andon
 
