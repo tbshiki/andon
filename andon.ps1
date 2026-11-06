@@ -23,6 +23,9 @@
       覚えた位置が画面の外なら、一番近い画面に収める。読めなければ既定（主画面の右下）。
     - トレイのメニューの「テーマ」で、ライト・ダーク・Windows に合わせる（既定）を選ぶ。選んだものも同じ場所に覚える。
       Windows に合わせるときは、Windows のアプリ モードが変わったら、すぐに塗り直す。ライトは、これまでと同じ見た目。
+    - トレイのメニューの「縦表示」で、1 件を 2 段（上の段に状態と経過、下の段にセッション名とフォルダ）で出す一覧に切り替える。
+      縦に細長いウィンドウ向け。フォルダが入りきらなければ、途中を「…」で省略して最後のフォルダ名を残す。選んだものも同じ場所に覚える。
+      切り替えても、ウィンドウの位置と大きさは変えない。
     - 新しい待ちや完了が出たとき、このウィンドウが前面になければ Windows の通知を出す。
       通知をクリックすると、そのセッションを開く。送り元は、プロセスにアプリ ID（tbshiki.andon）を付け、
       その表示名を HKCU に登録して「andon」と表示させる。
@@ -701,7 +704,7 @@ function Set-LogonStartup {
 }
 
 # ---------------------------------------------------------------------------
-# 設定（レジストリの HKCU\Software\tbshiki\andon に、値ごとに DWORD で置く）。ウィンドウの位置と大きさ、「常に手前」。
+# 設定（レジストリの HKCU\Software\tbshiki\andon に、値ごとに DWORD で置く）。ウィンドウの位置と大きさ、「常に手前」、テーマ、縦表示。
 # 読めなくても、ありえない値でも、既定で動き続ける。関数の名前は install.ps1 と重ねない
 # ---------------------------------------------------------------------------
 
@@ -711,7 +714,7 @@ function Get-AndonSettingsKey {
 }
 
 function Read-AndonSettings {
-    <# 覚えた設定を読む。値がない、DWORD でない、ありえない値なら、その組（位置、大きさ、常に手前、テーマ）を $null にし、既定を使わせる。
+    <# 覚えた設定を読む。値がない、DWORD でない、ありえない値なら、その組（位置、大きさ、常に手前、テーマ、縦表示）を $null にし、既定を使わせる。
        位置はマイナスもありうる（主画面の左や上の画面）。小さすぎる大きさは、戻すと操作しにくいので使わない。
        キーが読めなくても失敗しない #>
     param([string]$Key, [int]$MinWidth = 160, [int]$MinHeight = 80, [int]$Limit = 100000)
@@ -720,7 +723,7 @@ function Read-AndonSettings {
         if ($Key -and (Test-Path -LiteralPath $Key)) {
             $item = Get-Item -LiteralPath $Key
             $names = $item.GetValueNames()
-            foreach ($name in 'Left', 'Top', 'Width', 'Height', 'TopMost', 'Theme') {
+            foreach ($name in 'Left', 'Top', 'Width', 'Height', 'TopMost', 'Theme', 'Vertical') {
                 if ($names -notcontains $name) { continue }
                 if ($item.GetValueKind($name) -ne [Microsoft.Win32.RegistryValueKind]::DWord) { continue }
                 $raw[$name] = [int]$item.GetValue($name)
@@ -728,7 +731,7 @@ function Read-AndonSettings {
         }
     }
     catch { $raw = @{} }
-    $s = [pscustomobject]@{ Left = $null; Top = $null; Width = $null; Height = $null; TopMost = $null; Theme = $null }
+    $s = [pscustomobject]@{ Left = $null; Top = $null; Width = $null; Height = $null; TopMost = $null; Theme = $null; Vertical = $null }
     if ($raw.ContainsKey('Left') -and $raw.ContainsKey('Top') -and
         [Math]::Abs($raw['Left']) -le $Limit -and [Math]::Abs($raw['Top']) -le $Limit) {
         $s.Left = $raw['Left']; $s.Top = $raw['Top']
@@ -739,6 +742,7 @@ function Read-AndonSettings {
     }
     if ($raw.ContainsKey('TopMost') -and ($raw['TopMost'] -eq 0 -or $raw['TopMost'] -eq 1)) { $s.TopMost = ($raw['TopMost'] -eq 1) }
     if ($raw.ContainsKey('Theme') -and $raw['Theme'] -ge 0 -and $raw['Theme'] -lt $script:ThemeChoices.Count) { $s.Theme = $script:ThemeChoices[$raw['Theme']] }
+    if ($raw.ContainsKey('Vertical') -and ($raw['Vertical'] -eq 0 -or $raw['Vertical'] -eq 1)) { $s.Vertical = ($raw['Vertical'] -eq 1) }
     return $s
 }
 
@@ -773,36 +777,39 @@ function Resolve-AndonTheme {
 }
 
 function Get-ThemePalette {
-    <# 色の組。Rows は、並び順（Get-Rank）ごとの行の背景（Back）、字（Fore）、太字（Bold）。$null の色は既定のまま #>
+    <# 色の組。Rows は、並び順（Get-Rank）ごとの行の背景（Back）、字（Fore）、太字（Bold）と、縦表示でマウスを乗せたときの背景（Hover。
+       ライトは少し暗く、ダークは少し明るく。D-77）。RowLine は、縦表示の行の区切りの線。$null の色は既定のまま #>
     param([string]$Theme)
     if ($Theme -eq 'Dark') {
         return [pscustomobject]@{
             Name = 'Dark'
             Back = @(32, 32, 32); Text = @(235, 235, 235); SubText = @(160, 160, 160)
-            List = @(25, 25, 25); ListText = @(235, 235, 235)
+            List = @(25, 25, 25); ListText = @(235, 235, 235); RowLine = @(55, 55, 55)
             Header = @(43, 43, 43); HeaderText = @(235, 235, 235); HeaderLine = @(70, 70, 70)
             Button = @(55, 55, 55); ButtonHover = @(70, 70, 70); ButtonBorder = @(90, 90, 90)
             Menu = @(43, 43, 43); MenuText = @(235, 235, 235); MenuDisabled = @(130, 130, 130); MenuSelected = @(65, 65, 65); MenuBorder = @(70, 70, 70)
+            # Hover は、背景に白を 12% 重ねた色。待機は、灰色の字が読める（コントラスト比 4.5 以上の）明るさに留める
             Rows = @{
-                0 = [pscustomobject]@{ Back = @(110, 38, 38); Fore = @(255, 255, 255); Bold = $true }    # 待ち: 暗い赤
-                1 = [pscustomobject]@{ Back = @(105, 85, 20); Fore = @(255, 255, 255); Bold = $true }    # 完了: 暗い黄
-                2 = [pscustomobject]@{ Back = @(30, 64, 38); Fore = @(235, 235, 235); Bold = $false }    # 実行中: 暗い緑
-                3 = [pscustomobject]@{ Back = @(25, 25, 25); Fore = @(140, 140, 140); Bold = $false }    # 待機
+                0 = [pscustomobject]@{ Back = @(110, 38, 38); Fore = @(255, 255, 255); Bold = $true; Hover = @(127, 64, 64) }    # 待ち: 暗い赤
+                1 = [pscustomobject]@{ Back = @(105, 85, 20); Fore = @(255, 255, 255); Bold = $true; Hover = @(123, 105, 48) }   # 完了: 暗い黄
+                2 = [pscustomobject]@{ Back = @(30, 64, 38); Fore = @(235, 235, 235); Bold = $false; Hover = @(56, 86, 64) }     # 実行中: 暗い緑
+                3 = [pscustomobject]@{ Back = @(25, 25, 25); Fore = @(140, 140, 140); Bold = $false; Hover = @(37, 37, 37) }     # 待機
             }
         }
     }
     return [pscustomobject]@{
         Name = 'Light'
         Back = $null; Text = $null; SubText = @(105, 105, 105)   # 状態の表示は DimGray（これまでと同じ）
-        List = $null; ListText = $null
+        List = $null; ListText = $null; RowLine = @(225, 225, 225)
         Header = $null; HeaderText = $null; HeaderLine = $null
         Button = $null; ButtonHover = $null; ButtonBorder = $null
         Menu = $null; MenuText = $null; MenuDisabled = $null; MenuSelected = $null; MenuBorder = $null
+        # Hover は、背景（待機は白）に黒を 7% 重ねた色
         Rows = @{
-            0 = [pscustomobject]@{ Back = @(255, 210, 210); Fore = $null; Bold = $true }
-            1 = [pscustomobject]@{ Back = @(255, 240, 180); Fore = $null; Bold = $true }
-            2 = [pscustomobject]@{ Back = @(228, 248, 230); Fore = $null; Bold = $false }
-            3 = [pscustomobject]@{ Back = $null; Fore = @(128, 128, 128); Bold = $false }      # Gray
+            0 = [pscustomobject]@{ Back = @(255, 210, 210); Fore = $null; Bold = $true; Hover = @(237, 195, 195) }
+            1 = [pscustomobject]@{ Back = @(255, 240, 180); Fore = $null; Bold = $true; Hover = @(237, 223, 167) }
+            2 = [pscustomobject]@{ Back = @(228, 248, 230); Fore = $null; Bold = $false; Hover = @(212, 230, 214) }
+            3 = [pscustomobject]@{ Back = $null; Fore = @(128, 128, 128); Bold = $false; Hover = @(237, 237, 237) }      # Gray
         }
     }
 }
@@ -881,6 +888,41 @@ function Get-WindowPlacement {
         $y = [Math]::Max($screen.Top, $screen.Top + $screen.Height - $h - $Margin)
     }
     return [pscustomobject]@{ Left = [int]$x; Top = [int]$y; Width = [int]$w; Height = [int]$h }
+}
+
+# ---------------------------------------------------------------------------
+# 縦表示（トレイのメニューの「縦表示」。D-35、D-74〜D-78）。1 件を 2 段で出す。上の段に状態（左）と経過（右端）、
+# 下の段にセッション名とフォルダ。設定の Vertical に 1（縦）か 0（横）を書く。行は GUI の部分で描く（Show-VerticalItem）
+# ---------------------------------------------------------------------------
+
+function Get-VerticalSubLine {
+    <# 縦表示の下の段の文。セッション名とフォルダ（cwd）を「 · 」でつなぐ。名前がなければフォルダだけ、フォルダがなければ名前だけ。
+       幅に収まらないときは、描くときにフォルダの途中を「…」で省略し、最後のフォルダ名を残す（PathEllipsis。D-75） #>
+    param([string]$Name, [string]$Cwd)
+    return (@($Name, $Cwd) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join ' · '
+}
+
+function Get-VerticalRowHeight {
+    <# 縦表示の 1 件の高さ。2 段の字（1 段の高さ $LineHeight）と、上下の余白 #>
+    param([int]$LineHeight, [int]$Padding)
+    return 2 * $LineHeight + 2 * $Padding
+}
+
+function Get-VerticalItemLayout {
+    <# 縦表示の 1 件の中で、字を置く場所（Left、Top、Width、Height）。$Left、$Top、$Width は、行の場所と幅。
+       上の段は、状態を左に、経過を右端に置く（経過は、上の段の幅いっぱいの場所に右寄せで描く）。状態は、経過の幅（$ElapsedWidth）と
+       間（$Gap）の分だけ狭めて、重ならないようにする。下の段は、セッション名とフォルダ。幅が足りなければ 0 で止める #>
+    param([int]$Left, [int]$Top, [int]$Width, [int]$LineHeight, [int]$Padding, [int]$ElapsedWidth, [int]$Gap)
+    $x = $Left + $Padding
+    $w = [Math]::Max(0, $Width - 2 * $Padding)
+    $y = $Top + $Padding
+    $statusWidth = $w
+    if ($ElapsedWidth -gt 0) { $statusWidth = [Math]::Max(0, $w - $ElapsedWidth - $Gap) }
+    return [pscustomobject]@{
+        Status  = [pscustomobject]@{ Left = $x; Top = $y; Width = $statusWidth; Height = $LineHeight }
+        Elapsed = [pscustomobject]@{ Left = $x; Top = $y; Width = $w; Height = $LineHeight }
+        Sub     = [pscustomobject]@{ Left = $x; Top = $y + $LineHeight; Width = $w; Height = $LineHeight }
+    }
 }
 
 # ドットソースされたときは関数の定義だけで止める
@@ -1172,6 +1214,8 @@ foreach ($choice in @(@{ Text = 'ライト'; Name = 'Light' }, @{ Text = 'ダー
     $miThemeItems += $mi
 }
 [void]$trayMenu.Items.Add($miTheme)
+$miVertical = New-Object System.Windows.Forms.ToolStripMenuItem('縦表示')
+[void]$trayMenu.Items.Add($miVertical)
 [void]$trayMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
 $miExit = $trayMenu.Items.Add('終了')
 $script:LogonLayout = Get-LogonStartupLayout
@@ -1192,6 +1236,31 @@ $lv.Activation = 'OneClick'
 [void]$lv.Columns.Add('経過', [int](70 * $scale))
 [void]$lv.Columns.Add('セッション', [int](170 * $scale))
 [void]$lv.Columns.Add('フォルダ', [int](300 * $scale))
+
+# 縦表示の一覧（D-78）。見出しのない 1 列の一覧で、行の高さを 2 段分に広げ、行を自分で描く（Show-VerticalItem）。
+# 横の一覧とは別に作り、表示する方を入れ替える（広げた行の高さは、一覧を作り直さないと戻せないため）
+$script:Vertical = $script:Settings.Vertical -eq $true
+$lvV = New-Object System.Windows.Forms.ListView
+$lvV.Dock = 'Fill'
+$lvV.View = 'Details'
+$lvV.HeaderStyle = 'None'
+$lvV.FullRowSelect = $true
+$lvV.MultiSelect = $false
+$lvV.HideSelection = $true
+$lvV.Activation = 'OneClick'
+$lvV.OwnerDraw = $true
+[void]$lvV.Columns.Add('', [int](300 * $scale))   # 幅は、一覧の幅に合わせ直す（Update-VerticalColumn）
+$script:VerticalLine = [Math]::Max([System.Windows.Forms.TextRenderer]::MeasureText('漢Ag', $form.Font).Height,
+    [System.Windows.Forms.TextRenderer]::MeasureText('漢Ag', $boldFont).Height)
+$script:VerticalPadding = [int](4 * $scale)
+$script:VerticalGap = [int](8 * $scale)   # 上の段の、状態と経過の間
+$script:VerticalHot = -1                  # マウスを乗せている行の番号。なければ -1
+# 行の高さは、小さい画像の一覧の、画像の高さまで広がる。画像は描かない（画像の高さは 256 まで）
+$verticalRowImages = New-Object System.Windows.Forms.ImageList
+$verticalRowImages.ImageSize = New-Object System.Drawing.Size(1, [Math]::Min(256, (Get-VerticalRowHeight -LineHeight $script:VerticalLine -Padding $script:VerticalPadding)))
+$lvV.SmallImageList = $verticalRowImages
+$lv.Visible = -not $script:Vertical
+$lvV.Visible = $script:Vertical
 
 $panel = New-Object System.Windows.Forms.FlowLayoutPanel
 $panel.Dock = 'Top'
@@ -1216,14 +1285,16 @@ $lblStatus.Margin = New-Object System.Windows.Forms.Padding(6, 8, 3, 3)
 $lblStatus.ForeColor = [System.Drawing.Color]::DimGray
 $panel.Controls.AddRange(@($chkTop, $btnRead, $lblStatus))
 
-# Fill を先、Top を後に追加する（後に追加したものから先に配置される）
+# Fill を先、Top を後に追加する（後に追加したものから先に配置される）。横と縦の一覧は、表示している方だけが場所を取る
 $form.Controls.Add($lv)
+$form.Controls.Add($lvV)
 $form.Controls.Add($panel)
 
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
 $miOpen = $menu.Items.Add('VS Code で開く')
 $miRead = $menu.Items.Add('既読にする')
 $lv.ContextMenuStrip = $menu
+$lvV.ContextMenuStrip = $menu
 
 # ---------------------------------------------------------------------------
 # テーマの塗り分け。ライトは Windows の既定の見た目のまま（これまでと同じ）。ダークは色の組（Get-ThemePalette）で塗る
@@ -1362,13 +1433,16 @@ function Update-AndonTheme {
     Set-ThemeButton -Button $btnRead -Palette $p
     $lblStatus.ForeColor = ConvertTo-ThemeColor $p.SubText
     Set-ThemeColors -Control $lv -Back $p.List -Fore $p.ListText
-    $lv.OwnerDraw = $dark   # ダークでは見出しを自分で描く（ライトは Windows の描き方のまま）
+    Set-ThemeColors -Control $lvV -Back $p.List -Fore $p.ListText
+    # ダークでは見出しを自分で描く（ライトは Windows の描き方のまま）。縦の一覧は、テーマによらず行を自分で描く
+    $lv.OwnerDraw = $dark
     try {
         # スクロールバーと、見出しの右の余白を暗くする。$null で既定の見た目に戻す
         $listTheme = $null
         $headerTheme = $null
         if ($dark) { $listTheme = 'DarkMode_Explorer'; $headerTheme = 'DarkMode_ItemsView' }
         [AndonThemeNative]::SetTheme($lv.Handle, $listTheme)
+        [AndonThemeNative]::SetTheme($lvV.Handle, $listTheme)
         $header = [AndonThemeNative]::GetListViewHeader($lv.Handle)
         if ($header -ne [IntPtr]::Zero) { [AndonThemeNative]::SetTheme($header, $headerTheme) }
         [AndonThemeNative]::SetDarkTitleBar($form.Handle, $dark)
@@ -1382,6 +1456,7 @@ function Update-AndonTheme {
     }
     Update-ListView
     $lv.Invalidate()
+    $lvV.Invalidate()
 }
 
 # ダークのときだけ、見出しを自分で描く。行は Windows の描き方のまま（行の色は Update-ListView で付ける）
@@ -1407,9 +1482,113 @@ $lv.Add_DrawColumnHeader({
 $lv.Add_DrawItem({ param($source, $e) $e.DrawDefault = $true })
 $lv.Add_DrawSubItem({ param($source, $e) $e.DrawDefault = $true })
 
+function Show-VerticalItem {
+    <# 縦表示の 1 件を 2 段で描く（D-78）。上の段に状態と経過（待ちと完了は太字）、下の段にセッション名とフォルダ（太字にしない。
+       入りきらなければ、フォルダの途中を「…」で省略して最後のフォルダ名を残す。D-75）。行の下に区切りの線を引く。
+       選んだ行は、一覧にフォーカスがあるときだけ Windows の強調色にする（横の一覧と同じ）。マウスを乗せた行は、色の組の Hover にする（D-77） #>
+    param($DrawArgs)
+    $item = $DrawArgs.Item
+    $g = $DrawArgs.Graphics
+    $b = $DrawArgs.Bounds
+    $p = $script:Palette
+    # 列は一覧の幅に合わせているが、合わせ直す前に描くこともあるので、右端まで塗る
+    $rect = New-Object System.Drawing.Rectangle($b.Left, $b.Top, [Math]::Max($b.Width, $lvV.ClientSize.Width - $b.Left), $b.Height)
+    $back = $item.BackColor
+    $fore = $item.ForeColor
+    if ($item.Selected -and $lvV.Focused) {
+        $back = [System.Drawing.SystemColors]::Highlight
+        $fore = [System.Drawing.SystemColors]::HighlightText
+    }
+    elseif ($DrawArgs.ItemIndex -eq $script:VerticalHot) {
+        $rank = 3
+        $entry = $script:State[[string]$item.Tag]
+        if ($entry) { $rank = Get-Rank $entry }
+        if ($p.Rows[$rank].Hover) { $back = ConvertTo-ThemeColor $p.Rows[$rank].Hover }
+    }
+    $brush = New-Object System.Drawing.SolidBrush($back)
+    $pen = New-Object System.Drawing.Pen((ConvertTo-ThemeColor $p.RowLine))
+    try {
+        $g.FillRectangle($brush, $rect)
+        $g.DrawLine($pen, $rect.Left, $rect.Bottom - 1, $rect.Right, $rect.Bottom - 1)
+        $flags = [System.Windows.Forms.TextFormatFlags]'SingleLine, NoPrefix, VerticalCenter'
+        $elapsed = ''
+        $sub = ''
+        if ($item.SubItems.Count -gt 1) { $elapsed = $item.SubItems[1].Text }
+        if ($item.SubItems.Count -gt 2) { $sub = $item.SubItems[2].Text }
+        $elapsedWidth = 0
+        if ($elapsed) {
+            $elapsedWidth = [System.Windows.Forms.TextRenderer]::MeasureText($g, $elapsed, $item.Font, (New-Object System.Drawing.Size([int]::MaxValue, [int]::MaxValue)), $flags).Width
+        }
+        $layout = Get-VerticalItemLayout -Left $rect.Left -Top $rect.Top -Width $rect.Width -LineHeight $script:VerticalLine `
+            -Padding $script:VerticalPadding -ElapsedWidth $elapsedWidth -Gap $script:VerticalGap
+        $toRect = { param($r) New-Object System.Drawing.Rectangle($r.Left, $r.Top, $r.Width, $r.Height) }
+        [System.Windows.Forms.TextRenderer]::DrawText($g, $item.Text, $item.Font, (& $toRect $layout.Status), $fore,
+            ($flags -bor [System.Windows.Forms.TextFormatFlags]::EndEllipsis))
+        if ($elapsed) {
+            [System.Windows.Forms.TextRenderer]::DrawText($g, $elapsed, $item.Font, (& $toRect $layout.Elapsed), $fore,
+                ($flags -bor [System.Windows.Forms.TextFormatFlags]::Right))
+        }
+        if ($sub) {
+            [System.Windows.Forms.TextRenderer]::DrawText($g, $sub, $lvV.Font, (& $toRect $layout.Sub), $fore,
+                ($flags -bor [System.Windows.Forms.TextFormatFlags]::PathEllipsis))
+        }
+    }
+    finally {
+        $brush.Dispose()
+        $pen.Dispose()
+    }
+}
+
+function Set-VerticalHot {
+    <# マウスを乗せている縦の一覧の行を $Index（なければ -1）に変え、前の行と新しい行を描き直す #>
+    param([int]$Index)
+    if ($Index -eq $script:VerticalHot) { return }
+    $old = $script:VerticalHot
+    $script:VerticalHot = $Index
+    foreach ($i in @($old, $Index)) {
+        if ($i -lt 0 -or $i -ge $lvV.Items.Count) { continue }
+        $r = $lvV.GetItemRect($i)
+        $lvV.Invalidate((New-Object System.Drawing.Rectangle(0, $r.Top, $lvV.ClientSize.Width, $r.Height)))
+    }
+}
+
+function Update-VerticalColumn {
+    <# 縦の一覧の列を、一覧の幅（スクロールバーを除く）に合わせる。広いと、横のスクロールバーが出る #>
+    $w = $lvV.ClientSize.Width
+    if ($w -gt 0 -and $lvV.Columns[0].Width -ne $w) { $lvV.Columns[0].Width = $w }
+}
+
+# 縦の一覧は、行を全部 Show-VerticalItem で描く。列（SubItem）は Windows に描かせない（DrawDefault を立てない）
+$lvV.Add_DrawItem({
+        param($source, $e)
+        try { Show-VerticalItem -DrawArgs $e }
+        catch { }   # 描けなくても、andon は動き続ける
+    })
+$lvV.Add_DrawSubItem({ param($source, $e) })
+$lvV.Add_MouseMove({
+        param($source, $mouse)
+        $hit = $lvV.GetItemAt($mouse.X, $mouse.Y)
+        $index = -1
+        if ($hit) { $index = $hit.Index }
+        Set-VerticalHot -Index $index
+    })
+$lvV.Add_MouseLeave({ Set-VerticalHot -Index -1 })
+# 選んだ行は、フォーカスがあるときだけ強調色で描くので、フォーカスが変わったら描き直す
+$lvV.Add_GotFocus({ $lvV.Invalidate() })
+$lvV.Add_LostFocus({ $lvV.Invalidate() })
+# 縦のスクロールバーが出たり消えたり、ウィンドウの大きさを変えたりしたら、列を一覧の幅に合わせる
+$lvV.Add_ClientSizeChanged({ Update-VerticalColumn })
+
+function Get-ActiveList {
+    <# 表示している一覧（縦表示なら縦の一覧） #>
+    if ($script:Vertical) { return $lvV }
+    return $lv
+}
+
 function Get-SelectedEntry {
-    if ($lv.SelectedItems.Count -eq 0) { return $null }
-    return $script:State[[string]$lv.SelectedItems[0].Tag]
+    $list = Get-ActiveList
+    if ($list.SelectedItems.Count -eq 0) { return $null }
+    return $script:State[[string]$list.SelectedItems[0].Tag]
 }
 
 function Update-ListView {
@@ -1417,28 +1596,36 @@ function Update-ListView {
     $entries = @($script:State.Values | Where-Object { Test-SessionVisible $_ } | Sort-Object `
             @{ Expression = { Get-Rank $_ } }, `
             @{ Expression = { if ($_.Since) { $_.Since } else { [datetime]::MinValue } } })
+    $list = Get-ActiveList
     $selectedKey = $null
-    if ($lv.SelectedItems.Count -gt 0) { $selectedKey = $lv.SelectedItems[0].Tag }
+    if ($list.SelectedItems.Count -gt 0) { $selectedKey = $list.SelectedItems[0].Tag }
 
-    $lv.BeginUpdate()
-    $lv.Items.Clear()
+    $list.BeginUpdate()
+    $list.Items.Clear()
     foreach ($e in $entries) {
         $elapsed = ''
         if ($e.Since) { $elapsed = Format-Elapsed ($now - $e.Since) }
         $item = New-Object System.Windows.Forms.ListViewItem((Get-StatusLabel $e))
         [void]$item.SubItems.Add($elapsed)
-        [void]$item.SubItems.Add($e.Name)
-        [void]$item.SubItems.Add($e.Cwd)
+        if ($script:Vertical) {
+            # 縦は、下の段の文を 1 つにまとめて持つ（Show-VerticalItem が描く）
+            [void]$item.SubItems.Add((Get-VerticalSubLine -Name $e.Name -Cwd $e.Cwd))
+        }
+        else {
+            [void]$item.SubItems.Add($e.Name)
+            [void]$item.SubItems.Add($e.Cwd)
+        }
         $item.Tag = $e.Key
         # 行の色はテーマの色の組（Get-ThemePalette）から。実行中は見てほしい行ではないので、太字にしない
         $style = $script:Palette.Rows[(Get-Rank $e)]
         if ($style.Back) { $item.BackColor = ConvertTo-ThemeColor $style.Back }
         if ($style.Fore) { $item.ForeColor = ConvertTo-ThemeColor $style.Fore }
         if ($style.Bold) { $item.Font = $boldFont }
-        [void]$lv.Items.Add($item)
+        [void]$list.Items.Add($item)
         if ($e.Key -eq $selectedKey) { $item.Selected = $true }
     }
-    $lv.EndUpdate()
+    $list.EndUpdate()
+    if ($script:Vertical) { Update-VerticalColumn }
 
     $pending = @($entries | Where-Object { (Get-Rank $_) -le 1 }).Count
     if ($pending -gt 0) { $form.Text = "andon - 待ち $pending 件" } else { $form.Text = 'andon' }
@@ -1483,6 +1670,17 @@ function Switch-AndonWindow {
 
 function Set-AllRead {
     foreach ($e in $script:State.Values) { $e.Unread = $false }
+    Update-ListView
+}
+
+function Update-ListLayout {
+    <# 縦表示か横表示かに合わせて、表示する一覧を入れ替え、中身を入れ直す。ウィンドウの位置と大きさは変えない（D-76） #>
+    $script:VerticalHot = -1
+    $hide = $lvV
+    if ($script:Vertical) { $hide = $lv }
+    $hide.Visible = $false
+    $hide.Items.Clear()
+    (Get-ActiveList).Visible = $true
     Update-ListView
 }
 
@@ -1693,10 +1891,13 @@ function Update-UpdateCheck {
     $script:CheckClient = $client
 }
 
-$lv.Add_ItemActivate({
-        $e = Get-SelectedEntry
-        if ($e) { Open-Session -Entry $e; Update-ListView }
-    })
+# 行をクリックしたら（Activation = OneClick）、そのセッションを開く。横と縦の一覧で同じ
+$onItemActivate = {
+    $e = Get-SelectedEntry
+    if ($e) { Open-Session -Entry $e; Update-ListView }
+}
+$lv.Add_ItemActivate($onItemActivate)
+$lvV.Add_ItemActivate($onItemActivate)
 $miOpen.Add_Click({
         $e = Get-SelectedEntry
         if ($e) { Open-Session -Entry $e; Update-ListView }
@@ -1742,6 +1943,7 @@ $trayMenu.Add_Opening({
         $miLogon.Visible = $available
         $miLogon.Checked = $checked
         foreach ($mi in $miThemeItems) { $mi.Checked = ([string]$mi.Tag -eq $script:ThemeChoice) }
+        $miVertical.Checked = $script:Vertical
     })
 # テーマを選んだら、覚えて塗り直す
 foreach ($mi in $miThemeItems) {
@@ -1753,6 +1955,13 @@ foreach ($mi in $miThemeItems) {
             Update-AndonTheme
         })
 }
+# 縦表示を切り替えたら、覚えて一覧を入れ替える
+$miVertical.Add_Click({
+        $script:Vertical = -not $script:Vertical
+        try { Write-AndonSettings -Key $script:SettingsKey -Values ([ordered]@{ Vertical = [int]$script:Vertical }) }
+        catch { }   # 覚えられなくても、今の andon の表示は変える
+        Update-ListLayout
+    })
 $miLogon.Add_Click({
         $l = $script:LogonLayout
         $enable = -not $miLogon.Checked
@@ -1773,6 +1982,8 @@ $miExit.Add_Click({
 $form.Add_Resize({
         if ($form.WindowState -eq [System.Windows.Forms.FormWindowState]::Minimized) { $form.Hide() }
     })
+# 隠したら、縦の一覧でマウスを乗せている行を忘れる（隠すときは、MouseLeave が来ないことがある）
+$form.Add_VisibleChanged({ if (-not $form.Visible) { $script:VerticalHot = -1 } })
 # × や Alt+F4（SC_CLOSE）では終わらずにトレイに隠れる。終了はトレイのメニューから。
 # ログオフや、ほかのプログラムが WM_CLOSE で閉じる（taskkill など）ときは UserClosing にならないので、そのまま終わる
 $form.Add_FormClosing({
