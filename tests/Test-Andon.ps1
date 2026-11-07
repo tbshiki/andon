@@ -1672,6 +1672,272 @@ finally {
 }
 
 # ---------------------------------------------------------------------------
+Write-Host '== Codex のセッション（状態の当てはめと一覧）'
+$t0 = [datetime]'2026-01-01T00:00:00'
+Assert-Equal (Get-JsonValue $null 'a') $null 'Get-JsonValue は $null に $null を返す'
+Assert-True (Test-CodexKey 'codex:abc') 'codex: で始まるキーは Codex のセッション'
+Assert-True (-not (Test-CodexKey '1234')) 'PID のキーは Codex のセッションでない'
+
+function Get-CodexStatusText {
+    param($Status)
+    $s = ConvertFrom-CodexStatus $Status
+    if (-not $s) { return 'null' }
+    return '{0}|{1}' -f $s.Status, $s.WaitingFor
+}
+Assert-Equal (Get-CodexStatusText ([pscustomobject]@{ type = 'idle' })) 'idle|' 'idle は idle'
+Assert-Equal (Get-CodexStatusText ([pscustomobject]@{ type = 'active'; activeFlags = @() })) 'busy|' '印のない active は実行中'
+Assert-Equal (Get-CodexStatusText ([pscustomobject]@{ type = 'active'; activeFlags = @('waitingOnApproval') })) 'waiting|permission prompt' 'waitingOnApproval は許可待ち'
+Assert-Equal (Get-CodexStatusText ([pscustomobject]@{ type = 'active'; activeFlags = @('waitingOnUserInput') })) 'waiting|input needed' 'waitingOnUserInput は質問待ち'
+Assert-Equal (Get-CodexStatusText ([pscustomobject]@{ type = 'active'; activeFlags = @('waitingOnUserInput', 'waitingOnApproval') })) 'waiting|permission prompt' '両方の印があれば許可待ち'
+Assert-Equal (Get-CodexStatusText ([pscustomobject]@{ type = 'systemError' })) 'error|' 'systemError はエラー'
+Assert-Equal (Get-CodexStatusText ([pscustomobject]@{ type = 'notLoaded' })) 'null' 'notLoaded は一覧に出さない'
+Assert-Equal (Get-CodexStatusText $null) 'null' '状態がなければ一覧に出さない'
+Assert-Equal (Get-CodexStatusText ([pscustomobject]@{ type = 'newKind' })) 'newKind|' '知らない状態は、その名前のまま出す'
+
+$th = ConvertFrom-Json '{"id":"t1","status":{"type":"idle"},"name":null,"cwd":"C:\\work\\c1","createdAt":100,"preview":"first message"}'
+$s = ConvertTo-CodexSession $th
+Assert-Equal $s.Key 'codex:t1' 'Codex のセッションのキーは codex:<thread の ID>'
+Assert-Equal $s.Name '' '名前がなければ空（最初のメッセージは出さない）'
+Assert-Equal $s.Cwd 'C:\work\c1' '作業フォルダは cwd'
+Assert-Equal (ConvertTo-CodexSession (ConvertFrom-Json '{"id":"t2","status":{"type":"notLoaded"}}')) $null '読み込まれていない thread は出さない'
+Assert-Equal (ConvertTo-CodexSession $null) $null 'thread がなければ出さない'
+
+function New-CodexSession {
+    param([string]$Id, [string]$Status, [string]$WaitingFor = '')
+    return [pscustomobject]@{ Key = "codex:$Id"; Status = $Status; WaitingFor = $WaitingFor; Name = "c$Id"; Cwd = "C:\work\c$Id"; StartedAt = 1 }
+}
+$script:State = @{}
+$null = Update-SessionState -Sessions @((New-Session 1 'busy')) -Now $t0
+$alert = Update-CodexState -Sessions @((New-CodexSession 'a' 'idle'), (New-CodexSession 'b' 'busy')) -Now $t0
+Assert-Equal $alert $false '初めて見た idle と実行中では知らせない'
+Assert-Equal (Get-StatusLabel $script:State['codex:a']) '待機' '初めて見た idle は待機'
+Assert-Equal $script:State['codex:a'].Kind 'codex' 'Codex のセッションの Kind は codex（ウィンドウを探さない）'
+Assert-Equal $script:State['codex:a'].Sdk $false 'Codex のセッションは起動引数を見ない'
+Assert-Equal (Find-SessionWindow -Entry $script:State['codex:a'] -Processes @() -Windows @()) $null 'Codex のセッションはウィンドウを探さない'
+$alert = Update-CodexState -Sessions @((New-CodexSession 'a' 'idle'), (New-CodexSession 'b' 'idle')) -Now $t0.AddSeconds(5)
+Assert-Equal $alert $true '実行中から idle に変わったら知らせる'
+Assert-Equal (Get-StatusLabel $script:State['codex:b']) '完了' '実行中から idle は完了'
+$alert = Update-CodexState -Sessions @((New-CodexSession 'a' 'error'), (New-CodexSession 'b' 'idle')) -Now $t0.AddSeconds(10)
+Assert-Equal $alert $true 'エラーになったら知らせる'
+Assert-Equal (Get-StatusLabel $script:State['codex:a']) 'エラー' 'error はエラー'
+Assert-Equal (Get-Rank $script:State['codex:a']) 0 'エラーは待ちと同じ順位（赤い行）'
+Assert-Equal (Get-AlertLevel @($script:State['codex:a'])) 'waiting' 'エラーがあればトレイは赤'
+$alert = Update-CodexState -Sessions @((New-CodexSession 'b' 'waiting' 'permission prompt')) -Now $t0.AddSeconds(15)
+Assert-Equal $alert $true '待ちになったら知らせる'
+Assert-Equal (Get-StatusLabel $script:State['codex:b']) '許可待ち' 'Codex の許可待ち'
+Assert-Equal $script:State.ContainsKey('codex:a') $false '一覧にない Codex のセッションは消す'
+Assert-Equal $script:State.ContainsKey('1') $true 'Codex の一覧は Claude のセッションを消さない'
+$null = Update-SessionState -Sessions @((New-Session 2 'idle')) -Now $t0.AddSeconds(20)
+Assert-Equal $script:State.ContainsKey('codex:b') $true 'Claude の一覧は Codex のセッションを消さない'
+Assert-Equal $script:State.ContainsKey('1') $false 'Claude の一覧にない Claude のセッションは消す'
+Assert-Equal (Clear-CodexState) $true 'Codex のセッションを消したら $true'
+Assert-Equal $script:State.ContainsKey('codex:b') $false 'Clear-CodexState は Codex のセッションを消す'
+Assert-Equal $script:State.ContainsKey('2') $true 'Clear-CodexState は Claude のセッションを消さない'
+Assert-Equal (Clear-CodexState) $false '消すものがなければ $false'
+
+$script:State = @{}
+$null = Update-SessionState -Sessions @((New-Session 1 'waiting' 'permission prompt')) -Now $t0
+Assert-Equal (Get-AlertNotice -Entries @($script:State.Values) -Now $t0).Title 'Claude Code が待っています' 'Claude のセッションの通知の題'
+$script:State = @{}
+$null = Update-CodexState -Sessions @((New-CodexSession 'a' 'waiting' 'input needed')) -Now $t0
+$notice = Get-AlertNotice -Entries @($script:State.Values) -Now $t0
+Assert-Equal $notice.Title 'Codex が待っています' 'Codex のセッションの待ちの通知の題'
+Assert-Equal $notice.Text '質問待ち: ca' 'Codex のセッションの通知の本文'
+Assert-Equal $notice.Key 'codex:a' '通知のクリックで開くのは、その Codex のセッション'
+$null = Update-CodexState -Sessions @((New-CodexSession 'a' 'busy')) -Now $t0.AddSeconds(5)
+$null = Update-CodexState -Sessions @((New-CodexSession 'a' 'idle')) -Now $t0.AddSeconds(10)
+Assert-Equal (Get-AlertNotice -Entries @($script:State.Values) -Now $t0.AddSeconds(10)).Title 'Codex が完了しました' 'Codex のセッションの完了の通知の題'
+$null = Update-CodexState -Sessions @((New-CodexSession 'a' 'error')) -Now $t0.AddSeconds(15)
+Assert-Equal (Get-AlertNotice -Entries @($script:State.Values) -Now $t0.AddSeconds(15)).Title 'Codex でエラーが起きました' 'Codex のセッションのエラーの通知の題'
+
+# ---------------------------------------------------------------------------
+Write-Host '== WebSocket（Codex のデーモンとのやり取り）'
+function Join-Bytes {
+    param([object[]]$Parts)
+    $ms = New-Object System.IO.MemoryStream
+    foreach ($p in $Parts) { $ms.Write([byte[]]$p, 0, $p.Length) }
+    return , $ms.ToArray()
+}
+function Get-AsciiBytes { param([string]$Text) return , [Text.Encoding]::ASCII.GetBytes($Text) }
+function New-ServerFrame {
+    <# デーモンから届くフレーム（マスクなし） #>
+    param([string]$Text = '', [int]$Opcode = 1, [bool]$Fin = $true, [byte[]]$Bytes = $null)
+    if ($null -eq $Bytes) { $Bytes = [Text.Encoding]::UTF8.GetBytes($Text) }
+    $len = $Bytes.Length
+    $f = New-Object System.Collections.Generic.List[byte]
+    $b0 = $Opcode
+    if ($Fin) { $b0 = $b0 -bor 0x80 }
+    $f.Add([byte]$b0)
+    if ($len -lt 126) { $f.Add([byte]$len) }
+    elseif ($len -lt 65536) { $f.Add([byte]126); $f.Add([byte]($len -shr 8)); $f.Add([byte]($len -band 0xFF)) }
+    else { $f.Add([byte]127); for ($i = 7; $i -ge 0; $i--) { $f.Add([byte](([long]$len -shr (8 * $i)) -band 0xFF)) } }
+    $f.AddRange($Bytes)
+    return , $f.ToArray()
+}
+
+$mask = [byte[]](1, 2, 3, 4)
+foreach ($case in @(@(5, 5), @(125, 125), @(126, 126), @(65535, 126), @(65536, 127))) {
+    $len = $case[0]
+    $payload = New-Object byte[] $len
+    for ($i = 0; $i -lt $len; $i++) { $payload[$i] = [byte]($i % 251) }
+    $frame = New-WebSocketFrame -Payload $payload -Opcode 1 -Mask $mask
+    Assert-Equal ($frame[1] -band 0x7F) $case[1] "$len バイト: 長さの書き方"
+    Assert-True (($frame[1] -band 0x80) -ne 0) "$len バイト: クライアントのフレームはマスクの印を立てる"
+    $d = Read-WebSocketFrame -Buffer $frame -Count $frame.Length
+    Assert-Equal $d.Length $frame.Length "$len バイト: フレームを丸ごと読む"
+    Assert-Equal ([Convert]::ToBase64String($d.Payload)) ([Convert]::ToBase64String($payload)) "$len バイト: マスクを外すと元に戻る"
+}
+$frame = New-WebSocketFrame -Payload ([byte[]](0, 0)) -Opcode 1 -Mask $mask
+Assert-Equal "$($frame[6]),$($frame[7])" '1,2' '中身はマスクして送る'
+Assert-Equal ($frame[0]) ([byte]0x81) 'FIN とテキストの種類'
+$c0 = New-CodexClient -Version '1'
+Send-CodexFrame -Client $c0 -Payload ([byte[]](0))
+Send-CodexFrame -Client $c0 -Payload ([byte[]](0))
+Assert-True (([Convert]::ToBase64String($c0.Outbox[0], 2, 4)) -ne ([Convert]::ToBase64String($c0.Outbox[1], 2, 4))) 'マスクはフレームごとに乱数で変える'
+
+$frame = New-ServerFrame -Text 'hello'
+Assert-Equal (Read-WebSocketFrame -Buffer $frame -Count 1) $null '1 バイトでは読まない'
+Assert-Equal (Read-WebSocketFrame -Buffer $frame -Count ($frame.Length - 1)) $null '中身が揃うまでは読まない'
+$big = New-ServerFrame -Bytes (New-Object byte[] 300)
+Assert-Equal (Read-WebSocketFrame -Buffer $big -Count 3) $null '長さの続きが揃うまでは読まない'
+Assert-Throws { Read-WebSocketFrame -Buffer $big -Count $big.Length -MaxLength 100 } '大きすぎるフレームは例外'
+$two = Join-Bytes @((New-ServerFrame -Text 'a'), (New-ServerFrame -Text 'bc'))
+$d1 = Read-WebSocketFrame -Buffer $two -Count $two.Length
+Assert-Equal $d1.Length 3 '1 つ目のフレームの長さ'
+$d2 = Read-WebSocketFrame -Buffer $two -Offset $d1.Length -Count ($two.Length - $d1.Length)
+Assert-Equal ([Text.Encoding]::UTF8.GetString($d2.Payload)) 'bc' '続けて 2 つ目のフレームを読む'
+
+$hsText = Get-WebSocketHandshake -Key 'dGVzdA=='
+Assert-True ($hsText.StartsWith("GET / HTTP/1.1`r`n")) 'Upgrade の要求の 1 行目'
+Assert-True ($hsText.Contains("`r`nUpgrade: websocket`r`n") -and $hsText.Contains("`r`nSec-WebSocket-Key: dGVzdA==`r`n")) 'Upgrade の要求の見出し'
+Assert-True ($hsText.EndsWith("`r`n`r`n")) 'Upgrade の要求は空行で終わる'
+$hs101 = Get-AsciiBytes "HTTP/1.1 101 Switching Protocols`r`nUpgrade: websocket`r`nConnection: Upgrade`r`n`r`n"
+Assert-Equal (Read-WebSocketHandshake -Buffer $hs101 -Count ($hs101.Length - 1)) $null '見出しが揃うまでは読まない'
+$h = Read-WebSocketHandshake -Buffer $hs101 -Count $hs101.Length
+Assert-Equal $h.Ok $true '101 なら繋がった'
+Assert-Equal $h.Length $hs101.Length '見出しの長さ'
+$h = Read-WebSocketHandshake -Buffer (Get-AsciiBytes "HTTP/1.1 400 Bad Request`r`n`r`n") -Count 28
+Assert-Equal $h.Ok $false '101 でなければ繋がっていない'
+$h = Read-WebSocketHandshake -Buffer (Get-AsciiBytes "HTTP/1.1 1010 X`r`n`r`n") -Count 19
+Assert-Equal $h.Ok $false '101 で始まる別の番号は、繋がっていない'
+
+# ---------------------------------------------------------------------------
+Write-Host '== Codex のデーモンとのやり取り'
+function Send-ToClient {
+    <# デーモンから届いたバイトとして渡し、メッセージを扱う #>
+    param($Client, [byte[]]$Bytes, [datetime]$Now)
+    $msgs = Add-CodexBytes -Client $Client -Bytes $Bytes -Count $Bytes.Length -Now $Now
+    $r = [pscustomobject]@{ Changed = $false; Alert = $false; Count = @($msgs).Count }
+    foreach ($m in $msgs) {
+        $x = Invoke-CodexMessage -Client $Client -Text $m -Now $Now
+        if ($x.Changed) { $r.Changed = $true }
+        if ($x.Alert) { $r.Alert = $true }
+    }
+    return $r
+}
+function Read-Outbox {
+    <# andon が送ろうとしているフレームを読んで、空にする #>
+    param($Client)
+    $list = foreach ($f in $Client.Outbox) {
+        $d = Read-WebSocketFrame -Buffer $f -Count $f.Length
+        [pscustomobject]@{ Opcode = $d.Opcode; Text = [Text.Encoding]::UTF8.GetString($d.Payload); Masked = (($f[1] -band 0x80) -ne 0) }
+    }
+    $Client.Outbox.Clear()
+    return , @($list)
+}
+function Get-OutboxMethods { param($Out) return (@($Out | ForEach-Object { (ConvertFrom-Json $_.Text).method }) -join ',') }
+function New-ThreadResult {
+    param($Id, [string]$ThreadId, [string]$Type, [string[]]$Flags = @())
+    $status = @{ type = $Type }
+    if ($Type -eq 'active') { $status.activeFlags = $Flags }
+    return ConvertTo-Json -Compress -Depth 6 @{ id = $Id; result = @{ thread = @{ id = $ThreadId; status = $status; name = "n-$ThreadId"; cwd = "C:\work\$ThreadId"; createdAt = 1 } } }
+}
+
+$script:State = @{}
+$null = Update-SessionState -Sessions @((New-Session 1 'busy')) -Now $t0
+$client = New-CodexClient -Version '9.9.9'
+# Upgrade の応答を 2 回に分けて渡す。見出しの直後に最初のフレームが続いても読む
+$r = Send-ToClient $client ([byte[]]$hs101[0..9]) $t0
+Assert-Equal $client.Phase 'Handshake' '見出しが揃うまでは Upgrade の応答を待つ'
+$r = Send-ToClient $client (Join-Bytes @(([byte[]]$hs101[10..($hs101.Length - 1)]), (New-ServerFrame -Text '{"method":"configWarning","params":{}}'))) $t0
+Assert-Equal $client.Phase 'Initializing' '101 を受けたら initialize の答えを待つ'
+Assert-Equal $r.Count 1 '見出しの直後のフレームも読む'
+$out = Read-Outbox $client
+Assert-Equal $out.Count 1 '送るのは initialize だけ'
+Assert-True $out[0].Masked '送るフレームはマスクする'
+$init = ConvertFrom-Json $out[0].Text
+Assert-Equal $init.method 'initialize' 'Upgrade のあと initialize を送る'
+Assert-Equal "$($init.params.clientInfo.name)|$($init.params.clientInfo.version)" 'andon|9.9.9' 'initialize に andon と版を書く'
+$r = Send-ToClient $client (New-ServerFrame -Text ('{"id":' + $init.id + ',"result":{"userAgent":"x"}}')) $t0
+Assert-Equal "$($client.Phase)|$($client.Ready)" 'Ready|True' 'initialize が通ったら Ready'
+$out = Read-Outbox $client
+Assert-Equal (Get-OutboxMethods $out) 'initialized,thread/loaded/list' 'initialize のあと initialized を送り、読み込まれているセッションを尋ねる'
+$listReq = ConvertFrom-Json $out[1].Text
+$r = Send-ToClient $client (New-ServerFrame -Text ('{"id":' + $listReq.id + ',"result":{"data":["t1","t2"],"nextCursor":null}}')) $t0
+$reads = @((Read-Outbox $client) | ForEach-Object { ConvertFrom-Json $_.Text })
+Assert-Equal (@($reads | ForEach-Object { $_.method + ':' + $_.params.threadId }) -join ',') 'thread/read:t1,thread/read:t2' '1 件ずつ thread/read で読む'
+Assert-Equal $reads[0].params.includeTurns $false 'やり取りの中身（turns）は求めない'
+$r = Send-ToClient $client (New-ServerFrame -Text (New-ThreadResult $reads[0].id 't1' 'idle')) $t0
+Assert-Equal $r.Changed $false '答えが揃うまでは一覧に当てない'
+Assert-Equal $script:State.ContainsKey('codex:t1') $false '答えが揃うまでは一覧に入れない'
+# 揃う前に t1 の状態が変わった知らせが来たら、揃ったときに新しい状態で当てる
+$r = Send-ToClient $client (New-ServerFrame -Text '{"method":"thread/status/changed","params":{"threadId":"t1","status":{"type":"active","activeFlags":[]}}}') $t0
+Assert-Equal $client.RefreshAgain $false '答えの来たセッションの知らせでは、取り直しを重ねない'
+$r = Send-ToClient $client (New-ServerFrame -Text '{"method":"thread/status/changed","params":{"threadId":"t2","status":{"type":"idle"}}}') $t0
+Assert-Equal $client.RefreshAgain $false '読む要求を出しているセッションの知らせでは、取り直しを重ねない'
+$r = Send-ToClient $client (New-ServerFrame -Text (New-ThreadResult $reads[1].id 't2' 'active' @('waitingOnApproval'))) $t0
+Assert-Equal "$($r.Changed)|$($r.Alert)" 'True|True' '答えが揃ったら一覧に当て、許可待ちを知らせる'
+Assert-Equal (Get-StatusLabel $script:State['codex:t1']) '実行中' '揃う前に届いた知らせの状態で当てる'
+Assert-Equal (Get-StatusLabel $script:State['codex:t2']) '許可待ち' 'Codex の許可待ちを一覧に出す'
+Assert-Equal "$($script:State['codex:t2'].Name)|$($script:State['codex:t2'].Cwd)" 'n-t2|C:\work\t2' '名前と作業フォルダ'
+Assert-Equal $script:State.ContainsKey('1') $true 'Claude のセッションに触れない'
+
+$r = Send-ToClient $client (New-ServerFrame -Text '{"method":"thread/status/changed","params":{"threadId":"t1","status":{"type":"idle"}}}') $t0.AddSeconds(5)
+Assert-Equal $r.Alert $true '実行中から idle の知らせで、完了を知らせる'
+Assert-Equal (Get-StatusLabel $script:State['codex:t1']) '完了' '知らせで完了にする'
+$r = Send-ToClient $client (New-ServerFrame -Text '{"method":"thread/name/updated","params":{"threadId":"t1","threadName":"renamed"}}') $t0.AddSeconds(6)
+Assert-Equal $script:State['codex:t1'].Name 'renamed' '名前が変わった知らせで名前を直す'
+$r = Send-ToClient $client (New-ServerFrame -Text '{"method":"thread/closed","params":{"threadId":"t2"}}') $t0.AddSeconds(7)
+Assert-Equal $script:State.ContainsKey('codex:t2') $false '閉じたセッションは消す'
+$r = Send-ToClient $client (New-ServerFrame -Text '{"method":"thread/status/changed","params":{"threadId":"t1","status":{"type":"notLoaded"}}}') $t0.AddSeconds(8)
+Assert-Equal $script:State.ContainsKey('codex:t1') $false 'notLoaded になったセッションは消す'
+Assert-Equal $client.Outbox.Count 0 '知っているセッションの知らせでは、何も送らない'
+$r = Send-ToClient $client (New-ServerFrame -Text '{"method":"thread/status/changed","params":{"threadId":"t3","status":{"type":"active","activeFlags":[]}}}') $t0.AddSeconds(9)
+$out = Read-Outbox $client
+Assert-Equal (Get-OutboxMethods $out) 'thread/loaded/list' '知らないセッションの知らせが来たら、取り直す'
+Request-CodexRefresh -Client $client -Now $t0.AddSeconds(9)
+Assert-Equal "$($client.Outbox.Count)|$($client.RefreshAgain)" '0|True' '取り直しの途中は重ねて尋ねず、終わってから取り直す'
+$list2 = ConvertFrom-Json $out[0].Text
+Assert-Equal (Test-CodexStalled -Client $client -Now $t0.AddSeconds(19)) $false '10 秒までは答えを待つ'
+Assert-Equal (Test-CodexStalled -Client $client -Now $t0.AddSeconds(20)) $true '10 秒を過ぎても答えがなければ、止まったとみなす'
+$r = Send-ToClient $client (New-ServerFrame -Text ('{"id":' + $list2.id + ',"result":{"data":[]}}')) $t0.AddSeconds(10)
+Assert-Equal $r.Changed $true '読み込まれているセッションがなければ、すぐ当てる'
+Assert-Equal (Get-OutboxMethods (Read-Outbox $client)) 'thread/loaded/list' '終わったら、もう一度取り直す'
+$r = Send-ToClient $client (New-ServerFrame -Text '{"id":50,"method":"item/commandExecution/requestApproval","params":{"threadId":"t1"}}') $t0.AddSeconds(11)
+Assert-Equal $client.Outbox.Count 0 'デーモンからの要求（許可を求めるものなど）には答えない'
+$r = Send-ToClient $client (New-ServerFrame -Bytes ([byte[]](7, 8)) -Opcode 9) $t0
+$out = Read-Outbox $client
+Assert-Equal "$($out[0].Opcode)|$($out[0].Masked)|$([int][char]$out[0].Text[0])" '10|True|7' 'ping には、同じ中身の pong をマスクして返す'
+$r = Send-ToClient $client (New-ServerFrame -Text '{"method":"thread/st' -Fin $false) $t0
+Assert-Equal $r.Count 0 '続きのあるフレームだけでは、メッセージにしない'
+$part2 = New-ServerFrame -Text 'atus/changed","params":{}}' -Opcode 0
+$r = Send-ToClient $client ([byte[]]$part2[0..1]) $t0
+Assert-Equal $r.Count 0 'フレームの途中までなら、メッセージにしない'
+$r = Send-ToClient $client ([byte[]]$part2[2..($part2.Length - 1)]) $t0
+Assert-Equal $r.Count 1 '続きのフレームとつないで、1 つのメッセージにする'
+$r = Send-ToClient $client (New-ServerFrame -Bytes ([byte[]](3, 232)) -Opcode 8) $t0
+Assert-Equal $client.Phase 'Closed' 'close を受けたら、切れたとみなす'
+
+$c2 = New-CodexClient -Version '1'
+$null = Send-ToClient $c2 (Get-AsciiBytes "HTTP/1.1 404 Not Found`r`n`r`n") $t0
+Assert-Equal "$($c2.Phase)|$($c2.Outbox.Count)" 'Closed|0' 'Upgrade の応答が 101 でなければ、initialize を送らずに切る'
+$c3 = New-CodexClient -Version '1'
+$null = Send-ToClient $c3 $hs101 $t0
+$i3 = ConvertFrom-Json (Read-Outbox $c3)[0].Text
+$null = Send-ToClient $c3 (New-ServerFrame -Text ('{"id":' + $i3.id + ',"error":{"code":-1,"message":"x"}}')) $t0
+Assert-Equal "$($c3.Phase)|$($c3.Ready)" 'Closed|False' 'initialize が失敗したら切る'
+
+# ---------------------------------------------------------------------------
 $passed = $script:Count - $script:Failures
 Write-Host ''
 Write-Host "$passed / $($script:Count) passed"

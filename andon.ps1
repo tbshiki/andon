@@ -84,6 +84,7 @@ $script:State = @{}        # pid -> エントリ
 
 function Get-JsonValue {
     param($Object, [string]$Name)
+    if ($null -eq $Object) { return $null }
     $p = $Object.PSObject.Properties[$Name]
     if ($p) { return $p.Value }
     return $null
@@ -108,8 +109,44 @@ function ConvertFrom-SessionJson {
     throw 'claude agents --json の出力が JSON 配列ではありません'
 }
 
+function Test-AlertStatus {
+    <# 見てほしい状態（待ち、Codex のエラー）か。完了（busy から idle）は、前の状態も要るので Set-EntryStatus で見る #>
+    param([string]$Status)
+    return $Status -eq 'waiting' -or $Status -eq 'error'
+}
+
+function New-StateEntry {
+    <# 一覧に初めて出たセッション。起動時点で idle のものは、いつ終わったか分からないので既読として扱う #>
+    param([string]$Key, [string]$Status, $StartedAt, [datetime]$Now)
+    $entry = [pscustomobject]@{
+        Key = $Key; Status = $Status; Since = $null; Unread = (Test-AlertStatus $Status)
+        Name = ''; Cwd = ''; Kind = ''; WaitingFor = ''; AlertAt = $null
+        Sdk = $null   # 拡張機能のパネルなど、ターミナルではなく SDK から動かしているか。$null は未判定
+        StartedAt = $StartedAt
+    }
+    if ($entry.Unread) { $entry.AlertAt = $Now }
+    return $entry
+}
+
+function Set-EntryStatus {
+    <# セッションの状態を変える。新しく待ち・エラー・完了（busy から idle）になったら $true #>
+    param($Entry, [string]$Status, [datetime]$Now)
+    if ($Entry.Status -eq $Status) { return $false }
+    $prev = $Entry.Status
+    $Entry.Status = $Status
+    $Entry.Since = $Now
+    if ((Test-AlertStatus $Status) -or ($Status -eq 'idle' -and $prev -eq 'busy')) {
+        $Entry.Unread = $true
+        $Entry.AlertAt = $Now
+        return $true
+    }
+    $Entry.Unread = $false   # busy に戻った = 誰かが応答した。waiting -> idle は手元で拒否した場合
+    return $false
+}
+
 function Update-SessionState {
-    <# 一覧を取り込み、新しく「待ち」になったセッションがあれば $true を返す #>
+    <# claude agents --json の一覧を取り込み、新しく「待ち」か「完了」になったセッションがあれば $true を返す。
+       Codex のセッション（キーが codex: で始まるもの）は Update-CodexState が扱うので、ここでは消さない #>
     param([object[]]$Sessions, [datetime]$Now)
     $alert = $false
     $alive = @{}
@@ -128,24 +165,11 @@ function Update-SessionState {
             $entry = $null
         }
         if (-not $entry) {
-            # 起動時点で idle のものは、いつ終わったか分からないので既読として扱う
-            $entry = [pscustomobject]@{
-                Key = $key; Status = $status; Since = $null; Unread = ($status -eq 'waiting')
-                Name = ''; Cwd = ''; Kind = ''; WaitingFor = ''; AlertAt = $null
-                Sdk = $null   # 拡張機能のパネルなど、ターミナルではなく SDK から動かしているか。$null は未判定
-                StartedAt = $startedAt
-            }
+            $entry = New-StateEntry -Key $key -Status $status -StartedAt $startedAt -Now $Now
             $script:State[$key] = $entry
-            if ($entry.Unread) { $entry.AlertAt = $Now; $alert = $true }
+            if ($entry.Unread) { $alert = $true }
         }
-        elseif ($entry.Status -ne $status) {
-            $prev = $entry.Status
-            $entry.Status = $status
-            $entry.Since = $Now
-            if ($status -eq 'waiting') { $entry.Unread = $true; $entry.AlertAt = $Now; $alert = $true }
-            elseif ($status -eq 'idle' -and $prev -eq 'busy') { $entry.Unread = $true; $entry.AlertAt = $Now; $alert = $true }
-            else { $entry.Unread = $false }   # busy に戻った = 誰かが応答した。waiting -> idle は手元で拒否した場合
-        }
+        elseif (Set-EntryStatus -Entry $entry -Status $status -Now $Now) { $alert = $true }
         $entry.Name = [string](Get-JsonValue $s 'name')
         $entry.Cwd = [string](Get-JsonValue $s 'cwd')
         $entry.Kind = [string](Get-JsonValue $s 'kind')
@@ -153,14 +177,14 @@ function Update-SessionState {
         if ($null -ne $startedAt) { $entry.StartedAt = $startedAt }
     }
     foreach ($k in @($script:State.Keys)) {
-        if (-not $alive.ContainsKey($k)) { $script:State.Remove($k) }
+        if (-not (Test-CodexKey $k) -and -not $alive.ContainsKey($k)) { $script:State.Remove($k) }
     }
     return $alert
 }
 
 function Get-Rank {
     param($Entry)
-    if ($Entry.Status -eq 'waiting') { return 0 }
+    if (Test-AlertStatus $Entry.Status) { return 0 }
     if ($Entry.Status -eq 'idle' -and $Entry.Unread) { return 1 }
     if ($Entry.Status -eq 'busy') { return 2 }
     return 3
@@ -177,6 +201,7 @@ function Get-StatusLabel {
         }
         'idle' { if ($Entry.Unread) { return '完了' } else { return '待機' } }
         'busy' { return '実行中' }
+        'error' { return 'エラー' }
         default { return [string]$Entry.Status }
     }
 }
@@ -233,8 +258,12 @@ function Get-AlertNotice {
     if ($hits.Count -gt $MaxLines) { $lines = @($lines) + ('ほか {0} 件' -f ($hits.Count - $MaxLines)) }
     $text = @($lines) -join "`n"
     if ($text.Length -gt 250) { $text = $text.Substring(0, 249) + '…' }   # 通知の本文は 255 文字まで
-    $heading = 'Claude Code が完了しました'
-    if ((Get-Rank $hits[0]) -eq 0) { $heading = 'Claude Code が待っています' }
+    # 題は、先頭のセッションで決める（Claude Code か Codex か。Codex は、エラーで止まることもある）
+    $tool = 'Claude Code'
+    if (Test-CodexKey $hits[0].Key) { $tool = 'Codex' }
+    $heading = "$tool が完了しました"
+    if ($hits[0].Status -eq 'error') { $heading = "$tool でエラーが起きました" }
+    elseif ((Get-Rank $hits[0]) -eq 0) { $heading = "$tool が待っています" }
     return [pscustomobject]@{ Title = $heading; Text = $text; Key = $hits[0].Key }
 }
 
@@ -1129,6 +1158,508 @@ function Get-VerticalItemLayout {
         Name    = [pscustomobject]@{ Left = $x; Top = $y + $LineHeight; Width = $w; Height = $LineHeight }
         Folder  = [pscustomobject]@{ Left = $x; Top = $y + 2 * $LineHeight; Width = $w; Height = $LineHeight }
     }
+}
+
+# ---------------------------------------------------------------------------
+# Codex のセッション（D-100〜D-107）。何も付けずに起動したターミナルの codex は、app-server の共有のデーモンの上で動く。
+# andon は `codex app-server proxy` を子プロセスで起動して繋ぎっぱなしにし、その標準入出力で WebSocket を話す
+# （デーモンの unix ソケットの上は WebSocket で、proxy はバイト列を中継するだけ）。読み込まれているセッション（thread）を
+# 取り、状態が変わった知らせを受ける。送るのは読む要求（initialize、thread/loaded/list、thread/read）だけで、セッションを
+# 変える要求は送らず、購読もしない。デーモンからの要求（許可を求めるものなど）には答えない（答えると、セッションに響くため）。
+# VS Code の拡張機能のセッションと、-c を付けて起動した codex は、デーモンを使わないので出ない。
+# Codex のセッションのキーは codex:<thread の ID>。PID がないので、ウィンドウは探さず、作業フォルダを VS Code で開く
+# ---------------------------------------------------------------------------
+
+$script:CodexKeyPrefix = 'codex:'
+
+function Test-CodexKey {
+    param([string]$Key)
+    return $Key.StartsWith($script:CodexKeyPrefix, [StringComparison]::Ordinal)
+}
+
+function Find-CodexCommand {
+    <# PATH の codex。npm で入れたときは codex.cmd（同じ場所にある拡張子のない codex は、Windows では起動できない）。なければ $null #>
+    $c = Get-Command codex -CommandType Application -ErrorAction SilentlyContinue |
+        Where-Object { @('.exe', '.cmd', '.bat') -contains [IO.Path]::GetExtension($_.Source).ToLowerInvariant() } |
+        Select-Object -First 1
+    if ($c) { return $c.Source }
+    return $null
+}
+
+function ConvertFrom-CodexStatus {
+    <# Codex の thread の status を、andon の状態（Status と WaitingFor）にする（D-102）。読み込まれていなければ（notLoaded）$null。
+       知らない状態は、そのままの名前で出す（Get-StatusLabel が名前を出す。Codex が状態を増やしても動き続ける） #>
+    param($Status)
+    $type = [string](Get-JsonValue $Status 'type')
+    switch ($type) {
+        'notLoaded' { return $null }
+        'active' {
+            $flags = @(Get-JsonValue $Status 'activeFlags')
+            if ($flags -contains 'waitingOnApproval') { return [pscustomobject]@{ Status = 'waiting'; WaitingFor = 'permission prompt' } }
+            if ($flags -contains 'waitingOnUserInput') { return [pscustomobject]@{ Status = 'waiting'; WaitingFor = 'input needed' } }
+            return [pscustomobject]@{ Status = 'busy'; WaitingFor = '' }
+        }
+        'idle' { return [pscustomobject]@{ Status = 'idle'; WaitingFor = '' } }
+        'systemError' { return [pscustomobject]@{ Status = 'error'; WaitingFor = '' } }
+        '' { return $null }
+        default { return [pscustomobject]@{ Status = $type; WaitingFor = '' } }
+    }
+}
+
+function ConvertTo-CodexSession {
+    <# thread/read の thread を、Update-CodexState に渡す形にする。読み込まれていなければ $null。
+       名前は Codex が付ける題名（name）。最初のメッセージ（preview）は出さない（D-107） #>
+    param($Thread)
+    $id = [string](Get-JsonValue $Thread 'id')
+    if (-not $id) { return $null }
+    $s = ConvertFrom-CodexStatus (Get-JsonValue $Thread 'status')
+    if (-not $s) { return $null }
+    return [pscustomobject]@{
+        Key = $script:CodexKeyPrefix + $id; Status = $s.Status; WaitingFor = $s.WaitingFor
+        Name = [string](Get-JsonValue $Thread 'name'); Cwd = [string](Get-JsonValue $Thread 'cwd')
+        StartedAt = Get-JsonValue $Thread 'createdAt'
+    }
+}
+
+function Add-CodexEntry {
+    <# Codex のセッションを、$script:State に初めて入れる。ウィンドウは探さず（Kind が interactive でない）、起動引数も見ない（Sdk） #>
+    param($Session, [datetime]$Now)
+    $entry = New-StateEntry -Key $Session.Key -Status $Session.Status -StartedAt $Session.StartedAt -Now $Now
+    $entry.Kind = 'codex'
+    $entry.Sdk = $false
+    $script:State[$Session.Key] = $entry
+    return $entry
+}
+
+function Update-CodexState {
+    <# 読み込まれている Codex のセッションの一覧（ConvertTo-CodexSession の形）を取り込み、新しく待ち・エラー・完了になった
+       セッションがあれば $true を返す。一覧にない Codex のセッションは消す。Claude のセッションには触れない #>
+    param([object[]]$Sessions, [datetime]$Now)
+    $alert = $false
+    $alive = @{}
+    foreach ($s in $Sessions) {
+        if (-not $s) { continue }
+        $alive[$s.Key] = $true
+        $entry = $script:State[$s.Key]
+        if (-not $entry) {
+            $entry = Add-CodexEntry -Session $s -Now $Now
+            if ($entry.Unread) { $alert = $true }
+        }
+        elseif (Set-EntryStatus -Entry $entry -Status $s.Status -Now $Now) { $alert = $true }
+        $entry.Name = $s.Name
+        $entry.Cwd = $s.Cwd
+        $entry.WaitingFor = $s.WaitingFor
+    }
+    foreach ($k in @($script:State.Keys)) {
+        if ((Test-CodexKey $k) -and -not $alive.ContainsKey($k)) { $script:State.Remove($k) }
+    }
+    return $alert
+}
+
+function Clear-CodexState {
+    <# Codex のセッションを全部消す（デーモンがなくなったとき）。消したものがあれば $true #>
+    $removed = $false
+    foreach ($k in @($script:State.Keys)) {
+        if (Test-CodexKey $k) { $script:State.Remove($k); $removed = $true }
+    }
+    return $removed
+}
+
+function Get-WebSocketHandshake {
+    <# WebSocket を始める HTTP の要求（Upgrade）。$Key は 16 バイトの乱数の base64 #>
+    param([string]$Key)
+    return "GET / HTTP/1.1`r`nHost: localhost`r`nUpgrade: websocket`r`nConnection: Upgrade`r`n" +
+    "Sec-WebSocket-Key: $Key`r`nSec-WebSocket-Version: 13`r`n`r`n"
+}
+
+function Read-WebSocketHandshake {
+    <# 受け取ったバイト（$Buffer の先頭から $Count バイト）から、Upgrade の応答の見出しを読む。見出しが揃っていなければ $null。
+       揃っていれば、101（Switching Protocols）か（Ok）と、見出しのバイト数（Length）。見出しの後ろは、もう最初のフレームでありうる #>
+    param([byte[]]$Buffer, [int]$Count)
+    for ($i = 3; $i -lt $Count; $i++) {
+        if ($Buffer[$i - 3] -eq 13 -and $Buffer[$i - 2] -eq 10 -and $Buffer[$i - 1] -eq 13 -and $Buffer[$i] -eq 10) {
+            $head = [Text.Encoding]::ASCII.GetString($Buffer, 0, $i + 1)
+            $first = ($head -split "`r`n")[0]
+            return [pscustomobject]@{ Ok = ($first -match '^HTTP/1\.[01] 101(\s|$)'); Length = $i + 1 }
+        }
+    }
+    return $null
+}
+
+function New-WebSocketFrame {
+    <# クライアントから送るフレーム（FIN あり）。クライアントのフレームは、4 バイトの $Mask でマスクしなければならない #>
+    param([byte[]]$Payload, [int]$Opcode = 1, [byte[]]$Mask)
+    if ($null -eq $Payload) { $Payload = New-Object byte[] 0 }
+    $len = $Payload.Length
+    $head = New-Object System.Collections.Generic.List[byte]
+    $head.Add([byte](0x80 -bor $Opcode))
+    if ($len -lt 126) { $head.Add([byte](0x80 -bor $len)) }
+    elseif ($len -lt 65536) {
+        $head.Add([byte]0xFE)
+        $head.Add([byte](($len -shr 8) -band 0xFF))
+        $head.Add([byte]($len -band 0xFF))
+    }
+    else {
+        $head.Add([byte]0xFF)
+        for ($i = 7; $i -ge 0; $i--) { $head.Add([byte](([long]$len -shr (8 * $i)) -band 0xFF)) }
+    }
+    $head.AddRange($Mask)
+    $frame = New-Object byte[] ($head.Count + $len)
+    $head.CopyTo($frame, 0)
+    $o = $head.Count
+    for ($i = 0; $i -lt $len; $i++) { $frame[$o + $i] = [byte]($Payload[$i] -bxor $Mask[$i % 4]) }
+    return , $frame
+}
+
+function Read-WebSocketFrame {
+    <# 受け取ったバイト（$Buffer の $Offset から $Count バイト）から、フレームを 1 つ読む。揃っていなければ $null。
+       揃っていれば、Fin、Opcode、Payload（マスクがあれば外したもの）と、使ったバイト数（Length） #>
+    param([byte[]]$Buffer, [int]$Offset = 0, [int]$Count, [int]$MaxLength = 16MB)
+    if ($Count -lt 2) { return $null }
+    $b0 = $Buffer[$Offset]
+    $b1 = $Buffer[$Offset + 1]
+    $len = [long]($b1 -band 0x7F)
+    $pos = 2
+    if ($len -eq 126) {
+        if ($Count -lt 4) { return $null }
+        $len = ([long]$Buffer[$Offset + 2] -shl 8) -bor $Buffer[$Offset + 3]
+        $pos = 4
+    }
+    elseif ($len -eq 127) {
+        if ($Count -lt 10) { return $null }
+        $len = [long]0
+        for ($i = 0; $i -lt 8; $i++) { $len = ($len -shl 8) -bor $Buffer[$Offset + 2 + $i] }
+        $pos = 10
+    }
+    if ($len -lt 0 -or $len -gt $MaxLength) { throw "WebSocket のフレームが大きすぎます（$len バイト）" }
+    $mask = $null
+    if (($b1 -band 0x80) -ne 0) {
+        if ($Count -lt $pos + 4) { return $null }
+        $mask = New-Object byte[] 4
+        [Array]::Copy($Buffer, $Offset + $pos, $mask, 0, 4)
+        $pos += 4
+    }
+    if ($Count -lt $pos + $len) { return $null }
+    $payload = New-Object byte[] $len
+    [Array]::Copy($Buffer, $Offset + $pos, $payload, 0, $len)
+    if ($mask) { for ($i = 0; $i -lt $len; $i++) { $payload[$i] = [byte]($payload[$i] -bxor $mask[$i % 4]) } }
+    return [pscustomobject]@{ Fin = (($b0 -band 0x80) -ne 0); Opcode = [int]($b0 -band 0x0F); Payload = $payload; Length = [int]($pos + $len) }
+}
+
+function New-CodexClient {
+    <# デーモンとのやり取りの状態。Phase は Handshake（Upgrade の応答待ち）-> Initializing（initialize の応答待ち）-> Ready。
+       切れたら Closed。Ready は、一度でも initialize が通ったか（切れたときに、セッションを残して繋ぎ直すかを決める）。
+       Outbox は、送るフレーム（Send-CodexOutbox が書く） #>
+    param([string]$Version)
+    $rng = New-Object System.Security.Cryptography.RNGCryptoServiceProvider
+    $key = New-Object byte[] 16
+    $rng.GetBytes($key)
+    return [pscustomobject]@{
+        Key = [Convert]::ToBase64String($key); Version = $Version; Phase = 'Handshake'; Ready = $false
+        Rx = New-Object byte[] 65536; RxCount = 0; Fragment = New-Object System.IO.MemoryStream
+        NextId = 1; Pending = @{}; Snapshot = $null; RefreshAgain = $false
+        Outbox = New-Object System.Collections.ArrayList; Rng = $rng
+    }
+}
+
+function Send-CodexFrame {
+    param($Client, [byte[]]$Payload, [int]$Opcode = 1)
+    $mask = New-Object byte[] 4
+    $Client.Rng.GetBytes($mask)
+    [void]$Client.Outbox.Add((New-WebSocketFrame -Payload $Payload -Opcode $Opcode -Mask $mask))
+}
+
+function Send-CodexRequest {
+    <# 要求を送る（Outbox に積む）。答えが来るまで Pending に覚える（10 秒答えがなければ切る。Test-CodexStalled） #>
+    param($Client, [string]$Method, [hashtable]$Params, [datetime]$Now, [string]$ThreadId = '')
+    $id = $Client.NextId
+    $Client.NextId++
+    $json = ConvertTo-Json -InputObject @{ id = $id; method = $Method; params = $Params } -Compress -Depth 6
+    $Client.Pending[[string]$id] = [pscustomobject]@{ Method = $Method; ThreadId = $ThreadId; SentAt = $Now }
+    Send-CodexFrame -Client $Client -Payload ([Text.Encoding]::UTF8.GetBytes($json))
+}
+
+function Request-CodexRefresh {
+    <# 読み込まれているセッションを全部取り直す（thread/loaded/list と、1 件ずつ thread/read）。取り直しの途中なら、
+       終わってからもう一度取り直す #>
+    param($Client, [datetime]$Now)
+    if ($Client.Phase -ne 'Ready') { return }
+    if ($Client.Snapshot) { $Client.RefreshAgain = $true; return }
+    $Client.Snapshot = [pscustomobject]@{ Remaining = -1; Sessions = @{} }
+    Send-CodexRequest -Client $Client -Method 'thread/loaded/list' -Params @{} -Now $Now
+}
+
+function Test-CodexInSnapshot {
+    <# 取り直しの途中で、そのセッションの答えがもう来ているか、読む要求を出しているか（取り直しが終われば一覧に入るので、
+       知らせが来ても、もう一度取り直さなくてよい） #>
+    param($Client, [string]$ThreadId)
+    if (-not $Client.Snapshot) { return $false }
+    if ($Client.Snapshot.Sessions.ContainsKey($script:CodexKeyPrefix + $ThreadId)) { return $true }
+    foreach ($p in $Client.Pending.Values) {
+        if ($p.Method -eq 'thread/read' -and $p.ThreadId -eq $ThreadId) { return $true }
+    }
+    return $false
+}
+
+function Test-CodexStalled {
+    <# $TimeoutSec より前に送った要求に、まだ答えがないか（デーモンが入れ替わると、接続は閉じる知らせのないまま止まる） #>
+    param($Client, [datetime]$Now, [int]$TimeoutSec = 10)
+    foreach ($p in $Client.Pending.Values) {
+        if (($Now - $p.SentAt).TotalSeconds -gt $TimeoutSec) { return $true }
+    }
+    return $false
+}
+
+function Add-CodexBytes {
+    <# proxy から読んだバイトを足し、揃ったテキストのメッセージを返す。Upgrade の応答が揃ったら initialize を送る。
+       ping には pong を返す。close を受けたか、Upgrade の応答が 101 でなければ、Phase を Closed にする #>
+    param($Client, [byte[]]$Bytes, [int]$Count, [datetime]$Now)
+    if ($Client.RxCount + $Count -gt $Client.Rx.Length) {
+        $grown = New-Object byte[] ([Math]::Max($Client.Rx.Length * 2, $Client.RxCount + $Count))
+        [Array]::Copy($Client.Rx, $grown, $Client.RxCount)
+        $Client.Rx = $grown
+    }
+    [Array]::Copy($Bytes, 0, $Client.Rx, $Client.RxCount, $Count)
+    $Client.RxCount += $Count
+    $messages = New-Object System.Collections.ArrayList
+    $pos = 0
+    if ($Client.Phase -eq 'Handshake') {
+        $h = Read-WebSocketHandshake -Buffer $Client.Rx -Count $Client.RxCount
+        if (-not $h) { return , $messages.ToArray() }
+        if (-not $h.Ok) { $Client.Phase = 'Closed'; return , $messages.ToArray() }
+        $pos = $h.Length
+        $Client.Phase = 'Initializing'
+        Send-CodexRequest -Client $Client -Method 'initialize' -Now $Now -Params @{
+            clientInfo = @{ name = 'andon'; title = 'andon'; version = $Client.Version }
+        }
+    }
+    while ($Client.Phase -ne 'Closed') {
+        $f = Read-WebSocketFrame -Buffer $Client.Rx -Offset $pos -Count ($Client.RxCount - $pos)
+        if (-not $f) { break }
+        $pos += $f.Length
+        if ($f.Opcode -eq 8) { $Client.Phase = 'Closed' }
+        elseif ($f.Opcode -eq 9) { Send-CodexFrame -Client $Client -Payload $f.Payload -Opcode 10 }
+        elseif ($f.Opcode -le 2) {
+            # 0 は続きのフレーム。FIN のフレームまでつないで、1 つのメッセージにする
+            $Client.Fragment.Write($f.Payload, 0, $f.Payload.Length)
+            if ($f.Fin) {
+                [void]$messages.Add([Text.Encoding]::UTF8.GetString($Client.Fragment.ToArray()))
+                $Client.Fragment.SetLength(0)
+            }
+        }
+    }
+    $rest = $Client.RxCount - $pos
+    if ($pos -gt 0 -and $rest -gt 0) { [Array]::Copy($Client.Rx, $pos, $Client.Rx, 0, $rest) }
+    $Client.RxCount = $rest
+    return , $messages.ToArray()
+}
+
+function Complete-CodexSnapshot {
+    <# 取り直しで、読む要求の答えが全部揃ったら、一覧に当てる。揃うまでは当てない（途中で当てると、まだ答えのないセッションが
+       消えて、次に新しいセッションとして出直し、未確認が消えたり、もう一度知らせたりするため） #>
+    param($Client, [datetime]$Now, $Result)
+    $snap = $Client.Snapshot
+    if (-not $snap -or $snap.Remaining -ne 0) { return }
+    $Client.Snapshot = $null
+    if (Update-CodexState -Sessions @($snap.Sessions.Values) -Now $Now) { $Result.Alert = $true }
+    $Result.Changed = $true
+    if ($Client.RefreshAgain) {
+        $Client.RefreshAgain = $false
+        Request-CodexRefresh -Client $Client -Now $Now
+    }
+}
+
+function Invoke-CodexMessage {
+    <# デーモンから届いたメッセージを 1 つ扱う。Codex のセッションを直し、一覧が変わったら Changed、新しく待ち・エラー・完了に
+       なったものがあれば Alert を立てる #>
+    param($Client, [string]$Text, [datetime]$Now)
+    $r = [pscustomobject]@{ Changed = $false; Alert = $false }
+    try { $m = ConvertFrom-Json -InputObject $Text -ErrorAction Stop }
+    catch { return $r }   # 読めないものは捨てる
+    $id = Get-JsonValue $m 'id'
+    $method = [string](Get-JsonValue $m 'method')
+    if ($null -ne $id -and $method) { return $r }   # デーモンからの要求には答えない（上の説明）
+    if ($null -ne $id) {
+        $req = $Client.Pending[[string]$id]
+        if (-not $req) { return $r }
+        $Client.Pending.Remove([string]$id)
+        $failed = $null -ne (Get-JsonValue $m 'error')
+        $result = Get-JsonValue $m 'result'
+        switch ($req.Method) {
+            'initialize' {
+                if ($failed) { $Client.Phase = 'Closed'; return $r }
+                Send-CodexFrame -Client $Client -Payload ([Text.Encoding]::UTF8.GetBytes('{"method":"initialized"}'))
+                $Client.Phase = 'Ready'
+                $Client.Ready = $true
+                Request-CodexRefresh -Client $Client -Now $Now
+            }
+            'thread/loaded/list' {
+                $snap = $Client.Snapshot
+                if (-not $snap) { return $r }
+                if ($failed) {
+                    # 取り直せなかった。今の一覧のままにする
+                    $Client.Snapshot = $null
+                    return $r
+                }
+                $ids = @(Get-JsonValue $result 'data' | Where-Object { $_ })
+                $snap.Remaining = $ids.Count
+                foreach ($tid in $ids) {
+                    Send-CodexRequest -Client $Client -Method 'thread/read' -Now $Now -ThreadId ([string]$tid) -Params @{
+                        threadId = [string]$tid; includeTurns = $false
+                    }
+                }
+                Complete-CodexSnapshot -Client $Client -Now $Now -Result $r
+            }
+            'thread/read' {
+                $snap = $Client.Snapshot
+                if (-not $snap) { return $r }
+                if (-not $failed) {
+                    # 読めなかったもの（読むあいだに閉じたものなど）と、読み込まれていないものは、一覧に入れない
+                    $s = ConvertTo-CodexSession (Get-JsonValue $result 'thread')
+                    if ($s) { $snap.Sessions[$s.Key] = $s }
+                }
+                $snap.Remaining--
+                Complete-CodexSnapshot -Client $Client -Now $Now -Result $r
+            }
+        }
+        return $r
+    }
+    $p = Get-JsonValue $m 'params'
+    $tid = [string](Get-JsonValue $p 'threadId')
+    $key = $script:CodexKeyPrefix + $tid
+    switch ($method) {
+        'thread/status/changed' {
+            if (-not $tid) { return $r }
+            $s = ConvertFrom-CodexStatus (Get-JsonValue $p 'status')
+            # 取り直しの途中なら、もう答えの来た分も、新しい状態に直しておく（揃ったときに、古い状態で上書きしないため）
+            if ($Client.Snapshot -and $Client.Snapshot.Sessions.ContainsKey($key)) {
+                if ($s) { $Client.Snapshot.Sessions[$key].Status = $s.Status; $Client.Snapshot.Sessions[$key].WaitingFor = $s.WaitingFor }
+                else { $Client.Snapshot.Sessions.Remove($key) }
+            }
+            $entry = $script:State[$key]
+            if (-not $s) {
+                if ($entry) { $script:State.Remove($key); $r.Changed = $true }
+            }
+            elseif ($entry) {
+                if (Set-EntryStatus -Entry $entry -Status $s.Status -Now $Now) { $r.Alert = $true }
+                $entry.WaitingFor = $s.WaitingFor
+                $r.Changed = $true
+            }
+            elseif (-not (Test-CodexInSnapshot -Client $Client -ThreadId $tid)) {
+                Request-CodexRefresh -Client $Client -Now $Now   # 知らないセッション。作業フォルダなどを読む
+            }
+        }
+        'thread/closed' {
+            if ($Client.Snapshot) { $Client.Snapshot.Sessions.Remove($key) }
+            if ($tid -and $script:State.ContainsKey($key)) { $script:State.Remove($key); $r.Changed = $true }
+        }
+        'thread/name/updated' {
+            $entry = $script:State[$key]
+            if ($tid -and $entry) { $entry.Name = [string](Get-JsonValue $p 'threadName'); $r.Changed = $true }
+        }
+        'thread/started' { Request-CodexRefresh -Client $Client -Now $Now }
+    }
+    return $r
+}
+
+function Start-CodexConnection {
+    <# codex app-server proxy を起動し、Upgrade の要求を送る。起動できなければ例外 #>
+    param([string]$CodexExe, [string]$Version, [datetime]$Now)
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $CodexExe
+    $psi.Arguments = 'app-server proxy'
+    $psi.WorkingDirectory = $env:USERPROFILE
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    # .NET Framework は、子の標準入力の先頭に、Console.InputEncoding の BOM を書く。BOM が付くと、デーモンは要求を読めない。
+    # BOM のある符号化のときだけ、起動するあいだ BOM なしの UTF-8 にする
+    $saved = $null
+    try {
+        if ([Console]::InputEncoding.GetPreamble().Length -gt 0) {
+            $saved = [Console]::InputEncoding
+            [Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)
+        }
+    }
+    catch { $saved = $null }
+    try { $proc = [Diagnostics.Process]::Start($psi) }
+    finally { if ($saved) { try { [Console]::InputEncoding = $saved } catch { } } }
+    $startTime = $null
+    try { $startTime = $proc.StartTime } catch { }
+    [void]$proc.StandardError.ReadToEndAsync()   # 読まずにおくと、proxy の書き込みが詰まりうる
+    $conn = [pscustomobject]@{
+        Process = $proc; StartTime = $startTime; Input = $proc.StandardInput.BaseStream; Output = $proc.StandardOutput.BaseStream
+        Buffer = New-Object byte[] 65536; ReadTask = $null; Client = (New-CodexClient -Version $Version)
+        StartedAt = $Now; NextHeartbeat = $null   # Receive-CodexConnection が決める
+    }
+    try {
+        $conn.ReadTask = $conn.Output.ReadAsync($conn.Buffer, 0, $conn.Buffer.Length)
+        $hs = [Text.Encoding]::ASCII.GetBytes((Get-WebSocketHandshake -Key $conn.Client.Key))
+        $conn.Input.Write($hs, 0, $hs.Length)
+        $conn.Input.Flush()
+    }
+    catch {
+        Stop-CodexConnection -Connection $conn
+        throw
+    }
+    return $conn
+}
+
+function Send-CodexOutbox {
+    param($Connection)
+    $out = $Connection.Client.Outbox
+    if ($out.Count -eq 0) { return }
+    foreach ($f in $out) { $Connection.Input.Write($f, 0, $f.Length) }
+    $Connection.Input.Flush()
+    $out.Clear()
+}
+
+function Receive-CodexConnection {
+    <# 読み終えたバイトを扱い、溜まったフレームを送る。待たない（timer から呼ぶ）。一覧が変わったら Changed、新しく待ち・エラー・
+       完了になったセッションがあれば Alert。切れたら Closed（proxy が終わった、close を受けた、応答が $TimeoutSec 秒ない、送れない）。
+       $HeartbeatSec ごとに取り直す（知らせを取りこぼしても、ここで合う。応答がなければ切れたと分かる） #>
+    param($Connection, [datetime]$Now, [int]$TimeoutSec = 10, [int]$HeartbeatSec = 30)
+    $r = [pscustomobject]@{ Changed = $false; Alert = $false; Closed = $false }
+    $c = $Connection
+    $client = $c.Client
+    try {
+        while ($c.ReadTask -and $c.ReadTask.IsCompleted -and $client.Phase -ne 'Closed') {
+            $n = 0
+            try { $n = $c.ReadTask.Result } catch { $n = 0 }
+            if ($n -le 0) { $client.Phase = 'Closed'; break }   # proxy が終わった（デーモンがない、入れ替わったなど）
+            $messages = Add-CodexBytes -Client $client -Bytes $c.Buffer -Count $n -Now $Now
+            $c.ReadTask = $c.Output.ReadAsync($c.Buffer, 0, $c.Buffer.Length)
+            foreach ($m in $messages) {
+                $x = Invoke-CodexMessage -Client $client -Text $m -Now $Now
+                if ($x.Changed) { $r.Changed = $true }
+                if ($x.Alert) { $r.Alert = $true }
+            }
+        }
+        if ($null -eq $c.NextHeartbeat) { $c.NextHeartbeat = $Now.AddSeconds($HeartbeatSec) }
+        if ($client.Phase -eq 'Ready' -and $Now -ge $c.NextHeartbeat) {
+            $c.NextHeartbeat = $Now.AddSeconds($HeartbeatSec)
+            Request-CodexRefresh -Client $client -Now $Now
+        }
+        # Upgrade か initialize に答えない、または送った要求に答えない
+        if ($client.Phase -ne 'Ready' -and ($Now - $c.StartedAt).TotalSeconds -gt $TimeoutSec) { $client.Phase = 'Closed' }
+        if (Test-CodexStalled -Client $client -Now $Now -TimeoutSec $TimeoutSec) { $client.Phase = 'Closed' }
+        if ($client.Phase -ne 'Closed') { Send-CodexOutbox -Connection $c }
+    }
+    catch { $client.Phase = 'Closed' }
+    $r.Closed = ($client.Phase -eq 'Closed')
+    return $r
+}
+
+function Stop-CodexConnection {
+    <# proxy を止める。codex.cmd から起動すると cmd、node、codex.exe と続くので、子孫ごと止める #>
+    param($Connection)
+    if (-not $Connection) { return }
+    $p = $Connection.Process
+    try { if (-not $p.HasExited) { Stop-ProcessTree -Id $p.Id -StartTime $Connection.StartTime } } catch { }
+    try { $p.Dispose() } catch { }
+    try { $Connection.Client.Rng.Dispose() } catch { }
 }
 
 # ドットソースされたときは関数の定義だけで止める
