@@ -9,6 +9,13 @@
     その名前と更新時刻だけを見て、変化があったときに `claude agents --json` を呼ぶ。
     ファイルの中身は読まない。同じ場所にある *.key には触れない。
 
+    Codex（OpenAI の Codex CLI）のセッションも出す。何も付けずに起動したターミナルの codex は、app-server の共有のデーモンの
+    上で動く。andon は `codex app-server proxy` を起動してデーモンに繋ぎっぱなしにし、読み込まれているセッション（thread）と、
+    状態が変わった知らせを受け取る（Codex の状態の正本は、app-server の thread/loaded/list、thread/read、thread/status/changed）。
+    送るのは読む要求だけで、セッションを変える要求は送らない。VS Code の拡張機能のセッションと、-c を付けて起動した codex は、
+    デーモンを使わないので出ない。Codex のセッションは PID が分からないので、クリックでは作業フォルダを VS Code で開く。
+    Codex を終了してからおよそ 60 秒は、デーモンが読み込んだままにするので「待機」で残る。
+
     - waiting（許可待ち・質問待ち）を赤、busy から idle に変わった未確認のもの（完了）を黄で上に並べる。
       busy（実行中）の行は薄い緑にする。
     - VS Code の拡張機能のパネルなど、SDK から動かしているセッションは、待機中（確認済み）なら出さない。
@@ -49,6 +56,7 @@
 
 .PARAMETER FallbackSec
     更新時刻に変化がなくても `claude agents --json` を呼ぶ間隔（秒）。
+    Codex のデーモンに続けて繋げないとき（デーモンがないとき）に、繋ぐのを試す間隔にも使う。
 
 .PARAMETER ScanMs
     sessions/*.json の名前と更新時刻を見る間隔（ミリ秒）。長くすると、状態の変化に気付くのが遅れる。
@@ -56,6 +64,9 @@
 
 .PARAMETER NoUpdateCheck
     新しい版があるかを確かめない（GitHub に通信しない）。
+
+.PARAMETER NoCodex
+    Codex のセッションを見ない（codex app-server proxy を起動しない）。codex が PATH にないときも見ない。
 
 .EXAMPLE
     Start-Process conhost.exe '--headless powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File .\andon.ps1'
@@ -68,7 +79,9 @@ param(
     [ValidateRange(200, 5000)]
     [int]$ScanMs = 1000,
 
-    [switch]$NoUpdateCheck
+    [switch]$NoUpdateCheck,
+
+    [switch]$NoCodex
 )
 
 # 版（MAJOR.MINOR.PATCH）。Release の tag（v<版>）と同じにする。install.ps1 はこの行から版を読む
@@ -1690,6 +1703,9 @@ if (-not $script:ClaudeExe) {
 # VS Code（code.cmd）は、なくても起動する。クリックで VS Code を開けないだけ（ターミナルのウィンドウは前面に出せる）
 $script:CodeExe = Find-CodeExe -CodeCmd $script:CodeCmd
 $script:SessionsDir = Join-Path (Get-ClaudeConfigDir) 'sessions'
+# Codex は、なくても起動する（Codex のセッションを出さないだけ）。-NoCodex なら探さない
+$script:CodexExe = $null
+if (-not $NoCodex) { $script:CodexExe = Find-CodexCommand }
 
 # 通知の送り元を、PowerShell ではなく andon と表示させる。Windows はトレイの通知の送り元を、プロセスのアプリ ID
 # （AppUserModelID）から決める。ID は、andon のウィンドウを作る前に付けなければならない。
@@ -1835,6 +1851,96 @@ function Open-Session {
     if (-not $target) { return }
     Start-VSCode -Target $target -CodeExe $script:CodeExe -CodeCmd $script:CodeCmd
     $Entry.Unread = $false
+}
+
+# Codex のデーモンとの接続（D-103、D-107）
+$script:Codex = $null                          # 繋いでいる proxy（Start-CodexConnection）
+$script:CodexRunning = $false                  # 前に見たとき、codex のプロセスがあったか
+$script:CodexNextScan = Get-Date               # 繋がっていないとき、次に codex のプロセスを見る時刻
+$script:CodexNextConnect = Get-Date            # 次に繋ぐのを試してよい時刻
+$script:CodexSeenUntil = [datetime]::MinValue  # この時刻より後に起動した codex は、新しく起動したもの
+$script:CodexFailures = 0                      # 続けて繋げなかった回数
+
+function Register-CodexFailure {
+    <# 繋げなかった。2 回までは 2 秒後にもう一度試す（デーモンが入れ替わる間に当たったときのため）。3 回続いたら、デーモンが
+       ないものとして Codex のセッションを消し、-FallbackSec ごとにだけ試す。VS Code の拡張機能や -c で起動した codex も
+       同じ名前のプロセスなので、デーモンがなくても codex のプロセスはある。proxy を数秒ごとに起動し続けないため。消したら $true #>
+    param([datetime]$Now)
+    $script:CodexFailures++
+    if ($script:CodexFailures -lt 3) {
+        $script:CodexNextConnect = $Now.AddSeconds(2)
+        return $false
+    }
+    $script:CodexNextConnect = $Now.AddSeconds($FallbackSec)
+    return (Clear-CodexState)
+}
+
+function Update-Codex {
+    <# Codex のセッションを追う。timer から呼び、待たない。戻り値は Receive-CodexConnection と同じ形。
+       繋がっていなければ、5 秒ごとに codex のプロセスを見る。なければ Codex のセッションを消す。あれば繋ぐ。
+       新しく起動した codex があれば、続けて失敗していても、すぐ試す（何も付けずに起動した codex を早く見つける）。
+       繋がっていたのに切れたら（デーモンが自分でアップデートして入れ替わったときなど）、セッションを残したまま、すぐ繋ぎ直す。
+       セッションを残すのは、繋ぎ直したときに、待ちをもう一度知らせたり、完了を既読にしたりしないため #>
+    param([datetime]$Now)
+    $none = [pscustomobject]@{ Changed = $false; Alert = $false; Closed = $false }
+    if (-not $script:CodexExe) { return $none }
+    if ($script:Codex) {
+        $r = Receive-CodexConnection -Connection $script:Codex -Now $Now
+        if ($script:Codex.Client.Ready) { $script:CodexFailures = 0 }
+        if (-not $r.Closed) { return $r }
+        $ready = $script:Codex.Client.Ready
+        Stop-CodexConnection -Connection $script:Codex
+        $script:Codex = $null
+        # 止めた proxy（codex.exe を含む）を、新しく起動した codex と見なさない
+        $script:CodexSeenUntil = $Now
+        $script:CodexNextScan = $Now
+        if ($ready) { $script:CodexNextConnect = $Now.AddSeconds(1) }
+        elseif (Register-CodexFailure -Now $Now) { $r.Changed = $true }
+        return $r
+    }
+    if ($Now -ge $script:CodexNextScan) {
+        $script:CodexNextScan = $Now.AddSeconds(5)
+        $procs = @(Get-Process -Name codex -ErrorAction SilentlyContinue)
+        $script:CodexRunning = $procs.Count -gt 0
+        $fresh = $false
+        foreach ($p in $procs) {
+            try { if ($p.StartTime -gt $script:CodexSeenUntil) { $fresh = $true } } catch { }
+            $p.Dispose()
+        }
+        $script:CodexSeenUntil = $Now
+        if (-not $script:CodexRunning) {
+            $script:CodexFailures = 0
+            if (Clear-CodexState) { $none.Changed = $true }
+            return $none
+        }
+        if ($fresh) {
+            $script:CodexFailures = 0
+            $script:CodexNextConnect = $Now
+        }
+    }
+    if (-not $script:CodexRunning -or $Now -lt $script:CodexNextConnect) { return $none }
+    try { $script:Codex = Start-CodexConnection -CodexExe $script:CodexExe -Version $script:AndonVersion -Now $Now }
+    catch {
+        $script:CodexSeenUntil = $Now
+        if (Register-CodexFailure -Now $Now) { $none.Changed = $true }
+    }
+    return $none
+}
+
+function Invoke-Alert {
+    <# 時刻 $Now に新しく待ち・エラー・完了になったセッションを、点滅と通知で知らせる。andon が前面にあれば知らせない。
+       Claude と Codex が同じ回に知らせたときは、後の通知が前の通知を置き換え、両方のセッションを載せる #>
+    param([datetime]$Now)
+    if ($form.ContainsFocus) { return }
+    if ($form.Visible) { Start-Flash -Now $Now }
+    $notice = Get-AlertNotice -Entries @($script:State.Values) -Now $Now
+    if ($notice) {
+        # 通知をクリックしたら、このセッションを開く。覚えるのは最新の 1 件分でよい。
+        # Windows は同じアイコンの通知を新しいもので置き換え、通知センターにも最新の 1 件しか残さないため
+        $script:NoticeKey = $notice.Key
+        $script:NoticeUpdate = $false
+        $tray.ShowBalloonTip(10000, $notice.Title, $notice.Text, [System.Windows.Forms.ToolTipIcon]::None)
+    }
 }
 
 $script:CodeProcessName = 'Code'
@@ -2817,6 +2923,22 @@ $timer.Add_Tick({
         try {
             $now = Get-Date
             Update-Flash
+            # Codex のセッション。下の claude agents --json の処理は途中で return するので、その前に行う。
+            # 失敗したら、接続を止めて、あとで繋ぎ直す（Claude のセッションの表示は続ける）
+            try {
+                $codex = Update-Codex -Now $now
+                if ($codex.Changed -or $codex.Alert) {
+                    Update-ListView
+                    $script:NextRender = $now.AddSeconds(5)
+                }
+                if ($codex.Alert) { Invoke-Alert -Now $now }
+            }
+            catch {
+                if ($script:Codex) { try { Stop-CodexConnection -Connection $script:Codex } catch { } }
+                $script:Codex = $null
+                $script:CodexSeenUntil = $now
+                $null = Register-CodexFailure -Now $now
+            }
             if ($script:PollTask) {
                 if (-not $script:PollTask.IsCompleted) {
                     if (($now - $script:PollStarted).TotalSeconds -gt 30) {
@@ -2841,17 +2963,7 @@ $timer.Add_Tick({
                 Update-ListView
                 $script:NextRender = $now.AddSeconds(5)
                 $lblStatus.Text = '更新 ' + $now.ToString('HH:mm:ss')
-                if ($alert -and -not $form.ContainsFocus) {
-                    if ($form.Visible) { Start-Flash -Now $now }
-                    $notice = Get-AlertNotice -Entries @($script:State.Values) -Now $now
-                    if ($notice) {
-                        # 通知をクリックしたら、このセッションを開く。覚えるのは最新の 1 件分でよい。
-                        # Windows は同じアイコンの通知を新しいもので置き換え、通知センターにも最新の 1 件しか残さないため
-                        $script:NoticeKey = $notice.Key
-                        $script:NoticeUpdate = $false
-                        $tray.ShowBalloonTip(10000, $notice.Title, $notice.Text, [System.Windows.Forms.ToolTipIcon]::None)
-                    }
-                }
+                if ($alert) { Invoke-Alert -Now $now }
                 $script:NextPoll = $now.AddSeconds($FallbackSec)
                 return
             }
@@ -2885,6 +2997,8 @@ $form.Add_FormClosed({
         $tray.Dispose()
         if ($script:AppIcon) { $script:AppIcon.Dispose() }
         if ($script:PollProc -and -not $script:PollProc.HasExited) { try { Stop-ProcessTree -Id $script:PollProc.Id -StartTime $script:PollStartTime } catch { } }
+        # Codex のデーモンに繋いでいる proxy（codex.cmd から起動すると cmd、node、codex.exe と続く）も止める
+        if ($script:Codex) { try { Stop-CodexConnection -Connection $script:Codex } catch { } }
         foreach ($client in @($script:CheckClient, $script:DownloadClient)) { if ($client) { try { $client.Dispose() } catch { } } }
         $script:Mutex.ReleaseMutex()
         $script:Mutex.Dispose()
