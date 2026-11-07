@@ -4,6 +4,7 @@ andon は、Claude Code のセッションの状態（実行中・許可待ち�
 クリックでそのセッションのウィンドウ（VS Code や Windows Terminal など）を前面に出す、
 Windows 向けの小さなツールです。
 VS Code のほか、cmd や PowerShell で起動したセッションも一覧に出ます。
+ターミナルで起動した Codex（OpenAI の Codex CLI）のセッションも一覧に出ます。
 使い方と詳しいことは、GitHub の README にあります。
 https://github.com/tbshiki/andon
 

@@ -8,7 +8,7 @@
 
 - 影響（何ができてしまうか）
 - 再現の手順
-- 確認した環境（Windows、PowerShell、Claude Code、VS Code のバージョン）
+- 確認した環境（Windows、PowerShell、Claude Code、VS Code、Codex CLI のバージョン）
 
 個人で開発しているため、返信や修正の時期は約束できませんが、確認して対応します。
 
@@ -21,6 +21,7 @@
 報告の範囲を判断する参考にしてください。andon が行うのは次のことだけです。
 
 - `claude agents --json` を実行し、セッションの一覧を読む
+- PATH に `codex` があれば（`-NoCodex` を付けていなければ）、`codex` のプロセスがあるかを 5 秒ごとに見る（プロセスの名前と起動時刻だけ）。あれば `codex app-server proxy` を起動したままにし、その標準入出力で、Codex の app-server のデーモン（同じ PC の、同じユーザーのもの）と WebSocket で話す。送るのは、読み込まれているセッションの一覧（`thread/loaded/list`）と、セッションごとの状態・題名・作業フォルダ（`thread/read`。会話の中身は求めない）を読む要求と、接続の始めの `initialize` だけ。セッションを変える要求は送らず、デーモンからの要求（許可を求めるものなど）には答えない。andon を終了するときに proxy を止める
 - Claude Code の設定ディレクトリ（既定は `~/.claude`）にある `sessions/*.json` の、ファイル名と更新時刻を見る（中身は読まない。`*.key` には触れない）
 - セッションの作業フォルダとその周辺の `*.code-workspace` を読み、開く対象を VS Code（`Code.exe`）に渡す
 - プロセスの一覧（`Win32_Process` の PID、親の PID、起動時刻、名前）を読み、セッションのプロセスから親へたどる。新しいセッションが出たときは、拡張機能のパネルのセッションかを見分けるため、そのプロセスの起動引数も読む
@@ -34,7 +35,7 @@
 - 起動して少し後と、その後 1 日 1 回、`https://api.github.com/repos/tbshiki/andon/releases/latest` を取得して、新しいバージョンがあるかを確かめる。送るのは普通の HTTP の要求（User-Agent は `andon/<バージョン>`）だけで、セッションやファイルの情報は送らない。`-NoUpdateCheck` を付けたときと、`andon.ps1` の隣に `.git` があるときは確かめない
 - アップデートするかを尋ねる画面（通知のクリックか、トレイの「アップデート」で出る）で「アップデートする」を選んだときだけ、そのバージョンの `andon-<バージョン>.zip` を、このリポジトリの Release から落とす。使うのは、公開済みで immutable の Release だけ。zip が、Release が示す sha256 と同じかを確かめてから一時フォルダ（`%TEMP%\andon-update-*`）に展開し、新しいバージョンの `install.ps1` を実行するコンソールを開いて、andon は終了する
 
-andon が通信するのは、上の GitHub だけです。GitHub にはログインせずに問い合わせ、認証情報は読みません。
+andon がネットワークで通信するのは、上の GitHub だけです。GitHub にはログインせずに問い合わせ、認証情報は読みません。Codex のデーモンとのやり取りは、`codex app-server proxy` を通した同じ PC の中のもので、Codex の認証情報は読みません。
 
 `install.ps1` が行うのは次のことだけです。ネットワークには通信しません。管理者の権限を求めません。
 
