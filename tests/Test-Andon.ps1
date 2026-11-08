@@ -1789,6 +1789,31 @@ try {
 }
 finally { Remove-Item -LiteralPath $hooksTmp -Recurse -Force -ErrorAction SilentlyContinue }
 
+Write-Host '== install.ps1: アンインストールで Codex の hook と記録を消す'
+Assert-True ((Get-AndonPayload) -contains 'andon-codex-hook.ps1') '配るファイルに、Codex の hook のスクリプトを入れる'
+$unTmp = Join-Path ([IO.Path]::GetTempPath()) ('andon-uninstall-codex-' + [guid]::NewGuid().ToString('N'))
+try {
+    $hp = Join-Path $unTmp 'codex\hooks.json'
+    New-Item -ItemType Directory -Path (Split-Path -Parent $hp) -Force | Out-Null
+    [IO.File]::WriteAllText($hp, $userHooks)
+    Set-AndonCodexHooks -Enabled $true -Path $hp -Command $hookCmd
+    $dataDir = Join-Path $unTmp 'andon'
+    New-Item -ItemType Directory -Path (Join-Path $dataDir 'codex') -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $dataDir 'codex\s1.json'), '{}')
+    $lines = Remove-AndonCodexData -HookScript (Join-Path $root 'andon-codex-hook.ps1') -DataDir $dataDir -HooksPath $hp
+    $hj = ConvertFrom-Json (Read-AndonCodexHooksFile -Path $hp)
+    Assert-Equal "$(Test-AndonCodexHooks (Read-AndonCodexHooksFile -Path $hp))|$($hj.hooks.PreToolUse[0].hooks[0].command)" 'False|python3 check.py' 'アンインストールで andon の hook だけを消し、ほかの hook は残す'
+    Assert-Equal "$(Test-Path -LiteralPath $dataDir)|$(@($lines).Count)" 'False|2' 'アンインストールで記録のフォルダを消し、消したものを知らせる'
+    $lines = Remove-AndonCodexData -HookScript (Join-Path $root 'andon-codex-hook.ps1') -DataDir $dataDir -HooksPath $hp
+    Assert-Equal @($lines).Count 0 '消すものがなければ、何も知らせない'
+    [IO.File]::WriteAllText($hp, '{ broken')
+    $lines = Remove-AndonCodexData -HookScript (Join-Path $root 'andon-codex-hook.ps1') -DataDir $dataDir -HooksPath $hp
+    Assert-Equal "$(@($lines).Count)|$([IO.File]::ReadAllText($hp))" '0|{ broken' '読めない hooks.json は書き換えない（andon の hook はないとみなす）'
+    $lines = Remove-AndonCodexData -HookScript (Join-Path $unTmp 'missing.ps1') -DataDir $dataDir -HooksPath $hp
+    Assert-Equal @($lines).Count 0 'hook のスクリプトがなければ、hooks.json に触れない'
+}
+finally { Remove-Item -LiteralPath $unTmp -Recurse -Force -ErrorAction SilentlyContinue }
+
 # ---------------------------------------------------------------------------
 Write-Host '== Codex の hook（andon-codex-hook.ps1）: 記録を書く'
 $stateTmp = Join-Path ([IO.Path]::GetTempPath()) ('andon-codex-' + [guid]::NewGuid().ToString('N'))

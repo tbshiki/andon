@@ -71,6 +71,38 @@ function New-AndonPackage {
     return $zip
 }
 
+function Remove-AndonCodexData {
+    <# アンインストールのとき、Codex の hooks.json から andon の hook を消し（ほかの hook は残す）、andon の hook が書いた
+       記録のフォルダ（$DataDir）を消す。hooks.json を扱う関数は andon-codex-hook.ps1（$HookScript）にある。
+       $HooksPath を渡さなければ、Codex の設定のフォルダの hooks.json。出すメッセージを返す #>
+    param([string]$HookScript, [string]$DataDir, [string]$HooksPath = '')
+    $lines = @()
+    if (Test-Path -LiteralPath $HookScript -PathType Leaf) {
+        $shown = $HooksPath
+        if (-not $shown) { $shown = '~\.codex\hooks.json' }
+        try {
+            . $HookScript
+            if (-not $HooksPath) { $HooksPath = Join-Path (Get-AndonCodexHome) 'hooks.json' }
+            $shown = $HooksPath
+            if (Test-AndonCodexHooks (Read-AndonCodexHooksFile -Path $HooksPath)) {
+                Set-AndonCodexHooks -Enabled $false -Path $HooksPath -Command ''
+                $lines += "andon の hook を消しました: $HooksPath"
+            }
+        }
+        catch {
+            $lines += "注意: Codex の hooks から andon の hook を消せませんでした。$shown から、andon-codex-hook.ps1 を動かす hook を手で消してください: $($_.Exception.Message)"
+        }
+    }
+    if ($DataDir -and (Test-Path -LiteralPath $DataDir)) {
+        try {
+            Remove-Item -LiteralPath $DataDir -Recurse -Force
+            $lines += "消しました: $DataDir"
+        }
+        catch { $lines += "注意: フォルダを消しきれませんでした: $DataDir" }
+    }
+    return , $lines
+}
+
 function Get-AndonLayout {
     <# 入れる場所と、ショートカットの場所と、「インストールされているアプリ」に登録するキー #>
     return [pscustomobject]@{
@@ -413,31 +445,9 @@ try {
             if (Remove-AndonShortcut -Path $lnk) { Write-Host "消しました: $lnk" }
         }
         foreach ($key in @(Remove-AndonRegistry)) { Write-Host "消しました: $key" }
-        # Codex の hooks.json から andon の hook を消す（ほかの hook は残す）。関数は andon-codex-hook.ps1 にある。
-        # インストール先を消す前に行う
-        $codexHook = Join-Path $PSScriptRoot 'andon-codex-hook.ps1'
-        $hooksPath = '~\.codex\hooks.json'
-        if (Test-Path -LiteralPath $codexHook -PathType Leaf) {
-            try {
-                . $codexHook
-                $hooksPath = Join-Path (Get-AndonCodexHome) 'hooks.json'
-                if (Test-AndonCodexHooks (Read-AndonCodexHooksFile -Path $hooksPath)) {
-                    Set-AndonCodexHooks -Enabled $false -Path $hooksPath -Command ''
-                    Write-Host "andon の hook を消しました: $hooksPath"
-                }
-            }
-            catch {
-                Write-Host "注意: Codex の hooks から andon の hook を消せませんでした。$hooksPath から、andon-codex-hook.ps1 を動かす hook を手で消してください: $($_.Exception.Message)" -ForegroundColor Yellow
-            }
-        }
-        # andon の hook が書いた、Codex のセッションの記録
-        $andonData = Join-Path $env:LOCALAPPDATA 'andon'
-        if (Test-Path -LiteralPath $andonData) {
-            try {
-                Remove-Item -LiteralPath $andonData -Recurse -Force
-                Write-Host "消しました: $andonData"
-            }
-            catch { Write-Host "注意: フォルダを消しきれませんでした: $andonData" -ForegroundColor Yellow }
+        # Codex の hooks.json から andon の hook を消し、hook が書いた記録を消す。インストール先を消す前に行う
+        foreach ($line in @(Remove-AndonCodexData -HookScript (Join-Path $PSScriptRoot 'andon-codex-hook.ps1') -DataDir (Join-Path $env:LOCALAPPDATA 'andon'))) {
+            if ($line.StartsWith('注意:')) { Write-Host $line -ForegroundColor Yellow } else { Write-Host $line }
         }
         if (Test-Path -LiteralPath $layout.InstallDir) {
             # 消すフォルダを作業フォルダにしていると、フォルダを消せない
