@@ -1672,6 +1672,241 @@ finally {
 }
 
 # ---------------------------------------------------------------------------
+Write-Host '== Codex の hook（andon-codex-hook.ps1）: イベントの当てはめ'
+$t0 = [datetime]'2026-01-01T00:00:00'
+function New-HookPayload {
+    param([string]$EventName, [string]$Session = 's1', [string]$Turn = 't1', [hashtable]$Extra = @{})
+    $o = [ordered]@{ session_id = $Session; hook_event_name = $EventName; cwd = 'C:\work\c1'; turn_id = $Turn }
+    foreach ($k in $Extra.Keys) { $o[$k] = $Extra[$k] }
+    return [pscustomobject]$o
+}
+function Get-HookEventText {
+    param($Payload)
+    $e = ConvertFrom-AndonCodexHookEvent $Payload
+    if (-not $e) { return 'null' }
+    return '{0}|{1}|{2}|{3}|{4}|{5}' -f $e.Status, $e.WaitingFor, $e.Done, $e.Interrupted, $e.CreateOnly, $e.Remove
+}
+Assert-Equal (Get-HookEventText (New-HookPayload 'SessionStart')) 'idle||False|False|True|False' 'SessionStart は、記録がなければ待機で作る'
+Assert-Equal (Get-HookEventText (New-HookPayload 'UserPromptSubmit')) 'busy||False|False|False|False' 'UserPromptSubmit は実行中'
+Assert-Equal (Get-HookEventText (New-HookPayload 'PermissionRequest')) 'waiting|permission prompt|False|False|False|False' 'PermissionRequest は許可待ち'
+Assert-Equal (Get-HookEventText (New-HookPayload 'Stop')) 'idle||True|False|False|False' 'Stop は完了'
+Assert-Equal (Get-HookEventText (New-HookPayload 'Stop' -Extra @{ agent_id = 'a1' })) 'null' 'サブエージェントの Stop（agent_id）は当てない'
+Assert-Equal (Get-HookEventText (New-HookPayload 'Stop' -Extra @{ agent_type = 'worker' })) 'null' 'サブエージェントの Stop（agent_type）は当てない'
+Assert-Equal (Get-HookEventText (New-HookPayload 'Interrupt')) 'idle||False|True|False|False' 'Interrupt は待機（既読）'
+Assert-Equal (Get-HookEventText (New-HookPayload 'SessionEnd')) '||False|False|False|True' 'SessionEnd は記録を消す'
+Assert-Equal (Get-HookEventText (New-HookPayload 'PreToolUse')) 'null' '使わないイベントは当てない'
+Assert-Equal (Get-HookEventText (New-HookPayload 'Stop' -Session '..\x')) 'null' 'ファイル名に使えないセッションの ID は当てない'
+Assert-Equal (Get-HookEventText (New-HookPayload 'Stop' -Session '')) 'null' 'セッションの ID がなければ当てない'
+
+$hostInfo = [pscustomobject]@{ Pid = 100; Start = 5; Kind = 'vscode' }
+function New-HookEvent { param([string]$EventName, [string]$Turn = 't1') return ConvertFrom-AndonCodexHookEvent (New-HookPayload $EventName -Turn $Turn) }
+$st1 = Merge-AndonCodexState -Current $null -Event (New-HookEvent 'SessionStart') -At 10 -HostInfo $hostInfo
+Assert-Equal "$($st1.Status)|$($st1.HostPid)|$($st1.HostStart)|$($st1.HostKind)|$($st1.Cwd)|$($st1.At)" 'idle|100|5|vscode|C:\work\c1|10' '最初のイベントで記録を作り、Codex のプロセスを書く'
+$st2 = Merge-AndonCodexState -Current $st1 -Event (New-HookEvent 'UserPromptSubmit') -At 20 -HostInfo $null
+Assert-Equal "$($st2.Status)|$($st2.HostPid)|$($st2.HostKind)" 'busy|100|vscode' '記録の Codex のプロセスを引き継ぐ'
+Assert-Equal (Merge-AndonCodexState -Current $st2 -Event (New-HookEvent 'SessionStart') -At 30 -HostInfo $null) $null 'SessionStart は、記録があれば当てない（最初のプロンプトと順が入れ替わるため）'
+Assert-Equal (Merge-AndonCodexState -Current $st2 -Event (New-HookEvent 'PermissionRequest') -At 15 -HostInfo $null) $null '記録より古いイベントは当てない'
+$st3 = Merge-AndonCodexState -Current $st2 -Event (New-HookEvent 'Interrupt') -At 40 -HostInfo $null
+Assert-Equal "$($st3.Status)|$($st3.Interrupted)|$($st3.Done)" 'idle|True|False' '中断は待機'
+Assert-Equal (Merge-AndonCodexState -Current $st3 -Event (New-HookEvent 'Stop') -At 41 -HostInfo $null) $null '中断した同じターンの Stop は、完了にしない'
+$st4 = Merge-AndonCodexState -Current $st3 -Event (New-HookEvent 'Stop' -Turn 't2') -At 50 -HostInfo $null
+Assert-Equal "$($st4.Status)|$($st4.Done)|$($st4.Interrupted)|$($st4.Turn)" 'idle|True|False|t2' '別のターンの Stop は完了'
+
+function New-HostProc {
+    param([int]$Id, [int]$Parent, [string]$Name, [int]$At, [string]$Cmd = '')
+    return [pscustomobject]@{ ProcessId = $Id; ParentProcessId = $Parent; Name = $Name; CreationDate = $t0.AddSeconds($At); CommandLine = $Cmd }
+}
+$hostProcs = @(
+    (New-HostProc 1 0 'Code.exe' 0 'Code.exe'),
+    (New-HostProc 2 1 'codex.exe' 10 'codex.exe -c features.x=true app-server --analytics-default-enabled'),
+    (New-HostProc 3 2 'pwsh.exe' 20), (New-HostProc 4 3 'powershell.exe' 21),
+    (New-HostProc 11 0 'codex.exe' 5 'codex.exe app-server --listen unix:// --analytics-default-enabled --managed-daemon'),
+    (New-HostProc 12 11 'pwsh.exe' 30), (New-HostProc 13 12 'powershell.exe' 31),
+    (New-HostProc 21 0 'pwsh.exe' 1 'pwsh.exe'), (New-HostProc 22 21 'codex.exe' 40 'codex.exe -c approvals_reviewer=user'),
+    (New-HostProc 23 22 'pwsh.exe' 41), (New-HostProc 24 23 'powershell.exe' 42),
+    (New-HostProc 31 99 'powershell.exe' 60),
+    (New-HostProc 41 42 'powershell.exe' 5), (New-HostProc 42 0 'codex.exe' 70 'codex.exe')
+)
+function Format-CodexHost { param($H) if (-not $H) { return 'null' } return '{0}|{1}' -f $H.Pid, $H.Kind }
+Assert-Equal (Format-CodexHost (Find-AndonCodexHost -Processes $hostProcs -Id 4)) '2|vscode' 'VS Code の拡張機能の app-server（親が VS Code）は vscode'
+Assert-Equal (Find-AndonCodexHost -Processes $hostProcs -Id 4).Start $t0.AddSeconds(10).ToUniversalTime().Ticks 'Codex のプロセスの起動時刻（UTC の Ticks）'
+Assert-Equal (Format-CodexHost (Find-AndonCodexHost -Processes $hostProcs -Id 13)) '11|daemon' '共有のデーモンは daemon'
+Assert-Equal (Format-CodexHost (Find-AndonCodexHost -Processes $hostProcs -Id 24)) '22|terminal' 'デーモンを使わない codex（-c で起動したものなど）は terminal'
+Assert-Equal (Format-CodexHost (Find-AndonCodexHost -Processes $hostProcs -Id 31)) 'null' '親をたどれなければ見つからない'
+Assert-Equal (Format-CodexHost (Find-AndonCodexHost -Processes $hostProcs -Id 41)) 'null' '子より後に起動した親（PID の使い回し）はたどらない'
+
+# ---------------------------------------------------------------------------
+Write-Host '== Codex の hook（andon-codex-hook.ps1）: hooks.json の入れ外し'
+$hookCmd = Get-AndonCodexHookCommand -ScriptPath "C:\Users\O'Brien\andon\andon-codex-hook.ps1"
+Assert-Equal $hookCmd "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 'C:\Users\O''Brien\andon\andon-codex-hook.ps1'" 'パスは単一引用符で囲み、単一引用符は 2 つ重ねる'
+$added = Add-AndonCodexHooks -Json '' -Command $hookCmd
+$hj = ConvertFrom-Json $added
+Assert-Equal (@($hj.hooks.PSObject.Properties.Name) -join ',') 'SessionStart,UserPromptSubmit,PermissionRequest,Stop,Interrupt,SessionEnd' '空の hooks.json に、6 つのイベントを足す'
+Assert-Equal "$($hj.hooks.Stop[0].hooks[0].type)|$($hj.hooks.Stop[0].hooks[0].async)|$($hj.hooks.Stop[0].hooks[0].command)" "command|True|$hookCmd" 'andon の hook は async（Codex は待たず、判断に関われない）'
+Assert-Equal "$($hj.hooks.SessionEnd[0].hooks[0].timeout)|$($hj.hooks.Stop[0].hooks[0].timeout)" '3|30' 'SessionEnd の待ち時間は、上限の 3 秒'
+Assert-True (Test-AndonCodexHooks $added) '足したら andon の hook がある'
+$userHooks = '{"description":"mine","hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"python3 check.py","timeout":30}]}],"Stop":[{"hooks":[{"type":"command","command":"notify.cmd"}]}]}}'
+$added = Add-AndonCodexHooks -Json $userHooks -Command $hookCmd
+$hj = ConvertFrom-Json $added
+Assert-Equal $hj.description 'mine' 'ほかの項目を残す'
+Assert-Equal "$($hj.hooks.PreToolUse[0].matcher)|$($hj.hooks.PreToolUse[0].hooks[0].command)|$($hj.hooks.PreToolUse[0].hooks[0].timeout)" 'Bash|python3 check.py|30' 'ほかのイベントの hook を残す'
+Assert-Equal "$(@($hj.hooks.Stop).Count)|$($hj.hooks.Stop[0].hooks[0].command)" '2|notify.cmd' '同じイベントのほかの hook は先頭のまま、andon の組を最後に足す（信頼を保つ）'
+Assert-True (Test-AndonCodexHandler $hj.hooks.Stop[1].hooks[0]) '最後の組が andon の hook'
+$again = Add-AndonCodexHooks -Json $added -Command ($hookCmd.Replace('andon\', 'andon2\'))
+$hj = ConvertFrom-Json $again
+Assert-Equal "$(@($hj.hooks.Stop).Count)|$($hj.hooks.Stop[1].hooks[0].command.Contains('andon2'))" '2|True' 'もう一度足すと、andon の分を入れ直す（重ならない）'
+$removed = Remove-AndonCodexHooks -Json $added
+$hj = ConvertFrom-Json $removed
+Assert-Equal (@($hj.hooks.PSObject.Properties.Name) -join ',') 'PreToolUse,Stop' 'andon の hook だけを消し、andon の分だけだったイベントは消す'
+Assert-Equal "$(@($hj.hooks.Stop).Count)|$($hj.hooks.Stop[0].hooks[0].command)" '1|notify.cmd' '消しても、ほかの hook は残す'
+Assert-True (-not (Test-AndonCodexHooks $removed)) '消したら andon の hook はない'
+$mixed = '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"a.cmd"},{"type":"command","command":"powershell.exe -File C:\\x\\andon-codex-hook.ps1"}]}]}}'
+$hj = ConvertFrom-Json (Remove-AndonCodexHooks -Json $mixed)
+Assert-Equal "$(@($hj.hooks.Stop[0].hooks).Count)|$($hj.hooks.Stop[0].hooks[0].command)" '1|a.cmd' '同じ組のほかの handler は残す'
+Assert-Throws { Add-AndonCodexHooks -Json '{ broken' -Command $hookCmd } '読めない hooks.json には足さない（例外）'
+Assert-Throws { Add-AndonCodexHooks -Json '[1,2]' -Command $hookCmd } 'オブジェクトでない hooks.json には足さない（例外）'
+Assert-Throws { Add-AndonCodexHooks -Json '{"hooks":[1]}' -Command $hookCmd } 'hooks がオブジェクトでなければ足さない（例外）'
+Assert-True (-not (Test-AndonCodexHooks '{ broken')) '読めなければ、andon の hook はないとみなす'
+
+$hooksTmp = Join-Path ([IO.Path]::GetTempPath()) ('andon-hooks-' + [guid]::NewGuid().ToString('N'))
+try {
+    $hp = Join-Path $hooksTmp 'hooks.json'
+    Set-AndonCodexHooks -Enabled $true -Path $hp -Command $hookCmd
+    Assert-True (Test-AndonCodexHooks (Read-AndonCodexHooksFile -Path $hp)) 'hooks.json がなければ、作って足す'
+    Assert-True (-not (Test-Path -LiteralPath "$hp.andon-backup")) 'もとの hooks.json がなければ、写しは作らない'
+    [IO.File]::WriteAllText($hp, $userHooks)
+    Set-AndonCodexHooks -Enabled $true -Path $hp -Command $hookCmd
+    Assert-Equal ([IO.File]::ReadAllText("$hp.andon-backup")) $userHooks '書き換える前に、写しを作る'
+    $bytes = [IO.File]::ReadAllBytes($hp)
+    Assert-True (-not ($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB)) 'hooks.json は BOM なしで書く'
+    Set-AndonCodexHooks -Enabled $false -Path $hp -Command ''
+    $hj = ConvertFrom-Json (Read-AndonCodexHooksFile -Path $hp)
+    Assert-Equal "$(Test-AndonCodexHooks (Read-AndonCodexHooksFile -Path $hp))|$($hj.description)" 'False|mine' '外すと、andon の hook だけを消す'
+    [IO.File]::WriteAllText($hp, '{ broken')
+    Assert-Throws { Set-AndonCodexHooks -Enabled $true -Path $hp -Command $hookCmd } '読めない hooks.json には足さない'
+    Set-AndonCodexHooks -Enabled $false -Path $hp -Command ''
+    Assert-Equal ([IO.File]::ReadAllText($hp)) '{ broken' '読めない hooks.json は書き換えない'
+}
+finally { Remove-Item -LiteralPath $hooksTmp -Recurse -Force -ErrorAction SilentlyContinue }
+
+# ---------------------------------------------------------------------------
+Write-Host '== Codex の hook（andon-codex-hook.ps1）: 記録を書く'
+$stateTmp = Join-Path ([IO.Path]::GetTempPath()) ('andon-codex-' + [guid]::NewGuid().ToString('N'))
+try {
+    $lookups = @{ Count = 0 }
+    $getProcs = { $lookups.Count++; $hostProcs }.GetNewClosure()
+    Invoke-AndonCodexHook -Payload (New-HookPayload 'SessionStart') -StateDir $stateTmp -At 100 -GetProcesses $getProcs -SelfId 4
+    $rec = Read-AndonCodexState -Path (Join-Path $stateTmp 's1.json')
+    Assert-Equal "$($rec.Status)|$($rec.HostPid)|$($rec.HostKind)|$($lookups.Count)" 'idle|2|vscode|1' '最初のイベントで、Codex のプロセスを調べて記録を書く'
+    Invoke-AndonCodexHook -Payload (New-HookPayload 'UserPromptSubmit') -StateDir $stateTmp -At 200 -GetProcesses $getProcs -SelfId 4
+    $rec = Read-AndonCodexState -Path (Join-Path $stateTmp 's1.json')
+    Assert-Equal "$($rec.Status)|$($rec.HostPid)|$($lookups.Count)" 'busy|2|1' '2 回目からは、Codex のプロセスを調べない'
+    $raw = [IO.File]::ReadAllText((Join-Path $stateTmp 's1.json'))
+    Assert-True (-not $raw.Contains('prompt') -and -not $raw.Contains('transcript')) '記録に、プロンプトや会話の記録の場所を書かない'
+    Invoke-AndonCodexHook -Payload (New-HookPayload 'PreToolUse') -StateDir $stateTmp -At 300 -GetProcesses $getProcs -SelfId 4
+    Assert-Equal (Read-AndonCodexState -Path (Join-Path $stateTmp 's1.json')).At ([long]200) '使わないイベントでは書かない'
+    Invoke-AndonCodexHook -Payload (New-HookPayload 'SessionEnd') -StateDir $stateTmp -At 400 -GetProcesses $getProcs -SelfId 4
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $stateTmp 's1.json'))) 'SessionEnd で記録を消す'
+    Assert-Equal @(Get-ChildItem -LiteralPath $stateTmp -Filter '*.tmp').Count 0 '一時ファイルを残さない'
+
+    # 本物の子プロセスとして動かす（Codex と同じく、標準入力に JSON を渡す）。何も出力せず、終了コード 0 で、記録を書く
+    $savedLocal = $env:LOCALAPPDATA
+    $savedEncoding = $OutputEncoding
+    try {
+        $env:LOCALAPPDATA = $stateTmp
+        # Windows PowerShell 5.1 は、ネイティブのコマンドへ ASCII で送るので、UTF-8 にする（Codex は UTF-8 で渡す）
+        $OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+        $payloadJson = '{"session_id":"child-1","hook_event_name":"UserPromptSubmit","cwd":"C:\\work\\日本語","turn_id":"t9","prompt":"secret"}'
+        $hookOut = $payloadJson | & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $root 'andon-codex-hook.ps1')
+        $hookExit = $LASTEXITCODE
+    }
+    finally { $env:LOCALAPPDATA = $savedLocal; $OutputEncoding = $savedEncoding }
+    $rec = Read-AndonCodexState -Path (Join-Path $stateTmp 'andon\codex\child-1.json')
+    Assert-Equal "$hookExit|$(($hookOut -join '').Length)" '0|0' 'hook として動かすと、何も出力せず、終了コード 0'
+    Assert-Equal "$($rec.Status)|$($rec.Cwd)" 'busy|C:\work\日本語' 'hook として動かすと、記録を書く（日本語の作業フォルダも読める）'
+    Assert-True (-not ([IO.File]::ReadAllText((Join-Path $stateTmp 'andon\codex\child-1.json'))).Contains('secret')) 'hook として動かしても、プロンプトを書かない'
+    $hookOut = '{ broken' | & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $root 'andon-codex-hook.ps1')
+    Assert-Equal "$LASTEXITCODE|$(($hookOut -join '').Length)" '0|0' '読めない入力でも、何も出力せず、終了コード 0'
+}
+finally { Remove-Item -LiteralPath $stateTmp -Recurse -Force -ErrorAction SilentlyContinue }
+
+# ---------------------------------------------------------------------------
+Write-Host '== Codex のセッション（andon の一覧）'
+Assert-Equal (Get-JsonValue $null 'a') $null 'Get-JsonValue は $null に $null を返す'
+Assert-True (Test-CodexKey 'codex:abc') 'codex: で始まるキーは Codex のセッション'
+Assert-True (-not (Test-CodexKey '1234')) 'PID のキーは Codex のセッションでない'
+function New-CodexRecord {
+    param([string]$Id, [string]$Status, [long]$At, [switch]$Done, [switch]$Interrupted, [string]$Kind = 'daemon', [int]$HostPid = 0, [string]$WaitingFor = '')
+    return [pscustomobject]@{
+        SessionId = $Id; Status = $Status; WaitingFor = $WaitingFor; Done = [bool]$Done; Interrupted = [bool]$Interrupted
+        Turn = 't'; Cwd = "C:\work\$Id"; At = $At; HostPid = $HostPid; HostStart = 1; HostKind = $Kind
+    }
+}
+function New-CodexSession { return ConvertTo-CodexSession (New-CodexRecord @args) }
+Assert-Equal (ConvertTo-CodexSession (New-CodexRecord 'x' 'strange' 1)) $null '知らない状態の記録は読まない'
+Assert-Equal (ConvertTo-CodexSession $null) $null '記録がなければ読まない'
+
+$readTmp = Join-Path ([IO.Path]::GetTempPath()) ('andon-codex-read-' + [guid]::NewGuid().ToString('N'))
+try {
+    New-Item -ItemType Directory -Path $readTmp -Force | Out-Null
+    $nowR = [datetime]'2026-01-02T00:00:00'
+    $fresh = $nowR.ToUniversalTime().AddMinutes(-5).Ticks
+    $old = $nowR.ToUniversalTime().AddHours(-25).Ticks
+    [IO.File]::WriteAllText((Join-Path $readTmp 'a.json'), (ConvertTo-Json (New-CodexRecord 'a' 'busy' $fresh -HostPid 5)))
+    [IO.File]::WriteAllText((Join-Path $readTmp 'b.json'), (ConvertTo-Json (New-CodexRecord 'b' 'idle' $old -HostPid 5)))
+    [IO.File]::WriteAllText((Join-Path $readTmp 'c.json'), (ConvertTo-Json (New-CodexRecord 'c' 'idle' $fresh -HostPid 7)))
+    [IO.File]::WriteAllText((Join-Path $readTmp 'd.json'), '{ broken')
+    [IO.File]::WriteAllText((Join-Path $readTmp 'e.json'), (ConvertTo-Json (New-CodexRecord 'e' 'idle' $fresh -HostPid 0)))
+    $read = Read-CodexSessions -Dir $readTmp -Now $nowR -IsAlive { param($HostPid, $HostStart) $HostPid -ne 7 }
+    Assert-Equal (@($read | ForEach-Object { $_.Key } | Sort-Object) -join ',') 'codex:a,codex:e' '古いもの、Codex のプロセスが終わったもの、読めないものは除く'
+    Assert-Equal "$(Test-Path (Join-Path $readTmp 'b.json'))|$(Test-Path (Join-Path $readTmp 'c.json'))|$(Test-Path (Join-Path $readTmp 'd.json'))" 'False|False|True' '古いものと終わったものの記録は消し、読めないものは残す'
+    Assert-Equal (Read-CodexSessions -Dir (Join-Path $readTmp 'none') -Now $nowR -IsAlive $null).Count 0 'フォルダがなければ空'
+}
+finally { Remove-Item -LiteralPath $readTmp -Recurse -Force -ErrorAction SilentlyContinue }
+Assert-True (Test-CodexHostAlive -HostPid $PID -HostStart ([Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime().Ticks)) '動いているプロセスは生きている'
+Assert-True (-not (Test-CodexHostAlive -HostPid $PID -HostStart 1)) '起動時刻が違えば、PID の使い回しとして終わったとみなす'
+
+$script:State = @{}
+$null = Update-SessionState -Sessions @((New-Session 1 'busy')) -Now $t0
+$alert = Update-CodexState -Sessions @((New-CodexSession 'a' 'idle' 1), (New-CodexSession 'b' 'busy' 1)) -Now $t0
+Assert-Equal $alert $false '初めて見た待機と実行中では知らせない'
+Assert-Equal "$(Get-StatusLabel $script:State['codex:a'])|$(Get-StatusLabel $script:State['codex:b'])" '待機|実行中' 'Codex のセッションの待機と実行中'
+Assert-Equal "$($script:State['codex:a'].Kind)|$($script:State['codex:a'].Sdk)" 'codex|False' 'Codex のセッションの Kind は codex。デーモンのセッションは隠さない'
+Assert-Equal (Find-SessionWindow -Entry $script:State['codex:a'] -Processes @() -Windows @()) $null 'Codex のセッションはウィンドウを探さない'
+$alert = Update-CodexState -Sessions @((New-CodexSession 'a' 'idle' 1), (New-CodexSession 'b' 'waiting' 2 -WaitingFor 'permission prompt')) -Now $t0.AddSeconds(5)
+Assert-Equal "$alert|$(Get-StatusLabel $script:State['codex:b'])" 'True|許可待ち' '許可待ちになったら知らせる'
+$alert = Update-CodexState -Sessions @((New-CodexSession 'a' 'idle' 1), (New-CodexSession 'b' 'idle' 3 -Done)) -Now $t0.AddSeconds(10)
+Assert-Equal "$alert|$(Get-StatusLabel $script:State['codex:b'])" 'True|完了' '許可待ちのあとの Stop も完了（許可したあとにターンが終わった）'
+$alert = Update-CodexState -Sessions @((New-CodexSession 'a' 'idle' 1), (New-CodexSession 'b' 'idle' 3 -Done)) -Now $t0.AddSeconds(15)
+Assert-Equal "$alert|$($script:State['codex:b'].Unread)" 'False|True' '同じイベントでは、もう一度知らせない'
+$null = Update-CodexState -Sessions @((New-CodexSession 'a' 'busy' 4), (New-CodexSession 'b' 'idle' 3 -Done)) -Now $t0.AddSeconds(20)
+$alert = Update-CodexState -Sessions @((New-CodexSession 'a' 'idle' 5 -Interrupted), (New-CodexSession 'b' 'idle' 3 -Done)) -Now $t0.AddSeconds(25)
+Assert-Equal "$alert|$(Get-StatusLabel $script:State['codex:a'])" 'False|待機' '中断は知らせず、既読の待機'
+$null = Update-CodexState -Sessions @((New-CodexSession 'v' 'busy' 1 -Kind 'vscode')) -Now $t0.AddSeconds(30)
+Assert-Equal "$($script:State['codex:v'].Sdk)|$(Test-SessionVisible $script:State['codex:v'])" 'True|True' 'VS Code の拡張機能のセッションは、実行中なら出す'
+Assert-Equal $script:State.ContainsKey('codex:a') $false '一覧にない Codex のセッションは消す'
+$null = Update-CodexState -Sessions @((New-CodexSession 'v' 'idle' 2 -Kind 'vscode' -Done)) -Now $t0.AddSeconds(35)
+Assert-Equal (Test-SessionVisible $script:State['codex:v']) $true 'VS Code の拡張機能のセッションは、完了なら出す'
+$script:State['codex:v'].Unread = $false
+Assert-Equal (Test-SessionVisible $script:State['codex:v']) $false 'VS Code の拡張機能のセッションは、待機（確認済み）なら出さない'
+Assert-Equal $script:State.ContainsKey('1') $true 'Codex の一覧は Claude のセッションを消さない'
+$null = Update-SessionState -Sessions @((New-Session 2 'idle')) -Now $t0.AddSeconds(40)
+Assert-Equal "$($script:State.ContainsKey('codex:v'))|$($script:State.ContainsKey('1'))" 'True|False' 'Claude の一覧は Codex のセッションを消さず、Claude のセッションは消す'
+Assert-Equal (Clear-CodexState) $true 'Codex のセッションを消したら $true'
+Assert-Equal "$($script:State.ContainsKey('codex:v'))|$($script:State.ContainsKey('2'))|$(Clear-CodexState)" 'False|True|False' 'Clear-CodexState は Codex のセッションだけを消す'
+
+$script:State = @{}
+$null = Update-SessionState -Sessions @((New-Session 1 'waiting' 'permission prompt')) -Now $t0
+Assert-Equal (Get-AlertNotice -Entries @($script:State.Values) -Now $t0).Title 'Claude Code が待っています' 'Claude のセッションの通知の題'
+$script:State = @{}
+$null = Update-CodexState -Sessions @((New-CodexSession 'a' 'waiting' 1 -WaitingFor 'permission prompt')) -Now $t0
+$notice = Get-AlertNotice -Entries @($script:State.Values) -Now $t0
+Assert-Equal "$($notice.Title)|$($notice.Text)|$($notice.Key)" 'Codex が待っています|許可待ち: a|codex:a' 'Codex のセッションの待ちの通知（名前がなければフォルダの名前）'
+$null = Update-CodexState -Sessions @((New-CodexSession 'a' 'idle' 2 -Done)) -Now $t0.AddSeconds(5)
+Assert-Equal (Get-AlertNotice -Entries @($script:State.Values) -Now $t0.AddSeconds(5)).Title 'Codex が完了しました' 'Codex のセッションの完了の通知の題'
+$script:State = @{}
+
+# ---------------------------------------------------------------------------
 $passed = $script:Count - $script:Failures
 Write-Host ''
 Write-Host "$passed / $($script:Count) passed"

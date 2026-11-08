@@ -9,6 +9,12 @@
     その名前と更新時刻だけを見て、変化があったときに `claude agents --json` を呼ぶ。
     ファイルの中身は読まない。同じ場所にある *.key には触れない。
 
+    Codex（OpenAI の Codex CLI）のセッションも出す。Codex の状態は、Codex の hooks で受け取る。トレイのメニューの
+    「Codex の状態を出す」で、~/.codex/hooks.json に andon の hook（andon-codex-hook.ps1）を足したり消したりする
+    （ほかの hook は変えない）。hook は、セッションごとの状態を %LOCALAPPDATA%\andon\codex に書き、andon は、そのフォルダの
+    ファイル名と更新時刻を見て、変わったら読む。andon は Codex のプロセスにも、Codex のサーバー（デーモン）にも繋がない。
+    Codex のセッションは、クリックで作業フォルダを VS Code で開く。VS Code の拡張機能のセッションは、待機なら出さない。
+
     - waiting（許可待ち・質問待ち）を赤、busy から idle に変わった未確認のもの（完了）を黄で上に並べる。
       busy（実行中）の行は薄い緑にする。
     - VS Code の拡張機能のパネルなど、SDK から動かしているセッションは、待機中（確認済み）なら出さない。
@@ -49,6 +55,7 @@
 
 .PARAMETER FallbackSec
     更新時刻に変化がなくても `claude agents --json` を呼ぶ間隔（秒）。
+    Codex の hook の記録を、変化がなくても読み直す間隔にも使う（Codex のプロセスが終わったセッションを消すため）。
 
 .PARAMETER ScanMs
     sessions/*.json の名前と更新時刻を見る間隔（ミリ秒）。長くすると、状態の変化に気付くのが遅れる。
@@ -84,6 +91,7 @@ $script:State = @{}        # pid -> エントリ
 
 function Get-JsonValue {
     param($Object, [string]$Name)
+    if ($null -eq $Object) { return $null }
     $p = $Object.PSObject.Properties[$Name]
     if ($p) { return $p.Value }
     return $null
@@ -108,8 +116,39 @@ function ConvertFrom-SessionJson {
     throw 'claude agents --json の出力が JSON 配列ではありません'
 }
 
+function New-StateEntry {
+    <# 一覧に初めて出たセッション。起動時点で idle のものは、いつ終わったか分からないので既読として扱う #>
+    param([string]$Key, [string]$Status, $StartedAt, [datetime]$Now)
+    $entry = [pscustomobject]@{
+        Key = $Key; Status = $Status; Since = $null; Unread = ($Status -eq 'waiting')
+        Name = ''; Cwd = ''; Kind = ''; WaitingFor = ''; AlertAt = $null
+        Sdk = $null   # 拡張機能のパネルなど、ターミナルではなく SDK から動かしているか。$null は未判定
+        StartedAt = $StartedAt
+        CodexAt = $null   # Codex のセッションの、最後に当てたイベントの時刻（Update-CodexState）
+    }
+    if ($entry.Unread) { $entry.AlertAt = $Now }
+    return $entry
+}
+
+function Set-EntryStatus {
+    <# セッションの状態を変える。新しく待ち・完了（busy から idle）になったら $true #>
+    param($Entry, [string]$Status, [datetime]$Now)
+    if ($Entry.Status -eq $Status) { return $false }
+    $prev = $Entry.Status
+    $Entry.Status = $Status
+    $Entry.Since = $Now
+    if ($Status -eq 'waiting' -or ($Status -eq 'idle' -and $prev -eq 'busy')) {
+        $Entry.Unread = $true
+        $Entry.AlertAt = $Now
+        return $true
+    }
+    $Entry.Unread = $false   # busy に戻った = 誰かが応答した。waiting -> idle は手元で拒否した場合
+    return $false
+}
+
 function Update-SessionState {
-    <# 一覧を取り込み、新しく「待ち」になったセッションがあれば $true を返す #>
+    <# claude agents --json の一覧を取り込み、新しく「待ち」か「完了」になったセッションがあれば $true を返す。
+       Codex のセッション（キーが codex: で始まるもの）は Update-CodexState が扱うので、ここでは消さない #>
     param([object[]]$Sessions, [datetime]$Now)
     $alert = $false
     $alive = @{}
@@ -128,24 +167,11 @@ function Update-SessionState {
             $entry = $null
         }
         if (-not $entry) {
-            # 起動時点で idle のものは、いつ終わったか分からないので既読として扱う
-            $entry = [pscustomobject]@{
-                Key = $key; Status = $status; Since = $null; Unread = ($status -eq 'waiting')
-                Name = ''; Cwd = ''; Kind = ''; WaitingFor = ''; AlertAt = $null
-                Sdk = $null   # 拡張機能のパネルなど、ターミナルではなく SDK から動かしているか。$null は未判定
-                StartedAt = $startedAt
-            }
+            $entry = New-StateEntry -Key $key -Status $status -StartedAt $startedAt -Now $Now
             $script:State[$key] = $entry
-            if ($entry.Unread) { $entry.AlertAt = $Now; $alert = $true }
+            if ($entry.Unread) { $alert = $true }
         }
-        elseif ($entry.Status -ne $status) {
-            $prev = $entry.Status
-            $entry.Status = $status
-            $entry.Since = $Now
-            if ($status -eq 'waiting') { $entry.Unread = $true; $entry.AlertAt = $Now; $alert = $true }
-            elseif ($status -eq 'idle' -and $prev -eq 'busy') { $entry.Unread = $true; $entry.AlertAt = $Now; $alert = $true }
-            else { $entry.Unread = $false }   # busy に戻った = 誰かが応答した。waiting -> idle は手元で拒否した場合
-        }
+        elseif (Set-EntryStatus -Entry $entry -Status $status -Now $Now) { $alert = $true }
         $entry.Name = [string](Get-JsonValue $s 'name')
         $entry.Cwd = [string](Get-JsonValue $s 'cwd')
         $entry.Kind = [string](Get-JsonValue $s 'kind')
@@ -153,7 +179,7 @@ function Update-SessionState {
         if ($null -ne $startedAt) { $entry.StartedAt = $startedAt }
     }
     foreach ($k in @($script:State.Keys)) {
-        if (-not $alive.ContainsKey($k)) { $script:State.Remove($k) }
+        if (-not (Test-CodexKey $k) -and -not $alive.ContainsKey($k)) { $script:State.Remove($k) }
     }
     return $alert
 }
@@ -233,8 +259,11 @@ function Get-AlertNotice {
     if ($hits.Count -gt $MaxLines) { $lines = @($lines) + ('ほか {0} 件' -f ($hits.Count - $MaxLines)) }
     $text = @($lines) -join "`n"
     if ($text.Length -gt 250) { $text = $text.Substring(0, 249) + '…' }   # 通知の本文は 255 文字まで
-    $heading = 'Claude Code が完了しました'
-    if ((Get-Rank $hits[0]) -eq 0) { $heading = 'Claude Code が待っています' }
+    # 題は、先頭のセッションで決める（Claude Code か Codex か）
+    $tool = 'Claude Code'
+    if (Test-CodexKey $hits[0].Key) { $tool = 'Codex' }
+    $heading = "$tool が完了しました"
+    if ((Get-Rank $hits[0]) -eq 0) { $heading = "$tool が待っています" }
     return [pscustomobject]@{ Title = $heading; Text = $text; Key = $hits[0].Key }
 }
 
@@ -1131,6 +1160,140 @@ function Get-VerticalItemLayout {
     }
 }
 
+# ---------------------------------------------------------------------------
+# Codex のセッション（D-109〜D-115）。Codex の hooks で動く andon-codex-hook.ps1 が、セッションごとの状態を
+# %LOCALAPPDATA%\andon\codex\<セッションの ID>.json に書く。andon は、そのフォルダのファイル名と更新時刻を見て、
+# 変わったら読む（andon の hook が書いたファイルなので、中身を読む）。Codex のセッションのキーは codex:<セッションの ID>。
+# Codex のプロセスは分かるが、ターミナルの codex はデーモンの中で動くので、ウィンドウは探さず、作業フォルダを VS Code で開く
+# ---------------------------------------------------------------------------
+
+$script:CodexKeyPrefix = 'codex:'
+
+# hooks.json を扱う関数と、記録の場所は、hook のスクリプトにある。読めなければ Codex のセッションを出さない
+$script:CodexHookScript = Join-Path $PSScriptRoot 'andon-codex-hook.ps1'
+$script:CodexHookLoaded = $false
+if (Test-Path -LiteralPath $script:CodexHookScript -PathType Leaf) {
+    try {
+        . $script:CodexHookScript
+        $script:CodexHookLoaded = $true
+    }
+    catch { $script:CodexHookLoaded = $false }
+}
+
+function Test-CodexKey {
+    param([string]$Key)
+    return $Key.StartsWith($script:CodexKeyPrefix, [StringComparison]::Ordinal)
+}
+
+function ConvertTo-CodexSession {
+    <# hook が書いた記録を、Update-CodexState に渡す形にする。読めないもの、知らない状態のものは $null #>
+    param($State)
+    $id = [string](Get-JsonValue $State 'SessionId')
+    $status = [string](Get-JsonValue $State 'Status')
+    if (-not $id -or @('busy', 'waiting', 'idle') -notcontains $status) { return $null }
+    return [pscustomobject]@{
+        Key = $script:CodexKeyPrefix + $id; Status = $status; WaitingFor = [string](Get-JsonValue $State 'WaitingFor')
+        Done = [bool](Get-JsonValue $State 'Done'); Interrupted = [bool](Get-JsonValue $State 'Interrupted')
+        Cwd = [string](Get-JsonValue $State 'Cwd'); At = [long](Get-JsonValue $State 'At')
+        HostPid = [int](Get-JsonValue $State 'HostPid'); HostStart = [long](Get-JsonValue $State 'HostStart')
+        HostKind = [string](Get-JsonValue $State 'HostKind')
+    }
+}
+
+function Read-CodexSessions {
+    <# 記録のフォルダから、Codex のセッションを読む。最後のイベントから $StaleHours 時間たったものと、Codex のプロセスが
+       なくなったもの（$IsAlive が $false を返すもの）は、記録を消して除く（SessionEnd が来ないまま終わったときのため）。
+       $IsAlive は、Codex のプロセスの PID と起動時刻（UTC の Ticks）を受け取る。読めない記録は、消さずに飛ばす #>
+    param([string]$Dir, [datetime]$Now, [scriptblock]$IsAlive, [int]$StaleHours = 24)
+    $result = @()
+    if (-not [IO.Directory]::Exists($Dir)) { return , $result }
+    $limit = $Now.ToUniversalTime().AddHours(-$StaleHours).Ticks
+    foreach ($f in [IO.Directory]::GetFiles($Dir, '*.json')) {
+        $s = $null
+        try { $s = ConvertTo-CodexSession (ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($f)) -ErrorAction Stop) }
+        catch { $s = $null }
+        if (-not $s) { continue }
+        $dead = $s.At -lt $limit
+        if (-not $dead -and $s.HostPid -gt 0 -and $IsAlive) { $dead = -not (& $IsAlive $s.HostPid $s.HostStart) }
+        if ($dead) {
+            try { [IO.File]::Delete($f) } catch { }
+            continue
+        }
+        $result += $s
+    }
+    return , $result
+}
+
+function Test-CodexHostAlive {
+    <# Codex のプロセスがまだ動いているか。起動時刻が違えば、PID が使い回されたものとして $false。起動時刻を読めなければ $true #>
+    param([int]$HostPid, [long]$HostStart)
+    $p = $null
+    try { $p = [Diagnostics.Process]::GetProcessById($HostPid) }
+    catch { return $false }
+    try {
+        if ($HostStart -le 0) { return $true }
+        $start = $p.StartTime.ToUniversalTime().Ticks
+        return [Math]::Abs($start - $HostStart) -lt [TimeSpan]::TicksPerSecond
+    }
+    catch { return $true }
+    finally { $p.Dispose() }
+}
+
+function Update-CodexState {
+    <# Codex のセッションの一覧（ConvertTo-CodexSession の形）を取り込み、新しく待ち・完了になったものがあれば $true を返す。
+       一覧にない Codex のセッションは消す。Claude のセッションには触れない。
+       完了（Stop）は、前の状態によらず未確認にする（PostToolUse を使わないので、許可したあとのターンの終わりも、待ちから
+       待機に見えるため）。中断（Interrupt）は既読にする（手元で止めたので）。VS Code の拡張機能のセッションは、
+       待機なら一覧に出さない（Sdk。D-112） #>
+    param([object[]]$Sessions, [datetime]$Now)
+    $alert = $false
+    $alive = @{}
+    foreach ($s in $Sessions) {
+        if (-not $s) { continue }
+        $alive[$s.Key] = $true
+        $entry = $script:State[$s.Key]
+        if (-not $entry) {
+            $entry = New-StateEntry -Key $s.Key -Status $s.Status -StartedAt $null -Now $Now
+            $entry.Kind = 'codex'   # ウィンドウを探さない（Find-SessionWindow は interactive だけを探す）
+            $script:State[$s.Key] = $entry
+            if ($entry.Unread) { $alert = $true }
+        }
+        elseif ($entry.CodexAt -ne $s.At) {
+            $changed = $false
+            if ($s.Done) {
+                if ($entry.Status -ne $s.Status) { $entry.Status = $s.Status; $entry.Since = $Now }
+                $entry.Unread = $true
+                $entry.AlertAt = $Now
+                $changed = $true
+            }
+            elseif (Set-EntryStatus -Entry $entry -Status $s.Status -Now $Now) { $changed = $true }
+            if ($s.Interrupted) {
+                $entry.Unread = $false
+                $entry.AlertAt = $null
+                $changed = $false
+            }
+            if ($changed) { $alert = $true }
+        }
+        $entry.CodexAt = $s.At
+        $entry.Cwd = $s.Cwd
+        $entry.WaitingFor = $s.WaitingFor
+        $entry.Sdk = ($s.HostKind -eq 'vscode')
+    }
+    foreach ($k in @($script:State.Keys)) {
+        if ((Test-CodexKey $k) -and -not $alive.ContainsKey($k)) { $script:State.Remove($k) }
+    }
+    return $alert
+}
+
+function Clear-CodexState {
+    <# Codex のセッションを全部消す（andon の hook を外したとき）。消したものがあれば $true #>
+    $removed = $false
+    foreach ($k in @($script:State.Keys)) {
+        if (Test-CodexKey $k) { $script:State.Remove($k); $removed = $true }
+    }
+    return $removed
+}
+
 # ドットソースされたときは関数の定義だけで止める
 if ($MyInvocation.InvocationName -eq '.') { return }
 
@@ -1159,6 +1322,9 @@ if (-not $script:ClaudeExe) {
 # VS Code（code.cmd）は、なくても起動する。クリックで VS Code を開けないだけ（ターミナルのウィンドウは前面に出せる）
 $script:CodeExe = Find-CodeExe -CodeCmd $script:CodeCmd
 $script:SessionsDir = Join-Path (Get-ClaudeConfigDir) 'sessions'
+# Codex の hook が書く記録のフォルダ。hook のスクリプトがなければ、Codex のセッションを出さない
+$script:CodexStateDir = $null
+if ($script:CodexHookLoaded) { $script:CodexStateDir = Get-AndonCodexStateDir }
 
 # 通知の送り元を、PowerShell ではなく andon と表示させる。Windows はトレイの通知の送り元を、プロセスのアプリ ID
 # （AppUserModelID）から決める。ID は、andon のウィンドウを作る前に付けなければならない。
@@ -1306,6 +1472,69 @@ function Open-Session {
     $Entry.Unread = $false
 }
 
+# Codex のセッション（D-109〜D-115）
+$script:CodexSignature = $null        # 記録のフォルダの、ファイル名と更新時刻（Get-SessionSignature）
+$script:NextCodexCheck = Get-Date     # 変化がなくても読み直す時刻（Codex のプロセスが終わったセッションを消すため）
+
+function Update-Codex {
+    <# Codex の記録のフォルダが変わったか、-FallbackSec たったら読み直す。timer から呼ぶ。
+       戻り値は、読み直したか（Changed）と、新しく待ち・完了になったセッションがあるか（Alert） #>
+    param([datetime]$Now)
+    $r = [pscustomobject]@{ Changed = $false; Alert = $false }
+    if (-not $script:CodexStateDir) { return $r }
+    $sig = Get-SessionSignature -Path $script:CodexStateDir
+    if ($sig -eq $script:CodexSignature -and $Now -lt $script:NextCodexCheck) { return $r }
+    $sessions = Read-CodexSessions -Dir $script:CodexStateDir -Now $Now -IsAlive {
+        param($HostPid, $HostStart)
+        Test-CodexHostAlive -HostPid $HostPid -HostStart $HostStart
+    }
+    # 読むあいだに消した記録があれば、署名は次の回に変わり、もう一度読む（害はない）
+    $script:CodexSignature = $sig
+    $script:NextCodexCheck = $Now.AddSeconds($FallbackSec)
+    $r.Alert = Update-CodexState -Sessions $sessions -Now $Now
+    $r.Changed = $true
+    return $r
+}
+
+function Get-CodexHooksPath { return Join-Path (Get-AndonCodexHome) 'hooks.json' }
+
+function Set-CodexHooksEnabled {
+    <# トレイのメニューの「Codex の状態を出す」。~/.codex/hooks.json に andon の hook を足す（$Enabled）か、消す（D-110）。
+       足したら、hook を信頼することと、VS Code を起動し直すことを案内する。消したら、hook が書いた記録と、一覧の Codex の
+       セッションも消す。hooks.json を読めないときなどは、例外 #>
+    param([bool]$Enabled)
+    Set-AndonCodexHooks -Enabled $Enabled -Path (Get-CodexHooksPath) -Command (Get-AndonCodexHookCommand -ScriptPath $script:CodexHookScript)
+    if ($Enabled) {
+        $text = "Codex の hooks（$(Get-CodexHooksPath)）に、andon の hook を足しました。`n`n" +
+        "Codex のセッションを一覧に出すには、次のことを行ってください。`n" +
+        "1. ターミナルで codex を起動し、/hooks を開いて、andon の hook（andon-codex-hook.ps1 を動かすもの）を信頼します。`n" +
+        "2. VS Code の Codex 拡張機能で使うときは、VS Code を起動し直します。`n`n" +
+        'ターミナルの codex のセッションは、最初のプロンプトを送ったときに一覧に出ます。'
+        [void][System.Windows.Forms.MessageBox]::Show($text, 'andon', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        return
+    }
+    if ($script:CodexStateDir -and [IO.Directory]::Exists($script:CodexStateDir)) {
+        foreach ($f in [IO.Directory]::GetFiles($script:CodexStateDir, '*.json')) { try { [IO.File]::Delete($f) } catch { } }
+    }
+    if (Clear-CodexState) { Update-ListView }
+}
+
+function Invoke-Alert {
+    <# 時刻 $Now に新しく待ち・完了になったセッションを、点滅と通知で知らせる。andon が前面にあれば知らせない。
+       Claude と Codex が同じ回に知らせたときは、後の通知が前の通知を置き換え、両方のセッションを載せる #>
+    param([datetime]$Now)
+    if ($form.ContainsFocus) { return }
+    if ($form.Visible) { Start-Flash -Now $Now }
+    $notice = Get-AlertNotice -Entries @($script:State.Values) -Now $Now
+    if ($notice) {
+        # 通知をクリックしたら、このセッションを開く。覚えるのは最新の 1 件分でよい。
+        # Windows は同じアイコンの通知を新しいもので置き換え、通知センターにも最新の 1 件しか残さないため
+        $script:NoticeKey = $notice.Key
+        $script:NoticeUpdate = $false
+        $tray.ShowBalloonTip(10000, $notice.Title, $notice.Text, [System.Windows.Forms.ToolTipIcon]::None)
+    }
+}
+
 $script:CodeProcessName = 'Code'
 if ($script:CodeExe) { $script:CodeProcessName = [IO.Path]::GetFileNameWithoutExtension($script:CodeExe) }
 $script:FlashKeys = @{}   # 点滅のきっかけになったセッション -> そのウィンドウの見分け方（Get-FlashMark）
@@ -1446,6 +1675,9 @@ $sepSettings = New-Object System.Windows.Forms.ToolStripSeparator
 [void]$trayMenu.Items.Add($sepSettings)
 $miLogon = New-Object System.Windows.Forms.ToolStripMenuItem('ログオン時に起動')
 [void]$trayMenu.Items.Add($miLogon)
+# Codex の hooks に andon の hook を入れ外しする（D-110）。hook のスクリプトがなければ出さない。Codex を使っていなければ灰色
+$miCodex = New-Object System.Windows.Forms.ToolStripMenuItem('Codex の状態を出す')
+[void]$trayMenu.Items.Add($miCodex)
 $miTheme = New-Object System.Windows.Forms.ToolStripMenuItem('テーマ')
 $miThemeItems = @()
 foreach ($choice in @(@{ Text = 'ライト'; Name = 'Light' }, @{ Text = 'ダーク'; Name = 'Dark' }, @{ Text = 'Windows に合わせる'; Name = 'System' })) {
@@ -2203,6 +2435,19 @@ $trayMenu.Add_Opening({
         catch { $available = $false }   # 調べられなければ出さない
         $miLogon.Visible = $available
         $miLogon.Checked = $checked
+        # Codex の hooks は、hooks.json に andon の hook があるかを、そのまま設定として使う（手で消しても、次に開いたときに表す）
+        $miCodex.Visible = $script:CodexHookLoaded
+        if ($script:CodexHookLoaded) {
+            $codexUsed = $false
+            $codexOn = $false
+            try {
+                $codexUsed = Test-Path -LiteralPath (Get-AndonCodexHome) -PathType Container
+                if ($codexUsed) { $codexOn = Test-AndonCodexHooks (Read-AndonCodexHooksFile -Path (Get-CodexHooksPath)) }
+            }
+            catch { $codexUsed = $false }
+            $miCodex.Enabled = $codexUsed
+            $miCodex.Checked = $codexOn
+        }
         foreach ($mi in $miThemeItems) { $mi.Checked = ([string]$mi.Tag -eq $script:ThemeChoice) }
         $miVertical.Checked = $script:Vertical
     })
@@ -2230,6 +2475,17 @@ $miLogon.Add_Click({
         catch {
             $what = 'ログオン時に起動しないようにできませんでした'
             if ($enable) { $what = 'ログオン時に起動するようにできませんでした' }
+            $script:NoticeKey = $null   # この通知のクリックでは、何も開かない
+            $script:NoticeUpdate = $false
+            $tray.ShowBalloonTip(10000, $what, $_.Exception.Message, [System.Windows.Forms.ToolTipIcon]::Warning)
+        }
+    })
+$miCodex.Add_Click({
+        $enable = -not $miCodex.Checked
+        try { Set-CodexHooksEnabled -Enabled $enable }
+        catch {
+            $what = 'Codex の hooks から andon の hook を消せませんでした'
+            if ($enable) { $what = 'Codex の hooks に andon の hook を足せませんでした' }
             $script:NoticeKey = $null   # この通知のクリックでは、何も開かない
             $script:NoticeUpdate = $false
             $tray.ShowBalloonTip(10000, $what, $_.Exception.Message, [System.Windows.Forms.ToolTipIcon]::Warning)
@@ -2286,6 +2542,17 @@ $timer.Add_Tick({
         try {
             $now = Get-Date
             Update-Flash
+            # Codex のセッション。下の claude agents --json の処理は途中で return するので、その前に行う。
+            # 失敗しても、Claude のセッションの表示は続ける（次の回に読み直す）
+            try {
+                $codex = Update-Codex -Now $now
+                if ($codex.Changed) {
+                    Update-ListView
+                    $script:NextRender = $now.AddSeconds(5)
+                }
+                if ($codex.Alert) { Invoke-Alert -Now $now }
+            }
+            catch { $script:CodexSignature = $null }
             if ($script:PollTask) {
                 if (-not $script:PollTask.IsCompleted) {
                     if (($now - $script:PollStarted).TotalSeconds -gt 30) {
@@ -2310,17 +2577,7 @@ $timer.Add_Tick({
                 Update-ListView
                 $script:NextRender = $now.AddSeconds(5)
                 $lblStatus.Text = '更新 ' + $now.ToString('HH:mm:ss')
-                if ($alert -and -not $form.ContainsFocus) {
-                    if ($form.Visible) { Start-Flash -Now $now }
-                    $notice = Get-AlertNotice -Entries @($script:State.Values) -Now $now
-                    if ($notice) {
-                        # 通知をクリックしたら、このセッションを開く。覚えるのは最新の 1 件分でよい。
-                        # Windows は同じアイコンの通知を新しいもので置き換え、通知センターにも最新の 1 件しか残さないため
-                        $script:NoticeKey = $notice.Key
-                        $script:NoticeUpdate = $false
-                        $tray.ShowBalloonTip(10000, $notice.Title, $notice.Text, [System.Windows.Forms.ToolTipIcon]::None)
-                    }
-                }
+                if ($alert) { Invoke-Alert -Now $now }
                 $script:NextPoll = $now.AddSeconds($FallbackSec)
                 return
             }

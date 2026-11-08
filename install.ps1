@@ -47,8 +47,10 @@ function Get-AndonPayload {
     <# 配るファイル。Release の zip に入れるもの。入れるときは、andon.ps1 は必須、ほかはあれば置く。
        名前は、英数字と . _ - だけにする（古い andon は、アップデートの zip を展開する前に、項目の名前をこの形に限って確かめる）
        - install.cmd: ダブルクリックで install.ps1 を実行する入口
-       - README.txt: zip を開いた人が読む、入れ方の説明 #>
-    return @('andon.ps1', 'install.ps1', 'install.cmd', 'README.txt', 'andon.ico', 'LICENSE')
+       - README.txt: zip を開いた人が読む、入れ方の説明
+       - andon-codex-hook.ps1: Codex の hooks から呼ばれ、Codex のセッションの状態を書く。名前を変えない
+         （利用者の ~/.codex/hooks.json に、インストール先のこのファイルのパスが書かれ、Codex はそれを信頼している） #>
+    return @('andon.ps1', 'install.ps1', 'install.cmd', 'README.txt', 'andon.ico', 'LICENSE', 'andon-codex-hook.ps1')
 }
 
 function New-AndonPackage {
@@ -411,6 +413,32 @@ try {
             if (Remove-AndonShortcut -Path $lnk) { Write-Host "消しました: $lnk" }
         }
         foreach ($key in @(Remove-AndonRegistry)) { Write-Host "消しました: $key" }
+        # Codex の hooks.json から andon の hook を消す（ほかの hook は残す）。関数は andon-codex-hook.ps1 にある。
+        # インストール先を消す前に行う
+        $codexHook = Join-Path $PSScriptRoot 'andon-codex-hook.ps1'
+        $hooksPath = '~\.codex\hooks.json'
+        if (Test-Path -LiteralPath $codexHook -PathType Leaf) {
+            try {
+                . $codexHook
+                $hooksPath = Join-Path (Get-AndonCodexHome) 'hooks.json'
+                if (Test-AndonCodexHooks (Read-AndonCodexHooksFile -Path $hooksPath)) {
+                    Set-AndonCodexHooks -Enabled $false -Path $hooksPath -Command ''
+                    Write-Host "andon の hook を消しました: $hooksPath"
+                }
+            }
+            catch {
+                Write-Host "注意: Codex の hooks から andon の hook を消せませんでした。$hooksPath から、andon-codex-hook.ps1 を動かす hook を手で消してください: $($_.Exception.Message)" -ForegroundColor Yellow
+            }
+        }
+        # andon の hook が書いた、Codex のセッションの記録
+        $andonData = Join-Path $env:LOCALAPPDATA 'andon'
+        if (Test-Path -LiteralPath $andonData) {
+            try {
+                Remove-Item -LiteralPath $andonData -Recurse -Force
+                Write-Host "消しました: $andonData"
+            }
+            catch { Write-Host "注意: フォルダを消しきれませんでした: $andonData" -ForegroundColor Yellow }
+        }
         if (Test-Path -LiteralPath $layout.InstallDir) {
             # 消すフォルダを作業フォルダにしていると、フォルダを消せない
             Set-Location -LiteralPath $env:USERPROFILE
