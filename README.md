@@ -216,7 +216,7 @@ clone で `install.ps1` を実行すると、clone の `andon.ps1` を `%LOCALAP
 - 新しいバージョンを確かめるには、`api.github.com` と `github.com` に接続できる必要があります。接続できなくても、andon のほかの動きは変わりません。
 - background セッション（`claude --bg` など）も一覧に出ますが、クリックで開けるのは作業フォルダの VS Code ウィンドウです（VS Code がなければ、既読にするだけです）。会話そのものは `claude agents` で開いてください。
 - Codex のセッションは、andon の hook を足して信頼したあとに始めたイベントから出ます。hooks の仕組みやイベントが Codex のアップデートで変わったときは、Codex のセッションが出なくなるか、状態がずれることがあります。Claude Code のセッションの表示は変わりません。
-- 動作確認は Windows で、VS Code、Windows Terminal の PowerShell、cmd のウィンドウで起動したセッションについて行っています。VS Code が見つからない状態でも、起動してウィンドウを前面に出せることを確かめています。Codex のセッションは、Codex CLI 0.167.0 と VS Code の Codex 拡張機能で、ターミナルの `codex` と拡張機能のチャットについて、実行中・完了・中断・終了・クリックで VS Code を開くことを確かめています。許可待ちは、許可をユーザーに尋ねる設定（`approvals_reviewer = "user"`）で確かめています。
+- 動作確認は Windows で、VS Code、Windows Terminal の PowerShell、cmd のウィンドウで起動したセッションについて行っています。VS Code が見つからない状態でも、起動してウィンドウを前面に出せることを確かめています。Codex のセッションは、Codex CLI 0.167.0 と VS Code の Codex 拡張機能で、ターミナルの `codex` と拡張機能のチャットについて、実行中・完了・中断・終了・クリックで VS Code を開くことを確かめています。許可待ちは、許可をユーザーに尋ねる設定（`approvals_reviewer = "user"`）で確かめています。ほかのアプリ（Orca 1.4.254）が足した hook と同じ `hooks.json` に並べて、両方が動くことと、そのアプリを起動し直しても andon の hook が信頼し直しにならないことを確かめています。
 
 ## 開発
 
