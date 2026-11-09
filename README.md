@@ -2,7 +2,7 @@
 
 <img src="assets/andon-192.png" alt="警戒・軽快・リラックスの猫を描いた三色の積層灯" width="96">
 
-Claude Code を複数動かしているときに、**入力を待っているセッションを一覧し、クリック 1 回でそのウィンドウへ移る**ための、Windows 向けの小さなウィンドウです。VS Code の統合ターミナルや拡張機能のパネルのほか、Windows Terminal や cmd、PowerShell のウィンドウで起動したセッションも一覧に出ます。
+Claude Code を複数動かしているときに、**入力を待っているセッションを一覧し、クリック 1 回でそのウィンドウへ移る**ための、Windows 向けの小さなウィンドウです。VS Code の統合ターミナルや拡張機能のパネルのほか、Windows Terminal や cmd、PowerShell のウィンドウで起動したセッションも一覧に出ます。設定すれば、Codex（OpenAI の Codex CLI）のセッションも一覧に出ます（下の「[Codex のセッション](#codex-のセッション)」）。
 
 全部のウィンドウを巡回して終わったものを目で探す代わりに、許可待ち・質問待ち・完了したセッションが色付きで上に並びます。名前は、工場で各工程の状態を並べて表示し、助けが必要な工程が点灯する表示盤「アンドン」から取りました。
 
@@ -12,7 +12,7 @@ Claude Code を複数動かしているときに、**入力を待っているセ
 
 | 状態 | 色 | 意味 |
 |---|---|---|
-| 許可待ち / 質問待ち | 赤 | Claude があなたの承認や回答を待っている |
+| 許可待ち / 質問待ち | 赤 | Claude（または Codex）があなたの承認や回答を待っている |
 | 完了 | 黄 | 実行中から待機に変わり、まだ確認していない |
 | 実行中 | 緑 | ツールの実行や応答の生成中 |
 | 待機 | 灰 | 次のプロンプトを待っている（確認済み） |
@@ -35,8 +35,41 @@ Claude Code を複数動かしているときに、**入力を待っているセ
 - Windows PowerShell 5.1 または PowerShell 7
 - Claude Code（`claude agents --json` が対話セッションの `status` を返すバージョン。動作確認は 2.1.318）
 - VS Code（なくても動きます。VS Code の中のセッションを開くときに使い、`code` コマンドを手がかりに `Code.exe` を探します。探すのは andon を起動したときだけなので、andon を起動したあとに VS Code をインストールしたときは、andon を起動し直してください）
+- Codex CLI（なくても動きます。Codex のセッションも一覧に出すときに使います。hooks が使えるバージョン。動作確認は 0.167.0）
 
 Claude Code は、VS Code の統合ターミナル、Windows Terminal、cmd や PowerShell のウィンドウなど、どこで普通に `claude` を起動しても対象になります。VS Code 拡張機能のパネルで会話したときも、実行中・待ち（許可・質問）・完了と表示されることを確認しています。VS Code がないときも、一覧と通知は使えます。クリックで開けるのは VS Code の外のターミナルのウィンドウだけで、ウィンドウが分からないセッションは、クリックで既読にするだけです。
+
+### Codex のセッション
+
+Codex CLI（`codex`）を使っていれば、Codex のセッションも一覧に出せます。Codex がなくても andon は動きます。Claude Code は今までどおり必要です。
+
+1. トレイのアイコンを右クリックして、「Codex の状態を出す」を選びます。Codex の hooks の設定（`~/.codex/hooks.json`）に、andon の hook を足します。ほかの hook は変えません。書き換える前に、`hooks.json.andon-backup` に写しを作ります。
+2. ターミナルで `codex` を起動し、`/hooks` を開いて、andon の hook（`andon-codex-hook.ps1` を動かすもの）を信頼します。Codex は、信頼していない hook を動かしません。
+3. VS Code の Codex 拡張機能で使うときは、VS Code を起動し直します。拡張機能は、起動したときに hooks を読むためです。
+
+出るもの:
+
+- ターミナルの `codex` と、VS Code の Codex 拡張機能のセッションが出ます。
+- 状態は、実行中（プロンプトを送った）、許可待ち（Codex が許可を求めた）、完了（返事が終わった）、待機です。質問待ちは出ません（Codex の hooks に、そのイベントがないため）。
+- 許可待ちは、許可したあとも、その返事が終わるまで赤のまま残ります。許可したことを知らせるイベントがないためです。
+- 許可の求めを自動のレビューに回す設定（`approvals_reviewer = "auto_review"`）では、許可待ちになりません。Codex で信頼していないフォルダでは、Codex は許可を求めません。
+- ターミナルの `codex` は、最初のプロンプトを送ったときに一覧に出ます。終了してから 1 分ほどで消えます。
+- VS Code の Codex 拡張機能のセッションは、Claude Code の拡張機能のパネルと同じく、待機中は表示しません。
+- セッション名は出ません（hooks に題名がないため）。
+
+クリックしたとき:
+
+- 作業フォルダを開いている VS Code のウィンドウが前面に出ます。
+- Windows Terminal などのターミナルのウィンドウは、前面に出せません。ターミナルの `codex` も、Codex の共有のサーバーの中で動いていて、どのターミナルから動かしているかが分からないためです。
+
+やめるとき:
+
+- もう一度「Codex の状態を出す」を選んで、チェックを外します。andon の hook だけを消します。
+- Codex は、hook の信頼を、`hooks.json` の中の並びの位置で覚えています。そのため、andon の hook のあとにほかのアプリが足した hook があると、andon の hook を消したとき、それらが前に詰まり、Codex で信頼し直すまで動かなくなります。andon は、外す前にそのことを確かめます。外したあとは、ターミナルで `codex` を起動し、`/hooks` を開いて、確認待ちになった hook を信頼し直してください。アンインストールのときは、確かめずに知らせだけを出します。
+- 逆に、ほかのアプリが自分の hook を消すと、andon の hook が信頼し直しになることがあります。Codex のセッションが出なくなったら、`/hooks` を開いて確かめてください。
+- andon の hook を足し直すとき（andon を別の場所から動かしたときなど）は、今の位置のまま書き換えます。ほかの hook は動かしません。
+- Codex が信頼を覚えた記録（`~/.codex/config.toml` の `[hooks.state.…]`）は残りますが、害はありません。
+- インストールした andon と、clone から動かしている andon は、hook のパスが違います。最後にチェックを付けたほうの andon の hook が、hooks.json に残ります。
 
 ## インストール
 
@@ -114,6 +147,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Progr
 - `HKCU\Software\Classes\AppUserModelId\tbshiki.andon`（andon が、通知の送り元を `andon` と表示させるため、起動のたびに表示名を書くキー）
 - `HKCU\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings\tbshiki.andon`（最初の通知で Windows が作る、通知の設定）
 - `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder` の値 `andon.lnk`（Windows がショートカットの名前で記録する、スタートアップの有効・無効。残すと、インストールし直したときに前の状態を引き継ぐ）
+- Codex の `~/.codex/hooks.json` の、andon の hook（ほかの hook は残す）
+- `%LOCALAPPDATA%\andon`（andon の hook が書いた、Codex のセッションの記録）
 
 Windows がトレイのアイコンについて覚えている設定（`HKCU\Control Panel\NotifyIconSettings` の `powershell.exe` の項目）は消しません。Windows が管理している場所で、ほかの PowerShell のスクリプトのアイコンと見分けにくいためです。
 
@@ -152,6 +187,13 @@ clone で `install.ps1` を実行すると、clone の `andon.ps1` を `%LOCALAP
   3. どちらもなければ repository の root（git の外なら作業フォルダ）
 - 無関係な workspace を開かないよう、repository の root より上の階層の `*.code-workspace` は、`folders` で repository を挙げていない限り使いません。`folders` に親フォルダ全体（`..` など）を挙げているだけの workspace も使いません。
 - Claude Code が作る worktree（`<repo>\.claude\worktrees\<name>`）は、元の repository として扱います。
+- **Codex のセッション:** Codex は、hooks に書いたコマンドを、イベントのたびに動かします。andon の hook（`andon-codex-hook.ps1`）は、次のイベントで動き、セッションごとの状態を `%LOCALAPPDATA%\andon\codex\<セッションの ID>.json` に書きます。andon は、そのフォルダのファイル名と更新時刻を 1 秒ごとに見て、変わったら読みます。
+  - `SessionStart` は待機、`UserPromptSubmit` は実行中、`PermissionRequest` は許可待ち、`Stop` は完了、`Interrupt`（中断）は既読の待機です。`SessionEnd` で記録を消します。ツールを使うたびのイベント（`PreToolUse`、`PostToolUse`）は使いません。
+  - hook は `async: true`（裏で動かす）で足します。Codex は hook の終わりを待たず、hook は許可などの判断に関われません。hook は何も出力しません。
+  - 書くのは、セッションの ID、状態、作業フォルダ、時刻、セッションを動かしている Codex のプロセス（PID、起動時刻、VS Code の拡張機能か）だけです。プロンプト、コマンド、返事の中身は書きません。Codex のプロセスは、セッションの最初のイベントのときだけ、hook のプロセスから親へたどって調べます。
+  - hook は裏で動くので、届く順が入れ替わることがあります。記録のほうが新しければ書きません。最初のプロンプトのときの `SessionStart` は、記録がまだないときだけ使います。
+  - Codex のプロセスが終わったセッション（PID が使い回されていても、起動時刻で見分けます）と、最後のイベントから 24 時間たったセッションは、記録を消します。`SessionEnd` が来ないまま終わったときのためです。
+  - andon は、Codex のプロセスにも、Codex の共有のサーバー（app-server のデーモン）にも繋ぎません。サーバーに繋ぐと、最初に繋いだクライアントの名前が、そのサーバーが OpenAI に名乗る名前になってしまうためです。
 - **ログオン時に起動:** スタートアップに andon のショートカット（`andon.ps1` を起動するもの）があり、タスク マネージャーで無効にしていなければ、チェックを付けます。チェックを付けるときは、スタートメニューの `andon` のショートカットをスタートアップに写し、Windows が残しているタスク マネージャーの有効・無効の記録（`HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder` の値 `andon.lnk`）を消して、有効に戻します。外すときは、ショートカットと記録の両方を消します。Windows は、ショートカットを消しても記録を残すので、消さないと、入れ直したときに前の「無効」がまた効いてしまいます。
 - **アップデートと削除の前の終了:** `install.ps1` は、名前付きのイベント `Local\andon-exit` で andon に終了するよう合図し、二重起動を防ぐ mutex `Local\andon` が消えるのを待ってから、ファイルを置き換えます。待たずに起動し直すと、新しい andon が二重起動と判断して終了してしまうためです。合図を受けられない古いバージョンは、`andon.ps1` を `-File` で動かしている PowerShell のプロセスを止めます（トレイのアイコンは、マウスを重ねるまで残ります）。
 - **新しいバージョンの確認:** GitHub の API（`releases/latest`）を、`claude agents --json` と同じく待たずに取得します（timer で、終わったかだけを見ます）。確かめられなければ 1 時間後に、確かめられれば 1 日後に、もう一度確かめます。次の Release は使いません。
@@ -173,7 +215,8 @@ clone で `install.ps1` を実行すると、clone の `andon.ps1` を `%LOCALAP
 - `~/.claude/sessions` は Claude Code の内部のディレクトリなので、書き方が変わるかもしれません。その場合も `-FallbackSec` ごとの取得で状態には追従します。
 - 新しいバージョンを確かめるには、`api.github.com` と `github.com` に接続できる必要があります。接続できなくても、andon のほかの動きは変わりません。
 - background セッション（`claude --bg` など）も一覧に出ますが、クリックで開けるのは作業フォルダの VS Code ウィンドウです（VS Code がなければ、既読にするだけです）。会話そのものは `claude agents` で開いてください。
-- 動作確認は Windows で、VS Code、Windows Terminal の PowerShell、cmd のウィンドウで起動したセッションについて行っています。VS Code が見つからない状態でも、起動してウィンドウを前面に出せることを確かめています。
+- Codex のセッションは、andon の hook を足して信頼したあとに始めたイベントから出ます。hooks の仕組みやイベントが Codex のアップデートで変わったときは、Codex のセッションが出なくなるか、状態がずれることがあります。Claude Code のセッションの表示は変わりません。
+- 動作確認は Windows で、VS Code、Windows Terminal の PowerShell、cmd のウィンドウで起動したセッションについて行っています。VS Code が見つからない状態でも、起動してウィンドウを前面に出せることを確かめています。Codex のセッションは、Codex CLI 0.167.0 と VS Code の Codex 拡張機能で、ターミナルの `codex` と拡張機能のチャットについて、実行中・完了・中断・終了・クリックで VS Code を開くことを確かめています。許可待ちは、許可をユーザーに尋ねる設定（`approvals_reviewer = "user"`）で確かめています。ほかのアプリ（Orca 1.4.254）が足した hook と同じ `hooks.json` に並べて、両方が動くことと、そのアプリを起動し直しても andon の hook が信頼し直しにならないことを確かめています。
 
 ## 開発
 
