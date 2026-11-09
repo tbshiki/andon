@@ -1737,32 +1737,42 @@ Assert-Equal (Format-CodexHost (Find-AndonCodexHost -Processes $hostProcs -Id 41
 
 # ---------------------------------------------------------------------------
 Write-Host '== Codex の hook（andon-codex-hook.ps1）: hooks.json の入れ外し'
+function Get-HooksField {
+    <# hooks.json を読んだもの（$Root）の、イベントの組の handler の項目。なければ空（壊したときに、例外で止めずに FAIL にする） #>
+    param($Root, [string]$EventName, [int]$Group = 0, [int]$Handler = 0, [string]$Field = 'command')
+    try {
+        $g = @($Root.hooks.$EventName)[$Group]
+        if ($Field -eq 'matcher') { return [string]$g.matcher }
+        return [string](@($g.hooks)[$Handler].$Field)
+    }
+    catch { return '' }
+}
 $hookCmd = Get-AndonCodexHookCommand -ScriptPath "C:\Users\O'Brien\andon\andon-codex-hook.ps1"
 Assert-Equal $hookCmd "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 'C:\Users\O''Brien\andon\andon-codex-hook.ps1'" 'パスは単一引用符で囲み、単一引用符は 2 つ重ねる'
 $added = Add-AndonCodexHooks -Json '' -Command $hookCmd
 $hj = ConvertFrom-Json $added
 Assert-Equal (@($hj.hooks.PSObject.Properties.Name) -join ',') 'SessionStart,UserPromptSubmit,PermissionRequest,Stop,Interrupt,SessionEnd' '空の hooks.json に、6 つのイベントを足す'
-Assert-Equal "$($hj.hooks.Stop[0].hooks[0].type)|$($hj.hooks.Stop[0].hooks[0].async)|$($hj.hooks.Stop[0].hooks[0].command)" "command|True|$hookCmd" 'andon の hook は async（Codex は待たず、判断に関われない）'
-Assert-Equal "$($hj.hooks.SessionEnd[0].hooks[0].timeout)|$($hj.hooks.Stop[0].hooks[0].timeout)" '3|30' 'SessionEnd の待ち時間は、上限の 3 秒'
+Assert-Equal "$(Get-HooksField $hj 'Stop' -Field type)|$(Get-HooksField $hj 'Stop' -Field async)|$(Get-HooksField $hj 'Stop')" "command|True|$hookCmd" 'andon の hook は async（Codex は待たず、判断に関われない）'
+Assert-Equal "$(Get-HooksField $hj 'SessionEnd' -Field timeout)|$(Get-HooksField $hj 'Stop' -Field timeout)" '3|30' 'SessionEnd の待ち時間は、上限の 3 秒'
 Assert-True (Test-AndonCodexHooks $added) '足したら andon の hook がある'
 $userHooks = '{"description":"mine","hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"python3 check.py","timeout":30}]}],"Stop":[{"hooks":[{"type":"command","command":"notify.cmd"}]}]}}'
 $added = Add-AndonCodexHooks -Json $userHooks -Command $hookCmd
 $hj = ConvertFrom-Json $added
 Assert-Equal $hj.description 'mine' 'ほかの項目を残す'
-Assert-Equal "$($hj.hooks.PreToolUse[0].matcher)|$($hj.hooks.PreToolUse[0].hooks[0].command)|$($hj.hooks.PreToolUse[0].hooks[0].timeout)" 'Bash|python3 check.py|30' 'ほかのイベントの hook を残す'
-Assert-Equal "$(@($hj.hooks.Stop).Count)|$($hj.hooks.Stop[0].hooks[0].command)" '2|notify.cmd' '同じイベントのほかの hook は先頭のまま、andon の組を最後に足す（信頼を保つ）'
-Assert-True (Test-AndonCodexHandler $hj.hooks.Stop[1].hooks[0]) '最後の組が andon の hook'
+Assert-Equal "$(Get-HooksField $hj 'PreToolUse' -Field matcher)|$(Get-HooksField $hj 'PreToolUse')|$(Get-HooksField $hj 'PreToolUse' -Field timeout)" 'Bash|python3 check.py|30' 'ほかのイベントの hook を残す'
+Assert-Equal "$(@($hj.hooks.Stop).Count)|$(Get-HooksField $hj 'Stop')" '2|notify.cmd' '同じイベントのほかの hook は先頭のまま、andon の組を最後に足す（信頼を保つ）'
+Assert-True (Test-AndonCodexHandler (@(@($hj.hooks.Stop)[1].hooks)[0])) '最後の組が andon の hook'
 $again = Add-AndonCodexHooks -Json $added -Command ($hookCmd.Replace('andon\', 'andon2\'))
 $hj = ConvertFrom-Json $again
-Assert-Equal "$(@($hj.hooks.Stop).Count)|$($hj.hooks.Stop[1].hooks[0].command.Contains('andon2'))" '2|True' 'もう一度足すと、andon の分を入れ直す（重ならない）'
+Assert-Equal "$(@($hj.hooks.Stop).Count)|$((Get-HooksField $hj 'Stop' -Group 1).Contains('andon2'))" '2|True' 'もう一度足すと、andon の分を入れ直す（重ならない）'
 $removed = Remove-AndonCodexHooks -Json $added
 $hj = ConvertFrom-Json $removed
 Assert-Equal (@($hj.hooks.PSObject.Properties.Name) -join ',') 'PreToolUse,Stop' 'andon の hook だけを消し、andon の分だけだったイベントは消す'
-Assert-Equal "$(@($hj.hooks.Stop).Count)|$($hj.hooks.Stop[0].hooks[0].command)" '1|notify.cmd' '消しても、ほかの hook は残す'
+Assert-Equal "$(@($hj.hooks.Stop).Count)|$(Get-HooksField $hj 'Stop')" '1|notify.cmd' '消しても、ほかの hook は残す'
 Assert-True (-not (Test-AndonCodexHooks $removed)) '消したら andon の hook はない'
 $mixed = '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"a.cmd"},{"type":"command","command":"powershell.exe -File C:\\x\\andon-codex-hook.ps1"}]}]}}'
 $hj = ConvertFrom-Json (Remove-AndonCodexHooks -Json $mixed)
-Assert-Equal "$(@($hj.hooks.Stop[0].hooks).Count)|$($hj.hooks.Stop[0].hooks[0].command)" '1|a.cmd' '同じ組のほかの handler は残す'
+Assert-Equal "$(@(@($hj.hooks.Stop)[0].hooks).Count)|$(Get-HooksField $hj 'Stop')" '1|a.cmd' '同じ組のほかの handler は残す'
 Assert-Throws { Add-AndonCodexHooks -Json '{ broken' -Command $hookCmd } '読めない hooks.json には足さない（例外）'
 Assert-Throws { Add-AndonCodexHooks -Json '[1,2]' -Command $hookCmd } 'オブジェクトでない hooks.json には足さない（例外）'
 Assert-Throws { Add-AndonCodexHooks -Json '{"hooks":[1]}' -Command $hookCmd } 'hooks がオブジェクトでなければ足さない（例外）'
@@ -1776,7 +1786,9 @@ try {
     Assert-True (-not (Test-Path -LiteralPath "$hp.andon-backup")) 'もとの hooks.json がなければ、写しは作らない'
     [IO.File]::WriteAllText($hp, $userHooks)
     Set-AndonCodexHooks -Enabled $true -Path $hp -Command $hookCmd
-    Assert-Equal ([IO.File]::ReadAllText("$hp.andon-backup")) $userHooks '書き換える前に、写しを作る'
+    $backupText = ''
+    if (Test-Path -LiteralPath "$hp.andon-backup") { $backupText = [IO.File]::ReadAllText("$hp.andon-backup") }
+    Assert-Equal $backupText $userHooks '書き換える前に、写しを作る'
     $bytes = [IO.File]::ReadAllBytes($hp)
     Assert-True (-not ($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB)) 'hooks.json は BOM なしで書く'
     Set-AndonCodexHooks -Enabled $false -Path $hp -Command ''
@@ -1802,7 +1814,7 @@ try {
     [IO.File]::WriteAllText((Join-Path $dataDir 'codex\s1.json'), '{}')
     $lines = Remove-AndonCodexData -HookScript (Join-Path $root 'andon-codex-hook.ps1') -DataDir $dataDir -HooksPath $hp
     $hj = ConvertFrom-Json (Read-AndonCodexHooksFile -Path $hp)
-    Assert-Equal "$(Test-AndonCodexHooks (Read-AndonCodexHooksFile -Path $hp))|$($hj.hooks.PreToolUse[0].hooks[0].command)" 'False|python3 check.py' 'アンインストールで andon の hook だけを消し、ほかの hook は残す'
+    Assert-Equal "$(Test-AndonCodexHooks (Read-AndonCodexHooksFile -Path $hp))|$(Get-HooksField $hj 'PreToolUse')" 'False|python3 check.py' 'アンインストールで andon の hook だけを消し、ほかの hook は残す'
     Assert-Equal "$(Test-Path -LiteralPath $dataDir)|$(@($lines).Count)" 'False|2' 'アンインストールで記録のフォルダを消し、消したものを知らせる'
     $lines = Remove-AndonCodexData -HookScript (Join-Path $root 'andon-codex-hook.ps1') -DataDir $dataDir -HooksPath $hp
     Assert-Equal @($lines).Count 0 '消すものがなければ、何も知らせない'
