@@ -70,10 +70,12 @@ function ConvertFrom-AndonCodexHooksJson {
 }
 
 function Remove-AndonCodexHandlers {
-    <# hooks.json を読んだもの（$Root）から、andon の hook を除く。中身がなくなった組とイベントも除く。
-       ほかの hook の組の並びは変えない（Codex は、hook の信頼を、イベントの中の位置と中身で覚えている） #>
-    param($Root)
+    <# hooks.json を読んだもの（$Root）から、andon の hook を除く。中身がなくなった組とイベントも除く。$ExceptEvents の
+       イベントには触らない。ほかの hook の組の並びは変えないが、andon の hook の後ろにあるものは前に詰まる
+       （Codex は、hook の信頼を、イベントの中の位置と中身で覚えているので、詰まった hook は信頼し直しになる。D-116） #>
+    param($Root, [string[]]$ExceptEvents = @())
     foreach ($ev in @($Root.hooks.PSObject.Properties)) {
+        if ($ExceptEvents -contains $ev.Name) { continue }
         $groups = @($ev.Value)
         $keep = @()
         $changed = $false
@@ -101,21 +103,69 @@ function ConvertTo-AndonCodexHooksText {
 }
 
 function Add-AndonCodexHooks {
-    <# hooks.json の中身（$Json）に、andon の hook を足した中身を返す。andon の hook がもうあれば、入れ直す（パスが変わったときのため）。
-       andon の組は、各イベントの最後に足す（ほかの hook の位置を変えない） #>
+    <# hooks.json の中身（$Json）に、andon の hook を足した中身を返す。ほかの hook の位置を変えない（D-115 の 8、D-116）。
+       - andon の hook がまだないイベントでは、andon の組を最後に足す。
+       - andon の hook がもうあるイベントでは、その場で書き換える（パスが変わったときなど。消して足し直すと、後ろの hook が詰まる）。
+         andon の hook が 2 つ以上あれば、最初の 1 つだけを残す。
+       - andon が使わなくなったイベントに残っている andon の hook は消す #>
     param([string]$Json, [string]$Command)
     $root = ConvertFrom-AndonCodexHooksJson $Json
-    Remove-AndonCodexHandlers $root
+    Remove-AndonCodexHandlers $root -ExceptEvents $script:AndonCodexHookEvents
     foreach ($ev in $script:AndonCodexHookEvents) {
         # SessionEnd と Interrupt は、Codex が待つ時間の上限が 3 秒（async なので待たないが、上限を超えた値は書かない）
         $timeout = 30
         if ($ev -eq 'SessionEnd' -or $ev -eq 'Interrupt') { $timeout = 3 }
-        $group = [pscustomobject]@{ hooks = @([pscustomobject][ordered]@{ type = 'command'; command = $Command; async = $true; timeout = $timeout }) }
+        $handler = [pscustomobject][ordered]@{ type = 'command'; command = $Command; async = $true; timeout = $timeout }
         $p = $root.hooks.PSObject.Properties[$ev]
-        if ($p) { $root.hooks.$ev = @(@($p.Value) + $group) }
-        else { $root.hooks | Add-Member -NotePropertyName $ev -NotePropertyValue @($group) }
+        if (-not $p) {
+            $root.hooks | Add-Member -NotePropertyName $ev -NotePropertyValue @([pscustomobject]@{ hooks = @($handler) })
+            continue
+        }
+        $groups = @($p.Value)
+        $found = $false
+        $keep = @()
+        foreach ($g in $groups) {
+            $hp = $null
+            if ($null -ne $g) { $hp = $g.PSObject.Properties['hooks'] }
+            if (-not $hp) { $keep += , $g; continue }
+            $handlers = @()
+            foreach ($h in @($hp.Value)) {
+                if (-not (Test-AndonCodexHandler $h)) { $handlers += , $h; continue }
+                if ($found) { continue }   # 2 つ目からの andon の hook は除く
+                $handlers += , $handler
+                $found = $true
+            }
+            if ($handlers.Count -eq 0) { continue }
+            $g.hooks = $handlers
+            $keep += , $g
+        }
+        if (-not $found) { $keep += , ([pscustomobject]@{ hooks = @($handler) }) }
+        $root.hooks.$ev = $keep
     }
     return ConvertTo-AndonCodexHooksText $root
+}
+
+function Get-AndonCodexHooksShifted {
+    <# andon の hook を消すと、後ろのほかの hook が前に詰まる（Codex で信頼し直しになる）イベントの名前を、1 つずつ出す。
+       イベントの中で、andon の hook より後ろに、ほかの hook があるもの。読めなければ何も出さない。
+       呼ぶ側は @(...) で受ける（なければ空の配列） #>
+    param([string]$Json)
+    $result = @()
+    try { $root = ConvertFrom-AndonCodexHooksJson $Json }
+    catch { return }
+    foreach ($ev in $root.hooks.PSObject.Properties) {
+        $seenAndon = $false
+        $shifted = $false
+        foreach ($g in @($ev.Value)) {
+            if ($null -eq $g -or -not $g.PSObject.Properties['hooks']) { continue }
+            foreach ($h in @($g.hooks)) {
+                if (Test-AndonCodexHandler $h) { $seenAndon = $true }
+                elseif ($seenAndon) { $shifted = $true }
+            }
+        }
+        if ($shifted) { $result += $ev.Name }
+    }
+    return $result
 }
 
 function Remove-AndonCodexHooks {

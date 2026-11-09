@@ -84,9 +84,15 @@ function Remove-AndonCodexData {
             . $HookScript
             if (-not $HooksPath) { $HooksPath = Join-Path (Get-AndonCodexHome) 'hooks.json' }
             $shown = $HooksPath
-            if (Test-AndonCodexHooks (Read-AndonCodexHooksFile -Path $HooksPath)) {
+            $current = Read-AndonCodexHooksFile -Path $HooksPath
+            if (Test-AndonCodexHooks $current) {
+                # andon の hook の後ろにあるほかの hook は前に詰まり、Codex で信頼し直しになる（D-116）。確かめられないので知らせる
+                $shifted = @(Get-AndonCodexHooksShifted $current)
                 Set-AndonCodexHooks -Enabled $false -Path $HooksPath -Command ''
                 $lines += "andon の hook を消しました: $HooksPath"
+                if ($shifted.Count -gt 0) {
+                    $lines += "注意: andon の hook の後ろにあった hook（$($shifted -join '、')）は、Codex で信頼し直しが要ります。ターミナルで codex を起動し、/hooks を開いて、信頼し直してください。"
+                }
             }
         }
         catch {

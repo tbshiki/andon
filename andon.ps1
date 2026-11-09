@@ -1503,6 +1503,19 @@ function Set-CodexHooksEnabled {
        足したら、hook を信頼することと、VS Code を起動し直すことを案内する。消したら、hook が書いた記録と、一覧の Codex の
        セッションも消す。hooks.json を読めないときなどは、例外 #>
     param([bool]$Enabled)
+    # 外すと、andon の hook の後ろにあるほかの hook（ほかのアプリのもの）が前に詰まり、Codex で信頼し直しになる（D-116）。
+    # そのときは、外す前に確かめる
+    $shifted = @()
+    if (-not $Enabled) {
+        $shifted = @(Get-AndonCodexHooksShifted (Read-AndonCodexHooksFile -Path (Get-CodexHooksPath)))
+        if ($shifted.Count -gt 0) {
+            $ask = "Codex の hooks で、andon の hook の後ろに、ほかの hook があります（$($shifted -join '、')）。`n`n" +
+            "andon の hook を外すと、Codex は、それらの hook を信頼し直すまで動かしません（Codex は、hook の信頼を、並びの位置で覚えているため）。" +
+            "外したあと、ターミナルで codex を起動し、/hooks を開いて、確認待ちになった hook を信頼し直してください。`n`n外しますか？"
+            $answer = [System.Windows.Forms.MessageBox]::Show($ask, 'andon', [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Warning, [System.Windows.Forms.MessageBoxDefaultButton]::Button2)
+            if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+        }
+    }
     Set-AndonCodexHooks -Enabled $Enabled -Path (Get-CodexHooksPath) -Command (Get-AndonCodexHookCommand -ScriptPath $script:CodexHookScript)
     if ($Enabled) {
         $text = "Codex の hooks（$(Get-CodexHooksPath)）に、andon の hook を足しました。`n`n" +
@@ -1517,6 +1530,10 @@ function Set-CodexHooksEnabled {
         foreach ($f in [IO.Directory]::GetFiles($script:CodexStateDir, '*.json')) { try { [IO.File]::Delete($f) } catch { } }
     }
     if (Clear-CodexState) { Update-ListView }
+    if ($shifted.Count -gt 0) {
+        $done = "andon の hook を外しました。`n`nターミナルで codex を起動し、/hooks を開いて、確認待ちになった hook（$($shifted -join '、')）を信頼し直してください。"
+        [void][System.Windows.Forms.MessageBox]::Show($done, 'andon', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+    }
 }
 
 function Invoke-Alert {

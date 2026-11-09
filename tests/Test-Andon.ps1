@@ -1778,6 +1778,20 @@ Assert-Throws { Add-AndonCodexHooks -Json '[1,2]' -Command $hookCmd } 'オブジ
 Assert-Throws { Add-AndonCodexHooks -Json '{"hooks":[1]}' -Command $hookCmd } 'hooks がオブジェクトでなければ足さない（例外）'
 Assert-True (-not (Test-AndonCodexHooks '{ broken')) '読めなければ、andon の hook はないとみなす'
 
+# 足し直しと、外すと詰まる hook（D-116）。Codex は hook の信頼を、イベントの中の位置で覚えている
+$around = '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"first.cmd"}]},{"hooks":[{"type":"command","command":"powershell.exe -File C:\\old\\andon-codex-hook.ps1"}]},{"hooks":[{"type":"command","command":"after.cmd"}]}],"PostToolUse":[{"hooks":[{"type":"command","command":"powershell.exe -File C:\\old\\andon-codex-hook.ps1"}]},{"hooks":[{"type":"command","command":"tool.cmd"}]}]}}'
+Assert-Equal ((Get-AndonCodexHooksShifted $around) -join ',') 'Stop,PostToolUse' 'andon の hook の後ろに、ほかの hook があるイベントを見つける'
+$hj = ConvertFrom-Json (Add-AndonCodexHooks -Json $around -Command $hookCmd)
+Assert-Equal "$(Get-HooksField $hj 'Stop' -Group 0)|$(Get-HooksField $hj 'Stop' -Group 1)|$(Get-HooksField $hj 'Stop' -Group 2)" "first.cmd|$hookCmd|after.cmd" '足し直すときは、andon の hook をその場で書き換え、前後の hook を動かさない'
+Assert-Equal "$(@($hj.hooks.PostToolUse).Count)|$(Get-HooksField $hj 'PostToolUse')" '1|tool.cmd' 'andon が使わなくなったイベントに残った andon の hook は消す'
+$dup = '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"x\\andon-codex-hook.ps1"}]},{"hooks":[{"type":"command","command":"y\\andon-codex-hook.ps1"}]}]}}'
+$hj = ConvertFrom-Json (Add-AndonCodexHooks -Json $dup -Command $hookCmd)
+Assert-Equal "$(@($hj.hooks.Stop).Count)|$(Get-HooksField $hj 'Stop')" "1|$hookCmd" 'andon の hook が 2 つあれば、最初の 1 つだけを残して書き換える'
+Assert-Equal @(Get-AndonCodexHooksShifted (Add-AndonCodexHooks -Json $userHooks -Command $hookCmd)).Count 0 'andon の hook が最後なら、外しても詰まる hook はない'
+$sameGroup = '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"x\\andon-codex-hook.ps1"},{"type":"command","command":"b.cmd"}]}]}}'
+Assert-Equal ((Get-AndonCodexHooksShifted $sameGroup) -join ',') 'Stop' '同じ組の中で、andon の hook の後ろにほかの hook があっても見つける'
+Assert-Equal @(Get-AndonCodexHooksShifted '{ broken').Count 0 '読めなければ、詰まる hook はないとみなす'
+
 $hooksTmp = Join-Path ([IO.Path]::GetTempPath()) ('andon-hooks-' + [guid]::NewGuid().ToString('N'))
 try {
     $hp = Join-Path $hooksTmp 'hooks.json'
@@ -1818,6 +1832,9 @@ try {
     Assert-Equal "$(Test-Path -LiteralPath $dataDir)|$(@($lines).Count)" 'False|2' 'アンインストールで記録のフォルダを消し、消したものを知らせる'
     $lines = Remove-AndonCodexData -HookScript (Join-Path $root 'andon-codex-hook.ps1') -DataDir $dataDir -HooksPath $hp
     Assert-Equal @($lines).Count 0 '消すものがなければ、何も知らせない'
+    [IO.File]::WriteAllText($hp, $around)
+    $lines = Remove-AndonCodexData -HookScript (Join-Path $root 'andon-codex-hook.ps1') -DataDir $dataDir -HooksPath $hp
+    Assert-True (@($lines | Where-Object { $_.StartsWith('注意:') -and $_.Contains('Stop、PostToolUse') -and $_.Contains('/hooks') }).Count -eq 1) 'アンインストールで、後ろの hook が詰まるときは、信頼し直すよう知らせる'
     [IO.File]::WriteAllText($hp, '{ broken')
     $lines = Remove-AndonCodexData -HookScript (Join-Path $root 'andon-codex-hook.ps1') -DataDir $dataDir -HooksPath $hp
     Assert-Equal "$(@($lines).Count)|$([IO.File]::ReadAllText($hp))" '0|{ broken' '読めない hooks.json は書き換えない（andon の hook はないとみなす）'
