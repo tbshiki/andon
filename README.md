@@ -35,7 +35,7 @@ Claude Code を複数動かしているときに、**入力を待っているセ
 - Windows PowerShell 5.1 または PowerShell 7
 - Claude Code（`claude agents --json` が対話セッションの `status` を返すバージョン。動作確認は 2.1.318）
 - VS Code（なくても動きます。VS Code の中のセッションを開くときに使い、`code` コマンドを手がかりに `Code.exe` を探します。探すのは andon を起動したときだけなので、andon を起動したあとに VS Code をインストールしたときは、andon を起動し直してください）
-- Codex CLI（なくても動きます。Codex のセッションも一覧に出すときに使います。hooks が使えるバージョン）
+- Codex CLI（なくても動きます。Codex のセッションも一覧に出すときに使います。hooks が使えるバージョン。動作確認は 0.167.0）
 
 Claude Code は、VS Code の統合ターミナル、Windows Terminal、cmd や PowerShell のウィンドウなど、どこで普通に `claude` を起動しても対象になります。VS Code 拡張機能のパネルで会話したときも、実行中・待ち（許可・質問）・完了と表示されることを確認しています。VS Code がないときも、一覧と通知は使えます。クリックで開けるのは VS Code の外のターミナルのウィンドウだけで、ウィンドウが分からないセッションは、クリックで既読にするだけです。
 
@@ -216,7 +216,7 @@ clone で `install.ps1` を実行すると、clone の `andon.ps1` を `%LOCALAP
 - 新しいバージョンを確かめるには、`api.github.com` と `github.com` に接続できる必要があります。接続できなくても、andon のほかの動きは変わりません。
 - background セッション（`claude --bg` など）も一覧に出ますが、クリックで開けるのは作業フォルダの VS Code ウィンドウです（VS Code がなければ、既読にするだけです）。会話そのものは `claude agents` で開いてください。
 - Codex のセッションは、andon の hook を足して信頼したあとに始めたイベントから出ます。hooks の仕組みやイベントが Codex のアップデートで変わったときは、Codex のセッションが出なくなるか、状態がずれることがあります。Claude Code のセッションの表示は変わりません。
-- 動作確認は Windows で、VS Code、Windows Terminal の PowerShell、cmd のウィンドウで起動したセッションについて行っています。VS Code が見つからない状態でも、起動してウィンドウを前面に出せることを確かめています。
+- 動作確認は Windows で、VS Code、Windows Terminal の PowerShell、cmd のウィンドウで起動したセッションについて行っています。VS Code が見つからない状態でも、起動してウィンドウを前面に出せることを確かめています。Codex のセッションは、Codex CLI 0.167.0 と VS Code の Codex 拡張機能で、ターミナルの `codex` と拡張機能のチャットについて、実行中・完了・中断・終了・クリックで VS Code を開くことを確かめています。許可待ちは、許可をユーザーに尋ねる設定（`approvals_reviewer = "user"`）で確かめています。
 
 ## 開発
 
