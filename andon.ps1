@@ -79,7 +79,7 @@ param(
 )
 
 # 版（MAJOR.MINOR.PATCH）。Release の tag（v<版>）と同じにする。install.ps1 はこの行から版を読む
-$script:AndonVersion = '0.2.3'
+$script:AndonVersion = '0.3.0'
 # 新しい版を確かめる GitHub のリポジトリ
 $script:AndonRepository = 'tbshiki/andon'
 
