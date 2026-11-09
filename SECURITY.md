@@ -8,7 +8,7 @@
 
 - 影響（何ができてしまうか）
 - 再現の手順
-- 確認した環境（Windows、PowerShell、Claude Code、VS Code のバージョン）
+- 確認した環境（Windows、PowerShell、Claude Code、VS Code、Codex CLI のバージョン）
 
 個人で開発しているため、返信や修正の時期は約束できませんが、確認して対応します。
 
@@ -21,6 +21,9 @@
 報告の範囲を判断する参考にしてください。andon が行うのは次のことだけです。
 
 - `claude agents --json` を実行し、セッションの一覧を読む
+- トレイのメニューの「Codex の状態を出す」を選んだときだけ、Codex の hooks の設定（`~/.codex/hooks.json`。`CODEX_HOME` があればその下）に、andon の hook（`andon-codex-hook.ps1` を `async: true` で動かすもの）を足す、または消す。ほかの hook は変えない。書き換える前に、`hooks.json.andon-backup` に写しを作る。JSON として読めなければ触らない。Codex の `config.toml` には触らない。メニューを開いたときは、チェックを決めるために `hooks.json` を読む
+- `andon-codex-hook.ps1` は、Codex が hook として動かす。Codex から渡る JSON のうち、セッションの ID、状態、作業フォルダ、ターンの ID だけを使い、`%LOCALAPPDATA%\andon\codex\<セッションの ID>.json` に書く（プロンプト、コマンド、返事の中身は書かない）。セッションの最初のイベントのときだけ、プロセスの一覧（`Win32_Process` の PID、親の PID、起動時刻、名前、起動引数）を読み、自分の親をたどって Codex のプロセスを探す。何も出力しない。Codex が信頼するのは、このスクリプトを動かすコマンドなので、スクリプトの中身は andon のアップデートで変わる
+- andon は、`%LOCALAPPDATA%\andon\codex` のファイル名と更新時刻を見て、変わったら中身を読む。Codex のプロセスが終わったセッションと、24 時間たったセッションの記録を消す
 - Claude Code の設定ディレクトリ（既定は `~/.claude`）にある `sessions/*.json` の、ファイル名と更新時刻を見る（中身は読まない。`*.key` には触れない）
 - セッションの作業フォルダとその周辺の `*.code-workspace` を読み、開く対象を VS Code（`Code.exe`）に渡す
 - プロセスの一覧（`Win32_Process` の PID、親の PID、起動時刻、名前）を読み、セッションのプロセスから親へたどる。新しいセッションが出たときは、拡張機能のパネルのセッションかを見分けるため、そのプロセスの起動引数も読む
@@ -38,10 +41,10 @@ andon が通信するのは、上の GitHub だけです。GitHub にはログ�
 
 `install.ps1` が行うのは次のことだけです。ネットワークには通信しません。管理者の権限を求めません。
 
-- 同じフォルダにある `andon.ps1`・`install.ps1`・`install.cmd`・`README.txt`・`andon.ico`・`LICENSE` を `%LOCALAPPDATA%\Programs\andon` に置き、ダウンロードした印（Mark of the Web）を外す
+- 同じフォルダにある `andon.ps1`・`install.ps1`・`install.cmd`・`README.txt`・`andon.ico`・`LICENSE`・`andon-codex-hook.ps1` を `%LOCALAPPDATA%\Programs\andon` に置き、ダウンロードした印（Mark of the Web）を外す
 - スタートメニューに、andon を起動するショートカットを作る。スタートアップのショートカットは、アップデートのときにあれば書き直す（新しくインストールするときは作らない）
 - Windows の「インストールされているアプリ」に andon を登録する（`HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\tbshiki.andon`）。登録するアンインストールのコマンドは、cmd.exe を通さず、Windows PowerShell 5.1 を絶対パスで起動して `install.ps1 -Uninstall -PauseOnError` を実行する
 - 動いている andon を終了する。合図を受けられない古いバージョンは、`andon.ps1` を `-File` で動かしている PowerShell のプロセスを止める
-- `-Uninstall` を付けたときは、これらと、andon と Windows が作ったレジストリのキーと値（`AppUserModelId\tbshiki.andon`、`Notifications\Settings\tbshiki.andon`、`Uninstall\tbshiki.andon`、`StartupApproved\StartupFolder` の `andon.lnk`、設定の `Software\tbshiki\andon`。`Software\tbshiki` は、ほかに何もなければ消す）を消す
+- `-Uninstall` を付けたときは、Codex の `hooks.json` から andon の hook を消し（ほかの hook は残す）、`%LOCALAPPDATA%\andon` を消す。あわせて、これらと、andon と Windows が作ったレジストリのキーと値（`AppUserModelId\tbshiki.andon`、`Notifications\Settings\tbshiki.andon`、`Uninstall\tbshiki.andon`、`StartupApproved\StartupFolder` の `andon.lnk`、設定の `Software\tbshiki\andon`。`Software\tbshiki` は、ほかに何もなければ消す）を消す
 
 `install.cmd` は、同じフォルダの `install.ps1` を、Windows PowerShell 5.1 を絶対パスで起動して実行するだけです。失敗したときだけ、閉じる前にキーを待ちます。
