@@ -402,13 +402,15 @@ function New-OrcaTerminal {
     if ($Agent) { $o.agentIdentity = $Agent }
     return [pscustomobject]$o
 }
-function ConvertTo-OrcaListJson { param([object[]]$Terminals, [bool]$Ok = $true) return (ConvertTo-Json -Depth 5 ([ordered]@{ id = 'x'; ok = $Ok; result = [ordered]@{ terminals = @($Terminals); totalCount = @($Terminals).Count } })) }
+function ConvertTo-OrcaListJson { param([object[]]$Terminals, [bool]$Ok = $true, [bool]$Truncated = $false) return (ConvertTo-Json -Depth 5 ([ordered]@{ id = 'x'; ok = $Ok; result = [ordered]@{ terminals = @($Terminals); totalCount = @($Terminals).Count; truncated = $Truncated } })) }
 $oneJson = ConvertTo-OrcaListJson @((New-OrcaTerminal 'term_a' 'C:/work/repo'))
 $parsed = ConvertFrom-OrcaTerminalList $oneJson
 Assert-Equal "$($parsed.Count)|$($parsed[0].handle)" '1|term_a' 'ターミナルが 1 つでも、一覧（配列）として読む'
 Assert-Equal (ConvertFrom-OrcaTerminalList (ConvertTo-OrcaListJson @())).Count 0 'ターミナルがなければ空'
 Assert-Equal (ConvertFrom-OrcaTerminalList ("warning: something`n" + $oneJson)).Count 1 'JSON の前に行が混ざっても読む'
 Assert-Throws { ConvertFrom-OrcaTerminalList (ConvertTo-OrcaListJson @((New-OrcaTerminal 'term_a' 'C:/work/repo')) -Ok $false) } 'ok でなければ例外'
+Assert-Throws { ConvertFrom-OrcaTerminalList (ConvertTo-OrcaListJson @((New-OrcaTerminal 'term_a' 'C:/work/repo')) -Truncated $true) } '一覧が切れていれば（truncated）例外（2 つ目が切れて 1 つに見えるおそれがあるので、タブを選ばない）'
+Assert-Equal (ConvertFrom-OrcaTerminalList (ConvertTo-OrcaListJson @((New-OrcaTerminal 'term_a' 'C:/work/repo')) -Truncated $false)).Count 1 '一覧が切れていなければ（truncated が false）読む'
 Assert-Throws { ConvertFrom-OrcaTerminalList 'Orca is not running' } 'JSON でなければ例外'
 Assert-Throws { ConvertFrom-OrcaTerminalList '' } '空なら例外'
 
@@ -435,6 +437,10 @@ Assert-Equal (Select-OrcaTerminal -Terminals $orcaTerms -Cwd 'C:\work\other' -Ag
 Assert-Equal (Select-OrcaTerminal -Terminals $orcaTerms -Cwd 'C:\work\two' -Agent 'codex') $null '同じ種類のエージェントのターミナルがなければ選ばない'
 Assert-Equal (Select-OrcaTerminal -Terminals $orcaTerms -Cwd '' -Agent 'claude') $null '作業フォルダが分からなければ選ばない'
 Assert-Equal (Select-OrcaTerminal -Terminals @() -Cwd 'C:\work\repo' -Agent 'claude') $null 'ターミナルがなければ選ばない'
+Assert-Equal (Select-OrcaTerminal -Terminals @((New-OrcaTerminal 'term_3864128f-65cf-40b7-abc1-77775e9f21fd' 'C:/work/h')) -Cwd 'C:\work\h' -Agent 'claude') 'term_3864128f-65cf-40b7-abc1-77775e9f21fd' 'Orca の handle の形（英数字と _ と -）は選ぶ'
+Assert-Equal (Select-OrcaTerminal -Terminals @((New-OrcaTerminal 'term_" --x' 'C:/work/h')) -Cwd 'C:\work\h' -Agent 'claude') $null 'handle が英数字と _ . : - だけの形でなければ、CLI に渡さない'
+Assert-Equal (Select-OrcaTerminal -Terminals @((New-OrcaTerminal '-x' 'C:/work/h')) -Cwd 'C:\work\h' -Agent 'claude') $null 'handle が - で始まれば（CLI の引数に見える）、渡さない'
+Assert-Equal (Select-OrcaTerminal -Terminals @((New-OrcaTerminal 'term_ok' 'C:/work/h'), (New-OrcaTerminal 'bad handle' 'C:/work/h')) -Cwd 'C:\work\h' -Agent 'claude') $null '形の違う handle のターミナルも数える（残ったもう 1 つを選ばない）'
 
 Write-Host '== Orca の CLI（Get-OrcaCliPath、New-OrcaCliStartInfo）'
 $orcaTmp = Join-Path ([IO.Path]::GetTempPath()) ('andon-orca-' + [guid]::NewGuid().ToString('N'))
@@ -723,6 +729,7 @@ Assert-True ($andonText.Contains("`$miOpen = `$menu.Items.Add('開く')")) '行�
 Assert-True ($andonText -match '(?s)function Open-Session \{.{0,900}?Find-SessionWindow -Entry \$Entry') 'セッションを開くときは、まずセッションを映しているウィンドウを探す'
 Assert-True ($andonText -match '(?s)function Open-Session \{.{0,1500}?\[AndonSessionWindow\]::Show\(\[long\]\$window\.Handle\).{0,200}?if \(\$window\.OrcaPath\) \{\s+try \{ Start-OrcaTabSwitch') 'Orca のセッションは、先に Orca のウィンドウを前面に出してから、タブを切り替える（D-124）'
 Assert-True ($andonText -match 'Find-SessionWindow -Entry \$e -CodeProcessName \$script:CodeProcessName -Processes \$procs -Windows \$wins -AppWindows \$apps') '点滅を始めるときも、Orca のウィンドウの一覧を渡す（Orca のセッションを見分ける）'
+Assert-True ($andonText -match '(?m)^\s+catch \{ \$procs = \$null \}\r?\n(\s+#[^\r\n]*\r?\n)?\s+try \{ \$apps = @\(Get-OrcaWindowList\) \} catch \{ \$apps = @\(\) \}') '点滅を始めるとき、Orca のウィンドウを調べられなくても、ほかのターミナルのセッションの見分けに響かない'
 Assert-True ($andonText -match '(?s)\$script:OrcaTimer\.Add_Tick\(\{\s+try \{ Update-OrcaTabSwitch') 'Orca の CLI は、timer で受け取る（andon の画面を止めない）'
 Assert-True ($andonText -match '(?s)\$form\.Add_FormClosed\(\{.{0,200}?Stop-OrcaTabSwitch') '終了するとき、動いている Orca の CLI を止める'
 Assert-True ($andonText -match '(?m)^try \{ Initialize-SessionWindowType \} catch \{ \}') '起動したときに、ウィンドウを探す型を定義しておく（初めてクリックしたときに待たせない）'

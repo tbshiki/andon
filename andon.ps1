@@ -747,7 +747,8 @@ function Get-SessionAgent {
 }
 
 function ConvertFrom-OrcaTerminalList {
-    <# orca terminal list --json の出力から、ターミナルの一覧（result.terminals）を返す。ok でなければ、読めなければ例外 #>
+    <# orca terminal list --json の出力から、ターミナルの一覧（result.terminals）を返す。ok でなければ、読めなければ例外。
+       一覧が切れていれば（result.truncated）も例外。同じ worktree の 2 つ目が切れて 1 つに見え、別のタブを選ぶおそれがあるため #>
     param([string]$Json)
     if ([string]::IsNullOrWhiteSpace($Json)) { throw 'orca terminal list --json の出力が空です' }
     $start = $Json.IndexOf('{')
@@ -755,13 +756,16 @@ function ConvertFrom-OrcaTerminalList {
     if ($start -lt 0 -or $end -lt $start) { throw 'orca terminal list --json の出力が JSON ではありません' }
     $o = ConvertFrom-Json -InputObject $Json.Substring($start, $end - $start + 1) -ErrorAction Stop
     if ((Get-JsonValue $o 'ok') -ne $true) { throw 'orca terminal list --json が失敗しました' }
-    return , @(foreach ($t in @(Get-JsonValue (Get-JsonValue $o 'result') 'terminals')) { if ($null -ne $t) { $t } })
+    $result = Get-JsonValue $o 'result'
+    if ((Get-JsonValue $result 'truncated') -eq $true) { throw 'orca terminal list --json の一覧が切れています' }
+    return , @(foreach ($t in @(Get-JsonValue $result 'terminals')) { if ($null -ne $t) { $t } })
 }
 
 function Select-OrcaTerminal {
     <# Orca のターミナルの一覧（ConvertFrom-OrcaTerminalList）から、セッションのタブを選ぶ（D-124、D-131）。
        エージェントの種類（agentIdentity）が $Agent で、セッションの作業フォルダ $Cwd を含む worktree にあるもののうち、
        最も深い worktree のものが 1 つだけなら、その handle。なければ、2 つ以上あって見分けられなければ $null。
+       handle は CLI の引数に渡すので、英数字で始まり、英数字と _ . : - だけのものに限る（ほかの形なら $null）。
        Orca はパスを C:/… の形で返すので、/ を \ にし、大文字・小文字を区別せずに比べる #>
     param([object[]]$Terminals, [string]$Cwd, [string]$Agent)
     if (-not $Cwd -or -not $Agent) { return $null }
@@ -781,7 +785,8 @@ function Select-OrcaTerminal {
         if ($length -gt $bestLength) { $best = @($handle); $bestLength = $length }
         elseif ($length -eq $bestLength) { $best += $handle }
     }
-    if ($best.Count -eq 1) { return $best[0] }
+    # 形の違う handle も数えてから確かめる（除いてから数えると、残ったもう 1 つを選んでしまうため）
+    if ($best.Count -eq 1 -and $best[0] -cmatch '^[A-Za-z0-9][A-Za-z0-9_.:-]*$') { return $best[0] }
     return $null
 }
 
@@ -1338,7 +1343,9 @@ function Get-VerticalItemLayout {
 # Codex のセッション（D-109〜D-115）。Codex の hooks で動く andon-codex-hook.ps1 が、セッションごとの状態を
 # %LOCALAPPDATA%\andon\codex\<セッションの ID>.json に書く。andon は、そのフォルダのファイル名と更新時刻を見て、
 # 変わったら読む（andon の hook が書いたファイルなので、中身を読む）。Codex のセッションのキーは codex:<セッションの ID>。
-# Codex のプロセスは分かるが、ターミナルの codex はデーモンの中で動くので、ウィンドウは探さず、作業フォルダを VS Code で開く
+# ふつうのターミナルの codex は共有のデーモンの中で動くので、ウィンドウは探さず、作業フォルダを VS Code で開く。
+# Codex のプロセスがターミナルの中の codex.exe（HostKind が terminal。Orca の区画の Codex など）なら、Claude と同じく
+# そのプロセスからウィンドウを探す（Get-SessionWindowProcessId。D-127）
 # ---------------------------------------------------------------------------
 
 $script:CodexKeyPrefix = 'codex:'
@@ -1835,9 +1842,10 @@ function Start-Flash {
             try {
                 $procs = @(Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, CreationDate, Name -ErrorAction Stop)
                 $wins = @(Get-ConsoleWindowList)
-                $apps = @(Get-OrcaWindowList)
             }
             catch { $procs = $null }
+            # Orca のウィンドウを調べられなくても、ほかのターミナルのセッションは見分ける（Orca のセッションだけ VS Code の題名で見分ける）
+            try { $apps = @(Get-OrcaWindowList) } catch { $apps = @() }
             foreach ($e in $hits) {
                 $window = $null
                 if ($null -ne $procs) {
