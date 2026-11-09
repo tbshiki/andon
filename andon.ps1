@@ -13,7 +13,9 @@
     「Codex の状態を出す」で、~/.codex/hooks.json に andon の hook（andon-codex-hook.ps1）を足したり消したりする
     （ほかの hook は変えない）。hook は、セッションごとの状態を %LOCALAPPDATA%\andon\codex に書き、andon は、そのフォルダの
     ファイル名と更新時刻を見て、変わったら読む。andon は Codex のプロセスにも、Codex のサーバー（デーモン）にも繋がない。
-    Codex のセッションは、クリックで作業フォルダを VS Code で開く。VS Code の拡張機能のセッションは、待機なら出さない。
+    Codex のセッションは、クリックで作業フォルダを VS Code で開く。ただし、Codex のプロセスがターミナルの中の codex.exe なら
+    （共有のデーモンや VS Code の拡張機能で動いていなければ）、Claude のセッションと同じく、そのウィンドウを探して前面に出す。
+    VS Code の拡張機能のセッションは、待機なら出さない。
 
     - waiting（許可待ち・質問待ち）を赤、busy から idle に変わった未確認のもの（完了）を黄で上に並べる。
       busy（実行中）の行は薄い緑にする。
@@ -44,6 +46,10 @@
       コンソールを映しているウィンドウで決める。VS Code の中（統合ターミナル、拡張機能のパネル）のセッションと、ウィンドウが
       分からないセッション（background のセッションを含む）は、cwd を含む *.code-workspace（なければ repository の root）を
       VS Code で開く。既に開いているウィンドウがあれば、そのウィンドウが前面に出る。ターミナルのタブまでは選ばない。
+    - Orca の区画（ターミナル）で動いているセッションは、Orca のウィンドウを前面に出す。区画のコンソールは映しているウィンドウが
+      分からないので、さらに親へたどり、ウィンドウを持つ Orca.exe で決める。そのうえで、Orca の CLI（その Orca.exe と同じフォルダの
+      resources\bin\orca.exe）でターミナルの一覧を裏で取り、作業フォルダを含む worktree に同じ種類のエージェント（Claude か Codex）の
+      ターミナルが 1 つだけなら、そのタブに切り替える。見分けられなければ、ウィンドウを前面に出すだけにする。
     - VS Code（code.cmd）が見つからなくても起動する。そのときは、VS Code のウィンドウもそのまま前面に出し、
       ウィンドウが分からないセッションは、クリックで既読にするだけにする。VS Code を探すのは起動したときだけ。
     - install.ps1 がアップデートや削除の前に終わらせられるよう、名前付きのイベント（Local\andon-exit）の合図を受けたら終わる。
@@ -79,7 +85,7 @@ param(
 )
 
 # 版（MAJOR.MINOR.PATCH）。Release の tag（v<版>）と同じにする。install.ps1 はこの行から版を読む
-$script:AndonVersion = '0.3.0'
+$script:AndonVersion = '0.3.1'
 # 新しい版を確かめる GitHub のリポジトリ
 $script:AndonRepository = 'tbshiki/andon'
 
@@ -125,6 +131,8 @@ function New-StateEntry {
         Sdk = $null   # 拡張機能のパネルなど、ターミナルではなく SDK から動かしているか。$null は未判定
         StartedAt = $StartedAt
         CodexAt = $null   # Codex のセッションの、最後に当てたイベントの時刻（Update-CodexState）
+        # Codex のセッションの、Codex のプロセス（PID と起動時刻（UTC の Ticks））と、その種類（terminal、daemon、vscode）
+        HostPid = 0; HostStart = [long]0; HostKind = ''
     }
     if ($entry.Unread) { $entry.AlertAt = $Now }
     return $entry
@@ -501,12 +509,15 @@ function Find-SessionConsoleWindow {
        - ConsoleWindowClass（conhost が自分で描くコンソール）は、そのウィンドウ
        - PseudoConsoleWindow（Windows Terminal や VS Code のターミナルが持つ、隠れたウィンドウ）は、その持ち主（映しているウィンドウ）
        見えていないウィンドウと、持ち主のない PseudoConsoleWindow は、映しているウィンドウが分からないので $null（それより上はたどらない）。
+       ただし、Orca の区画（ターミナル）は、持ち主のない PseudoConsoleWindow を持つ。そのときは、さらに親へたどり、先祖に
+       見えるウィンドウを持つ Orca（$AppWindows にあるもの）がいれば、その Orca のウィンドウにする（Find-OrcaWindow。D-131）。
        たどる途中で VS Code（$CodeProcessName）に着いたら、VS Code が動かしているセッション（拡張機能のパネルなど）なので $null。
        親は、子より前に起動したものだけをたどる（終わった親の PID が使い回されていても、無関係なプロセスをたどらない）。
-       見つかれば、Handle（前面に出すウィンドウ）と、そのウィンドウが VS Code のものか（IsCode）を返す。
+       見つかれば、Handle（前面に出すウィンドウ）と、そのウィンドウが VS Code のものか（IsCode）と、Orca のウィンドウなら
+       その Orca.exe のパス（OrcaPath。Orca の CLI を探すのに使う。Orca でなければ $null）を返す。
        親のプロセスでは決めない。VS Code のターミナルから別のウィンドウ（Windows Terminal など）で開いたシェルは、親をたどると
        VS Code に着くが、映しているのはそのウィンドウのため #>
-    param([object[]]$Processes, [object[]]$Windows, [int]$Id, [string]$CodeProcessName = 'Code')
+    param([object[]]$Processes, [object[]]$Windows, [int]$Id, [string]$CodeProcessName = 'Code', [object[]]$AppWindows = @())
     $byId = @{}
     foreach ($p in $Processes) { if ($null -ne $p) { $byId[[int]$p.ProcessId] = $p } }
     $cur = $byId[$Id]
@@ -517,18 +528,60 @@ function Find-SessionConsoleWindow {
             if ($null -eq $w -or [int]$w.ProcessId -ne $curId) { continue }
             if ($w.ClassName -eq 'ConsoleWindowClass') {
                 if (-not $w.Visible) { return $null }
-                return [pscustomobject]@{ Handle = [long]$w.Handle; IsCode = $false }
+                return [pscustomobject]@{ Handle = [long]$w.Handle; IsCode = $false; OrcaPath = $null }
             }
             if ($w.ClassName -eq 'PseudoConsoleWindow') {
-                if (-not [long]$w.OwnerHandle -or -not $w.OwnerVisible) { return $null }
+                if (-not [long]$w.OwnerHandle -or -not $w.OwnerVisible) {
+                    return Find-OrcaWindow -ById $byId -Start $cur -AppWindows $AppWindows -CodeProcessName $CodeProcessName
+                }
                 $owner = $byId[[int]$w.OwnerProcessId]
                 $isCode = [bool]($owner -and [IO.Path]::GetFileNameWithoutExtension([string]$owner.Name) -ieq $CodeProcessName)
-                return [pscustomobject]@{ Handle = [long]$w.OwnerHandle; IsCode = $isCode }
+                # 持ち主が Orca のウィンドウなら（Orca が区画のコンソールに持ち主を付けるようになったとき）、タブも選べるようにする
+                $orcaPath = $null
+                if ($owner -and [IO.Path]::GetFileNameWithoutExtension([string]$owner.Name) -ieq $script:OrcaProcessName) {
+                    foreach ($a in $AppWindows) {
+                        if ($a -and [int]$a.ProcessId -eq [int]$owner.ProcessId) { $orcaPath = [string]$a.Path; break }
+                    }
+                }
+                return [pscustomobject]@{ Handle = [long]$w.OwnerHandle; IsCode = $isCode; OrcaPath = $orcaPath }
             }
         }
         $parent = $byId[[int]$cur.ParentProcessId]
-        if (-not $parent -or [int]$parent.ProcessId -eq $curId -or $null -eq $cur.CreationDate -or
-            $null -eq $parent.CreationDate -or $parent.CreationDate -gt $cur.CreationDate) { return $null }
+        if (-not (Test-ParentProcess -Child $cur -Parent $parent)) { return $null }
+        $cur = $parent
+    }
+    return $null
+}
+
+function Test-ParentProcess {
+    <# $Parent が $Child の親としてたどってよいプロセスか。子より後に起動した「親」は、終わった親の PID の使い回しなので、たどらない #>
+    param($Child, $Parent)
+    return [bool]($Parent -and [int]$Parent.ProcessId -ne [int]$Child.ProcessId -and $null -ne $Child.CreationDate -and
+        $null -ne $Parent.CreationDate -and $Parent.CreationDate -le $Child.CreationDate)
+}
+
+$script:OrcaProcessName = 'Orca'   # Orca のプロセス名（Orca.exe）
+
+function Find-OrcaWindow {
+    <# Orca の区画で動いているセッションの、Orca のウィンドウを探す（D-131）。$Start（持ち主のない PseudoConsoleWindow を持つ
+       プロセス）から親へたどり、見えるウィンドウを持つ Orca のプロセス（$AppWindows にあるもの）に着けば、そのウィンドウを返す。
+       区画を動かす Orca（daemon-host）はウィンドウを持たないので、その親（Orca の本体）まで、たどり続ける。
+       Orca に着かなければ、映しているウィンドウが分からないので $null。たどる途中で VS Code に着いても $null。
+       $ById は ProcessId -> プロセス。$AppWindows は Get-OrcaWindowList の形（ProcessId、Handle、Path） #>
+    param([hashtable]$ById, $Start, [object[]]$AppWindows, [string]$CodeProcessName = 'Code')
+    $cur = $Start
+    for ($depth = 0; $cur -and $depth -lt 32; $depth++) {
+        $name = [IO.Path]::GetFileNameWithoutExtension([string]$cur.Name)
+        if ($depth -gt 0 -and $name -ieq $CodeProcessName) { return $null }
+        if ($name -ieq $script:OrcaProcessName) {
+            foreach ($a in $AppWindows) {
+                if ($a -and [int]$a.ProcessId -eq [int]$cur.ProcessId -and [long]$a.Handle) {
+                    return [pscustomobject]@{ Handle = [long]$a.Handle; IsCode = $false; OrcaPath = [string]$a.Path }
+                }
+            }
+        }
+        $parent = $ById[[int]$cur.ParentProcessId]
+        if (-not (Test-ParentProcess -Child $cur -Parent $parent)) { return $null }
         $cur = $parent
     }
     return $null
@@ -629,18 +682,144 @@ function Get-ConsoleWindowList {
     return @([AndonSessionWindow]::GetConsoleWindows())
 }
 
+function Get-OrcaWindowList {
+    <# Orca のプロセスのうち、見えるウィンドウ（MainWindowHandle）を持つものの一覧（ProcessId、Handle、Path）。
+       Find-SessionConsoleWindow に渡す。Orca が動いていなければ空。1 件だけのときに配列でなくならないよう、呼ぶ側は @() で囲む。
+       実行ファイルのパスが読めなければ、Path は $null（ウィンドウは前面に出せるが、CLI が見つからないのでタブは選ばない） #>
+    $result = @()
+    foreach ($p in @(Get-Process -Name $script:OrcaProcessName -ErrorAction SilentlyContinue)) {
+        try {
+            $h = $p.MainWindowHandle.ToInt64()
+            if ($h -ne 0) {
+                $path = $null
+                try { $path = [string]$p.Path } catch { }
+                $result += [pscustomobject]@{ ProcessId = [int]$p.Id; Handle = [long]$h; Path = $path }
+            }
+        }
+        catch { }
+        finally { $p.Dispose() }
+    }
+    return $result
+}
+
+function Get-SessionWindowProcessId {
+    <# ウィンドウを探す起点のプロセス（Find-SessionConsoleWindow の $Id）。探さないセッションは 0。
+       - Claude のセッションは、セッションのプロセス。background のセッション（claude agents --json の kind が interactive でないもの）は、
+         起動したターミナルで動いていないので探さない（README のとおり、作業フォルダを VS Code で開く）。kind が分からなければ、
+         対話のセッションとして探す
+       - Codex のセッションは、Codex のプロセスがターミナルの中の codex.exe（HostKind が terminal）のときだけ、そのプロセス（D-127）。
+         共有のデーモン（daemon）と VS Code の拡張機能（vscode）は、どのターミナルで動いているかが分からないので探さない #>
+    param($Entry)
+    if ($Entry.Kind -eq 'codex') {
+        if ($Entry.HostKind -eq 'terminal' -and [int]$Entry.HostPid -gt 0) { return [int]$Entry.HostPid }
+        return 0
+    }
+    if ($Entry.Kind -and $Entry.Kind -ne 'interactive') { return 0 }
+    return [int]$Entry.Key
+}
+
 function Find-SessionWindow {
     <# 今のプロセスとウィンドウから、セッションを映しているウィンドウを探す（Find-SessionConsoleWindow）。見つからなければ $null。
-       $Processes と $Windows を渡せば、それを使う（点滅を始めるときに、何件かをまとめて調べるため）。
-       background のセッション（claude agents --json の kind が interactive でないもの）は、起動したターミナルで動いていないので
-       探さない（README のとおり、作業フォルダを VS Code で開く）。kind が分からなければ、対話のセッションとして探す #>
-    param($Entry, [string]$CodeProcessName = 'Code', [object[]]$Processes = $null, [object[]]$Windows = $null)
-    if ($Entry.Kind -and $Entry.Kind -ne 'interactive') { return $null }
+       $Processes、$Windows、$AppWindows を渡せば、それを使う（点滅を始めるときに、何件かをまとめて調べるため）。
+       どのセッションで探すかは Get-SessionWindowProcessId。Codex のプロセスは、起動時刻が記録と違えば（PID の使い回し）探さない #>
+    param($Entry, [string]$CodeProcessName = 'Code', [object[]]$Processes = $null, [object[]]$Windows = $null, [object[]]$AppWindows = $null)
+    $id = Get-SessionWindowProcessId $Entry
+    if ($id -le 0) { return $null }
     if ($null -eq $Processes) {
         $Processes = @(Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, CreationDate, Name -ErrorAction Stop)
     }
+    if ($Entry.Kind -eq 'codex' -and [long]$Entry.HostStart -gt 0) {
+        $self = @($Processes | Where-Object { $null -ne $_ -and [int]$_.ProcessId -eq $id }) | Select-Object -First 1
+        if (-not $self -or $null -eq $self.CreationDate) { return $null }
+        $start = ([datetime]$self.CreationDate).ToUniversalTime().Ticks
+        if ([Math]::Abs($start - [long]$Entry.HostStart) -ge [TimeSpan]::TicksPerSecond) { return $null }
+    }
     if ($null -eq $Windows) { $Windows = @(Get-ConsoleWindowList) }
-    return Find-SessionConsoleWindow -Processes $Processes -Windows $Windows -Id ([int]$Entry.Key) -CodeProcessName $CodeProcessName
+    if ($null -eq $AppWindows) { $AppWindows = @(Get-OrcaWindowList) }
+    return Find-SessionConsoleWindow -Processes $Processes -Windows $Windows -Id $id -CodeProcessName $CodeProcessName -AppWindows $AppWindows
+}
+
+function Get-SessionAgent {
+    <# Orca がターミナルに付けるエージェントの種類（orca terminal list --json の agentIdentity）のうち、このセッションのもの #>
+    param($Entry)
+    if ($Entry.Kind -eq 'codex') { return 'codex' }
+    return 'claude'
+}
+
+function ConvertFrom-OrcaTerminalList {
+    <# orca terminal list --json の出力から、ターミナルの一覧（result.terminals）を返す。ok でなければ、読めなければ例外。
+       一覧が切れていれば（result.truncated）も例外。同じ worktree の 2 つ目が切れて 1 つに見え、別のタブを選ぶおそれがあるため #>
+    param([string]$Json)
+    if ([string]::IsNullOrWhiteSpace($Json)) { throw 'orca terminal list --json の出力が空です' }
+    $start = $Json.IndexOf('{')
+    $end = $Json.LastIndexOf('}')
+    if ($start -lt 0 -or $end -lt $start) { throw 'orca terminal list --json の出力が JSON ではありません' }
+    $o = ConvertFrom-Json -InputObject $Json.Substring($start, $end - $start + 1) -ErrorAction Stop
+    if ((Get-JsonValue $o 'ok') -ne $true) { throw 'orca terminal list --json が失敗しました' }
+    $result = Get-JsonValue $o 'result'
+    if ((Get-JsonValue $result 'truncated') -eq $true) { throw 'orca terminal list --json の一覧が切れています' }
+    return , @(foreach ($t in @(Get-JsonValue $result 'terminals')) { if ($null -ne $t) { $t } })
+}
+
+function Select-OrcaTerminal {
+    <# Orca のターミナルの一覧（ConvertFrom-OrcaTerminalList）から、セッションのタブを選ぶ（D-124、D-131）。
+       エージェントの種類（agentIdentity）が $Agent で、セッションの作業フォルダ $Cwd を含む worktree にあるもののうち、
+       最も深い worktree のものが 1 つだけなら、その handle。なければ、2 つ以上あって見分けられなければ $null。
+       handle は CLI の引数に渡すので、英数字で始まり、英数字と _ . : - だけのものに限る（ほかの形なら $null）。
+       Orca はパスを C:/… の形で返すので、/ を \ にし、大文字・小文字を区別せずに比べる #>
+    param([object[]]$Terminals, [string]$Cwd, [string]$Agent)
+    if (-not $Cwd -or -not $Agent) { return $null }
+    $path = $Cwd.Replace('/', '\')
+    $best = @()
+    $bestLength = -1
+    foreach ($t in $Terminals) {
+        if ($null -eq $t) { continue }
+        if ([string](Get-JsonValue $t 'agentIdentity') -ine $Agent) { continue }
+        if ((Get-JsonValue $t 'orphaned') -eq $true) { continue }
+        $handle = [string](Get-JsonValue $t 'handle')
+        $root = [string](Get-JsonValue $t 'worktreePath')
+        if (-not $handle -or -not $root) { continue }
+        $root = $root.Replace('/', '\')
+        if (-not (Test-PathUnder -Path $path -Root $root)) { continue }
+        $length = $root.TrimEnd('\').Length
+        if ($length -gt $bestLength) { $best = @($handle); $bestLength = $length }
+        elseif ($length -eq $bestLength) { $best += $handle }
+    }
+    # 形の違う handle も数えてから確かめる（除いてから数えると、残ったもう 1 つを選んでしまうため）
+    if ($best.Count -eq 1 -and $best[0] -cmatch '^[A-Za-z0-9][A-Za-z0-9_.:-]*$') { return $best[0] }
+    return $null
+}
+
+function Get-OrcaCliPath {
+    <# Orca の CLI（orca.exe）のパス。ウィンドウを持つ Orca.exe と同じフォルダの resources\bin\orca.exe（D-131）。
+       PATH は見ない（別の orca を起動しないため）。なければ $null #>
+    param([string]$OrcaPath)
+    if (-not $OrcaPath) { return $null }
+    $dir = Split-Path -Parent $OrcaPath
+    if (-not $dir) { return $null }
+    $cli = Join-Path $dir 'resources\bin\orca.exe'
+    if (Test-Path -LiteralPath $cli -PathType Leaf) { return $cli }
+    return $null
+}
+
+function New-OrcaCliStartInfo {
+    <# Orca の CLI を、ウィンドウを出さずに起動する情報。andon を Orca の区画から起動したときに、区画の環境変数（ORCA_ で始まるもの。
+       今の区画や、繋ぐ先の Orca を示す）が CLI に渡らないよう、消してから渡す。$Capture なら標準出力を受け取る #>
+    param([string]$Cli, [string[]]$Arguments, [switch]$Capture)
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $Cli
+    $psi.Arguments = (@($Arguments | ForEach-Object { ConvertTo-ArgumentString $_ }) -join ' ')
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.WorkingDirectory = $env:USERPROFILE
+    foreach ($name in @($psi.EnvironmentVariables.Keys)) {
+        if ([string]$name -like 'ORCA_*') { $psi.EnvironmentVariables.Remove([string]$name) }
+    }
+    if ($Capture) {
+        $psi.RedirectStandardOutput = $true
+        $psi.StandardOutputEncoding = [Text.Encoding]::UTF8
+    }
+    return $psi
 }
 
 function Get-FlashMark {
@@ -1164,7 +1343,9 @@ function Get-VerticalItemLayout {
 # Codex のセッション（D-109〜D-115）。Codex の hooks で動く andon-codex-hook.ps1 が、セッションごとの状態を
 # %LOCALAPPDATA%\andon\codex\<セッションの ID>.json に書く。andon は、そのフォルダのファイル名と更新時刻を見て、
 # 変わったら読む（andon の hook が書いたファイルなので、中身を読む）。Codex のセッションのキーは codex:<セッションの ID>。
-# Codex のプロセスは分かるが、ターミナルの codex はデーモンの中で動くので、ウィンドウは探さず、作業フォルダを VS Code で開く
+# ふつうのターミナルの codex は共有のデーモンの中で動くので、ウィンドウは探さず、作業フォルダを VS Code で開く。
+# Codex のプロセスがターミナルの中の codex.exe（HostKind が terminal。Orca の区画の Codex など）なら、Claude と同じく
+# そのプロセスからウィンドウを探す（Get-SessionWindowProcessId。D-127）
 # ---------------------------------------------------------------------------
 
 $script:CodexKeyPrefix = 'codex:'
@@ -1254,7 +1435,7 @@ function Update-CodexState {
         $entry = $script:State[$s.Key]
         if (-not $entry) {
             $entry = New-StateEntry -Key $s.Key -Status $s.Status -StartedAt $null -Now $Now
-            $entry.Kind = 'codex'   # ウィンドウを探さない（Find-SessionWindow は interactive だけを探す）
+            $entry.Kind = 'codex'   # ウィンドウは、Codex のプロセスがターミナルの中にあるときだけ探す（Get-SessionWindowProcessId）
             $script:State[$s.Key] = $entry
             if ($entry.Unread) { $alert = $true }
         }
@@ -1278,6 +1459,9 @@ function Update-CodexState {
         $entry.Cwd = $s.Cwd
         $entry.WaitingFor = $s.WaitingFor
         $entry.Sdk = ($s.HostKind -eq 'vscode')
+        $entry.HostPid = $s.HostPid
+        $entry.HostStart = $s.HostStart
+        $entry.HostKind = $s.HostKind
     }
     foreach ($k in @($script:State.Keys)) {
         if ((Test-CodexKey $k) -and -not $alive.ContainsKey($k)) { $script:State.Remove($k) }
@@ -1451,7 +1635,8 @@ function Start-Poll {
 }
 
 function Open-Session {
-    <# セッションを開く。VS Code の外のターミナルで動いていれば、そのウィンドウを前面に出す。VS Code の中のセッションと、
+    <# セッションを開く。VS Code の外のターミナルで動いていれば、そのウィンドウを前面に出す。Orca の区画で動いていれば、Orca の
+       ウィンドウを前面に出し、Orca の CLI でそのタブに切り替える（D-124。Start-OrcaTabSwitch）。VS Code の中のセッションと、
        ウィンドウが分からないセッションは、作業フォルダを VS Code で開く。VS Code が見つからなければ、VS Code のウィンドウも
        そのまま前面に出し、ウィンドウが分からなければ既読にするだけ #>
     param($Entry)
@@ -1459,6 +1644,9 @@ function Open-Session {
     try { $window = Find-SessionWindow -Entry $Entry -CodeProcessName $script:CodeProcessName } catch { }
     if ($window -and (-not $window.IsCode -or -not $script:CodeCmd)) {
         try { [void][AndonSessionWindow]::Show([long]$window.Handle) } catch { }
+        if ($window.OrcaPath) {
+            try { Start-OrcaTabSwitch -OrcaPath $window.OrcaPath -Cwd $Entry.Cwd -Agent (Get-SessionAgent $Entry) } catch { Stop-OrcaTabSwitch }
+        }
         $Entry.Unread = $false
         return
     }
@@ -1470,6 +1658,75 @@ function Open-Session {
     if (-not $target) { return }
     Start-VSCode -Target $target -CodeExe $script:CodeExe -CodeCmd $script:CodeCmd
     $Entry.Unread = $false
+}
+
+# Orca のタブの切り替え（D-124、D-131）。andon の画面を止めないよう、Orca の CLI は裏で動かし、$script:OrcaTimer で受け取る
+$script:OrcaSwitch = $null       # 動かしている CLI（Proc、Task、Started、Cwd、Agent、Cli、Phase）
+$script:OrcaTimeoutSec = 5       # CLI がこれより長くかかったら、止めてやめる
+
+function Stop-OrcaTabSwitch {
+    <# 動かしている Orca の CLI を止める（時間切れのときと、前のクリックの分が残っているうちに次をクリックしたとき）。
+       CLI（起動用の orca.exe）が起動した子のプロセスも止める #>
+    $s = $script:OrcaSwitch
+    $script:OrcaSwitch = $null
+    if (-not $s) { return }
+    try { if (-not $s.Proc.HasExited) { Stop-ProcessTree -Id $s.Proc.Id -StartTime $s.StartTime } } catch { }
+    try { $s.Proc.Dispose() } catch { }
+}
+
+function New-OrcaSwitchState {
+    <# 動かし始めた Orca の CLI（$script:OrcaSwitch に置くもの） #>
+    param($Proc, $Task, [datetime]$Started, [string]$Cwd, [string]$Agent, [string]$Cli, [string]$Phase)
+    $startTime = $null
+    try { $startTime = $Proc.StartTime } catch { }
+    return [pscustomobject]@{
+        Proc = $Proc; StartTime = $startTime; Task = $Task; Started = $Started
+        Cwd = $Cwd; Agent = $Agent; Cli = $Cli; Phase = $Phase
+    }
+}
+
+function Start-OrcaTabSwitch {
+    <# Orca の CLI で、ターミナルの一覧（orca terminal list --json）を裏で取り始める。受け取ったら（Update-OrcaTabSwitch）、
+       セッションのタブが 1 つに決まれば、orca terminal switch で切り替える。CLI が見つからなければ何もしない（ウィンドウを
+       前面に出すだけ） #>
+    param([string]$OrcaPath, [string]$Cwd, [string]$Agent)
+    Stop-OrcaTabSwitch
+    $cli = Get-OrcaCliPath -OrcaPath $OrcaPath
+    if (-not $cli -or -not $Cwd) { return }
+    $p = [Diagnostics.Process]::Start((New-OrcaCliStartInfo -Cli $cli -Arguments @('terminal', 'list', '--json') -Capture))
+    if (-not $p) { return }
+    $script:OrcaSwitch = New-OrcaSwitchState -Proc $p -Task $p.StandardOutput.ReadToEndAsync() -Started (Get-Date) `
+        -Cwd $Cwd -Agent $Agent -Cli $cli -Phase 'list'
+    $script:OrcaTimer.Start()
+}
+
+function Update-OrcaTabSwitch {
+    <# $script:OrcaTimer から呼ぶ。一覧を受け取ったらタブを選んで切り替え、切り替えの CLI が終わるのを待つ。
+       $script:OrcaTimeoutSec を過ぎたら止める。失敗したら、何もしない（ウィンドウはもう前面に出してある） #>
+    param([datetime]$Now)
+    $s = $script:OrcaSwitch
+    if (-not $s) { $script:OrcaTimer.Stop(); return }
+    if ($s.Phase -eq 'list') {
+        if (-not $s.Task.IsCompleted) {
+            if (($Now - $s.Started).TotalSeconds -gt $script:OrcaTimeoutSec) { Stop-OrcaTabSwitch }
+            return
+        }
+        $handle = $null
+        try { $handle = Select-OrcaTerminal -Terminals (ConvertFrom-OrcaTerminalList $s.Task.Result) -Cwd $s.Cwd -Agent $s.Agent }
+        catch { $handle = $null }
+        # 出力を読み終えたので、CLI はもう終わるところ。少し待ってから片付ける（終わっていなければ、子のプロセスごと止める）
+        try { [void]$s.Proc.WaitForExit(1000) } catch { }
+        Stop-OrcaTabSwitch
+        if (-not $handle) { $script:OrcaTimer.Stop(); return }
+        $p = [Diagnostics.Process]::Start((New-OrcaCliStartInfo -Cli $s.Cli -Arguments @('terminal', 'switch', '--terminal', $handle, '--json')))
+        if (-not $p) { $script:OrcaTimer.Stop(); return }
+        $script:OrcaSwitch = New-OrcaSwitchState -Proc $p -Task $null -Started $Now -Cwd $s.Cwd -Agent $s.Agent -Cli $s.Cli -Phase 'switch'
+        return
+    }
+    if ($s.Proc.HasExited -or ($Now - $s.Started).TotalSeconds -gt $script:OrcaTimeoutSec) {
+        Stop-OrcaTabSwitch
+        $script:OrcaTimer.Stop()
+    }
 }
 
 # Codex のセッション（D-109〜D-115）
@@ -1581,15 +1838,18 @@ function Start-Flash {
             # ターミナルのウィンドウは、プロセスとウィンドウを 1 回だけ調べて探す。調べられなければ、VS Code の題名で見分ける
             $procs = $null
             $wins = $null
+            $apps = $null
             try {
                 $procs = @(Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, CreationDate, Name -ErrorAction Stop)
                 $wins = @(Get-ConsoleWindowList)
             }
             catch { $procs = $null }
+            # Orca のウィンドウを調べられなくても、ほかのターミナルのセッションは見分ける（Orca のセッションだけ VS Code の題名で見分ける）
+            try { $apps = @(Get-OrcaWindowList) } catch { $apps = @() }
             foreach ($e in $hits) {
                 $window = $null
                 if ($null -ne $procs) {
-                    $window = Find-SessionWindow -Entry $e -CodeProcessName $script:CodeProcessName -Processes $procs -Windows $wins
+                    $window = Find-SessionWindow -Entry $e -CodeProcessName $script:CodeProcessName -Processes $procs -Windows $wins -AppWindows $apps
                 }
                 $keys[$e.Key] = Get-FlashMark -Entry $e -SessionWindow $window
             }
@@ -2537,6 +2797,17 @@ $script:LastSignature = $null
 $script:NextPoll = Get-Date
 $script:NextRender = Get-Date
 
+# Orca の CLI を待つ timer（Start-OrcaTabSwitch で動かし、終わったら止める）。タブがすぐ切り替わるよう、状態を見る timer より短くする
+$script:OrcaTimer = New-Object System.Windows.Forms.Timer
+$script:OrcaTimer.Interval = 100
+$script:OrcaTimer.Add_Tick({
+        try { Update-OrcaTabSwitch -Now (Get-Date) }
+        catch {
+            Stop-OrcaTabSwitch
+            $script:OrcaTimer.Stop()
+        }
+    })
+
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = $ScanMs
 $timer.Add_Tick({
@@ -2623,6 +2894,8 @@ $timer.Add_Tick({
 
 $form.Add_FormClosed({
         $timer.Stop()
+        $script:OrcaTimer.Stop()
+        try { Stop-OrcaTabSwitch } catch { }
         # 消さずに終わると、マウスを重ねるまでトレイにアイコンが残る
         $tray.Visible = $false
         $tray.Dispose()
