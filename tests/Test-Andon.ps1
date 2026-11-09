@@ -299,6 +299,22 @@ $sessionProcs = @(
     (New-Proc 60 8 'claude.exe' 3)           # Windows Terminal が直接起動したセッション（コンソールを作ったのがセッション）
     (New-Proc 70 71 'claude.exe' 3)
     (New-Proc 71 8 'pwsh.exe' 2)             # 持ち主（Windows Terminal のウィンドウ）が隠れている
+    (New-Proc 80 1 'Orca.exe' 1)             # Orca の本体（ウィンドウを持つ）
+    (New-Proc 81 80 'Orca.exe' 2)            # 区画を動かす Orca（daemon-host。ウィンドウを持たない）
+    (New-Proc 82 81 'pwsh.exe' 3)            # Orca の区画のシェル（持ち主のない PseudoConsoleWindow）
+    (New-Proc 83 82 'claude.exe' 4)          # Orca の区画のセッション
+    (New-Proc 84 82 'codex.exe' 5)           # Orca の区画の Codex
+    (New-Proc 85 1 'Orca.exe' 1)             # ウィンドウが見えない Orca
+    (New-Proc 86 85 'pwsh.exe' 2)
+    (New-Proc 87 86 'claude.exe' 3)
+    (New-Proc 88 89 'pwsh.exe' 3)            # 親が終わり、親の PID が、あとから起動した Orca に使い回された
+    (New-Proc 89 1 'Orca.exe' 10)
+    (New-Proc 90 88 'claude.exe' 4)
+    (New-Proc 91 80 'pwsh.exe' 3)            # 持ち主が Orca のウィンドウの PseudoConsoleWindow
+    (New-Proc 92 91 'claude.exe' 4)
+    (New-Proc 95 80 'Code.exe' 2)            # Orca の区画から起動した VS Code
+    (New-Proc 93 95 'pwsh.exe' 3)            # その VS Code のターミナルで、持ち主のない PseudoConsoleWindow
+    (New-Proc 94 93 'claude.exe' 4)
 )
 $sessionWins = @(
     (New-ConsoleWin 104 'PseudoConsoleWindow' 4 -Visible $false -Owner 2002 -OwnerProcessId 2)
@@ -311,9 +327,21 @@ $sessionWins = @(
     (New-ConsoleWin 1051 'ConsoleWindowClass' 51 -Visible $false)
     (New-ConsoleWin 160 'PseudoConsoleWindow' 60 -Visible $false -Owner 8009 -OwnerProcessId 8)
     (New-ConsoleWin 171 'PseudoConsoleWindow' 71 -Visible $false -Owner 8010 -OwnerProcessId 8 -OwnerVisible $false)
+    (New-ConsoleWin 182 'PseudoConsoleWindow' 82 -Visible $false)
+    (New-ConsoleWin 186 'PseudoConsoleWindow' 86 -Visible $false)
+    (New-ConsoleWin 188 'PseudoConsoleWindow' 88 -Visible $false)
+    (New-ConsoleWin 191 'PseudoConsoleWindow' 91 -Visible $false -Owner 8080 -OwnerProcessId 80)
+    (New-ConsoleWin 193 'PseudoConsoleWindow' 93 -Visible $false)
+)
+# 見えるウィンドウを持つ Orca（Get-OrcaWindowList の形）。PID 85 の Orca はウィンドウが見えないので入らない
+$sessionApps = @(
+    [pscustomobject]@{ ProcessId = 80; Handle = [long]8080; Path = 'C:\Apps\orca\Orca.exe' }
+    [pscustomobject]@{ ProcessId = 89; Handle = [long]8089; Path = 'C:\Apps\orca2\Orca.exe' }
 )
 function Format-SessionWindow { param($W) if ($null -eq $W) { return 'null' } return '{0}|{1}' -f $W.Handle, $W.IsCode }
-function Find-TestSessionWindow { param([int]$Id, [string]$Code = 'Code') return Format-SessionWindow (Find-SessionConsoleWindow -Processes $sessionProcs -Windows $sessionWins -Id $Id -CodeProcessName $Code) }
+function Format-OrcaWindow { param($W) if ($null -eq $W) { return 'null' } return '{0}|{1}|{2}' -f $W.Handle, $W.IsCode, $W.OrcaPath }
+function Find-TestSessionWindow { param([int]$Id, [string]$Code = 'Code') return Format-SessionWindow (Find-SessionConsoleWindow -Processes $sessionProcs -Windows $sessionWins -Id $Id -CodeProcessName $Code -AppWindows $sessionApps) }
+function Find-TestOrcaWindow { param([int]$Id) return Format-OrcaWindow (Find-SessionConsoleWindow -Processes $sessionProcs -Windows $sessionWins -Id $Id -AppWindows $sessionApps) }
 Assert-Equal (Find-TestSessionWindow 5) '2002|True' 'VS Code の統合ターミナルのセッションは、そのターミナルを映している VS Code のウィンドウ（VS Code のもの）'
 Assert-Equal (Find-TestSessionWindow 7) '8008|False' '親をたどると VS Code に着いても、Windows Terminal に映っていれば、その Windows Terminal のウィンドウ'
 Assert-Equal (Find-TestSessionWindow 10) 'null' '拡張機能のパネルのセッション（VS Code が起動した）は、ターミナルのウィンドウを持たない'
@@ -332,6 +360,106 @@ $kindEntry.Kind = 'interactive'
 Assert-Equal (Format-SessionWindow (Find-SessionWindow -Entry $kindEntry -Processes $sessionProcs -Windows $sessionWins)) '8008|False' '対話のセッションは、ターミナルのウィンドウを探す'
 $kindEntry.Kind = ''
 Assert-Equal (Format-SessionWindow (Find-SessionWindow -Entry $kindEntry -Processes $sessionProcs -Windows $sessionWins)) '8008|False' 'kind が分からなければ、対話のセッションとして探す'
+
+Write-Host '== Orca の区画のセッションのウィンドウ（Find-OrcaWindow）'
+Assert-Equal (Find-TestOrcaWindow 83) '8080|False|C:\Apps\orca\Orca.exe' 'Orca の区画のセッションは、区画を動かす Orca の親（ウィンドウを持つ Orca）のウィンドウ'
+Assert-Equal (Find-TestOrcaWindow 84) '8080|False|C:\Apps\orca\Orca.exe' 'Orca の区画の Codex のプロセスからも、同じ Orca のウィンドウに着く'
+Assert-Equal (Find-TestOrcaWindow 87) 'null' 'Orca のウィンドウが見えなければ、映しているウィンドウが分からない（VS Code で開く）'
+Assert-Equal (Find-TestOrcaWindow 90) 'null' '子より後に起動した Orca（PID の使い回し）はたどらない'
+Assert-Equal (Find-TestOrcaWindow 92) '8080|False|C:\Apps\orca\Orca.exe' '持ち主が Orca のウィンドウなら、そのウィンドウで、タブも選べるようにする'
+Assert-Equal (Find-TestOrcaWindow 94) 'null' '持ち主のない PseudoConsoleWindow から Orca を探す途中で VS Code に着いたら、それより上（VS Code を起動した Orca）はたどらない'
+Assert-Equal (Find-TestOrcaWindow 7) '8008|False|' 'Windows Terminal のセッションは、Orca として扱わない'
+Assert-Equal (Format-OrcaWindow (Find-SessionConsoleWindow -Processes $sessionProcs -Windows $sessionWins -Id 83)) 'null' 'Orca のウィンドウの一覧を渡さなければ（Orca が動いていなければ）、Orca の区画のセッションは見つからない'
+Assert-Equal (Find-TestOrcaWindow 12) '1011|False|' 'conhost が描く cmd のウィンドウは、Orca として扱わない'
+
+Write-Host '== ウィンドウを探す起点（Get-SessionWindowProcessId）と、Codex のセッションのウィンドウ'
+Assert-Equal (Get-SessionWindowProcessId ([pscustomobject]@{ Key = '83'; Kind = 'interactive' })) 83 'Claude の対話のセッションは、セッションのプロセスから探す'
+Assert-Equal (Get-SessionWindowProcessId ([pscustomobject]@{ Key = '83'; Kind = 'background' })) 0 'background のセッションは探さない'
+$codexTerminal = [pscustomobject]@{ Key = 'codex:t'; Kind = 'codex'; HostPid = 84; HostStart = $t0.AddSeconds(5).ToUniversalTime().Ticks; HostKind = 'terminal' }
+Assert-Equal (Get-SessionWindowProcessId $codexTerminal) 84 'ターミナルの中の Codex は、Codex のプロセスから探す（D-127）'
+Assert-Equal (Format-OrcaWindow (Find-SessionWindow -Entry $codexTerminal -Processes $sessionProcs -Windows $sessionWins -AppWindows $sessionApps)) '8080|False|C:\Apps\orca\Orca.exe' 'Orca の区画の Codex は、Orca のウィンドウ'
+$codexTerminal.HostPid = 7
+$codexTerminal.HostStart = $t0.AddSeconds(6).ToUniversalTime().Ticks
+Assert-Equal (Format-SessionWindow (Find-SessionWindow -Entry $codexTerminal -Processes $sessionProcs -Windows $sessionWins -AppWindows $sessionApps)) '8008|False' 'Orca の外のターミナルの Codex も、Claude と同じく、そのターミナルのウィンドウ（D-127）'
+$codexTerminal.HostStart = $t0.AddSeconds(9).ToUniversalTime().Ticks
+Assert-Equal (Find-SessionWindow -Entry $codexTerminal -Processes $sessionProcs -Windows $sessionWins -AppWindows $sessionApps) $null 'Codex のプロセスの起動時刻が記録と違えば（PID の使い回し）、探さない'
+$codexTerminal.HostStart = [long]0
+Assert-Equal (Format-SessionWindow (Find-SessionWindow -Entry $codexTerminal -Processes $sessionProcs -Windows $sessionWins -AppWindows $sessionApps)) '8008|False' '起動時刻が記録になければ、確かめずに探す'
+$codexTerminal.HostPid = 999
+$codexTerminal.HostStart = [long]1
+Assert-Equal (Find-SessionWindow -Entry $codexTerminal -Processes $sessionProcs -Windows $sessionWins -AppWindows $sessionApps) $null 'Codex のプロセスが一覧になければ、探さない'
+foreach ($hostKind in @('daemon', 'vscode', '')) {
+    $codexOther = [pscustomobject]@{ Key = 'codex:d'; Kind = 'codex'; HostPid = 84; HostStart = [long]0; HostKind = $hostKind }
+    Assert-Equal (Get-SessionWindowProcessId $codexOther) 0 "HostKind が「$hostKind」の Codex は、ウィンドウを探さない（作業フォルダを VS Code で開く）"
+}
+Assert-Equal (Get-SessionWindowProcessId ([pscustomobject]@{ Key = 'codex:z'; Kind = 'codex'; HostPid = 0; HostStart = [long]0; HostKind = 'terminal' })) 0 'Codex のプロセスが分からなければ、探さない'
+Assert-Equal "$(Get-SessionAgent ([pscustomobject]@{ Kind = 'codex' }))|$(Get-SessionAgent ([pscustomobject]@{ Kind = 'interactive' }))|$(Get-SessionAgent ([pscustomobject]@{ Kind = '' }))" 'codex|claude|claude' 'Orca のターミナルのエージェントの種類は、Codex なら codex、それ以外は claude'
+
+Write-Host '== Orca のターミナルの一覧（ConvertFrom-OrcaTerminalList）とタブの選び方（Select-OrcaTerminal）'
+function New-OrcaTerminal {
+    param([string]$Handle, [string]$Path, [string]$Agent = 'claude', [switch]$Orphaned)
+    $o = [ordered]@{ handle = $Handle; worktreePath = $Path; orphaned = [bool]$Orphaned }
+    if ($Agent) { $o.agentIdentity = $Agent }
+    return [pscustomobject]$o
+}
+function ConvertTo-OrcaListJson { param([object[]]$Terminals, [bool]$Ok = $true) return (ConvertTo-Json -Depth 5 ([ordered]@{ id = 'x'; ok = $Ok; result = [ordered]@{ terminals = @($Terminals); totalCount = @($Terminals).Count } })) }
+$oneJson = ConvertTo-OrcaListJson @((New-OrcaTerminal 'term_a' 'C:/work/repo'))
+$parsed = ConvertFrom-OrcaTerminalList $oneJson
+Assert-Equal "$($parsed.Count)|$($parsed[0].handle)" '1|term_a' 'ターミナルが 1 つでも、一覧（配列）として読む'
+Assert-Equal (ConvertFrom-OrcaTerminalList (ConvertTo-OrcaListJson @())).Count 0 'ターミナルがなければ空'
+Assert-Equal (ConvertFrom-OrcaTerminalList ("warning: something`n" + $oneJson)).Count 1 'JSON の前に行が混ざっても読む'
+Assert-Throws { ConvertFrom-OrcaTerminalList (ConvertTo-OrcaListJson @((New-OrcaTerminal 'term_a' 'C:/work/repo')) -Ok $false) } 'ok でなければ例外'
+Assert-Throws { ConvertFrom-OrcaTerminalList 'Orca is not running' } 'JSON でなければ例外'
+Assert-Throws { ConvertFrom-OrcaTerminalList '' } '空なら例外'
+
+$orcaTerms = @(
+    (New-OrcaTerminal 'term_repo' 'C:/work/repo')
+    (New-OrcaTerminal 'term_repo_codex' 'C:/work/repo' -Agent 'codex')
+    (New-OrcaTerminal 'term_repo_shell' 'C:/work/repo' -Agent '')
+    (New-OrcaTerminal 'term_nested' 'C:/work/repo/.worktrees/b')
+    (New-OrcaTerminal 'term_repo2' 'C:/work/repo2')
+    (New-OrcaTerminal 'term_two_1' 'C:/work/two')
+    (New-OrcaTerminal 'term_two_2' 'C:/work/two')
+    (New-OrcaTerminal 'term_orphan' 'C:/work/orphan' -Orphaned)
+    (New-OrcaTerminal 'term_case' 'c:/Work/Case/')
+)
+Assert-Equal (Select-OrcaTerminal -Terminals $orcaTerms -Cwd 'C:\work\repo' -Agent 'claude') 'term_repo' '同じ worktree の Claude のターミナルが 1 つなら、そのタブ'
+Assert-Equal (Select-OrcaTerminal -Terminals $orcaTerms -Cwd 'C:\work\repo\src\app' -Agent 'claude') 'term_repo' '作業フォルダが worktree の中のフォルダでも、その worktree のタブ'
+Assert-Equal (Select-OrcaTerminal -Terminals $orcaTerms -Cwd 'C:\work\repo' -Agent 'codex') 'term_repo_codex' 'Codex のセッションは、Codex のターミナル'
+Assert-Equal (Select-OrcaTerminal -Terminals $orcaTerms -Cwd 'C:\work\repo\.worktrees\b' -Agent 'claude') 'term_nested' 'worktree の中に worktree があれば、最も深い worktree のタブ'
+Assert-Equal (Select-OrcaTerminal -Terminals $orcaTerms -Cwd 'C:\work\repo2' -Agent 'claude') 'term_repo2' '名前の前の部分が同じ別のフォルダ（repo と repo2）を取り違えない'
+Assert-Equal (Select-OrcaTerminal -Terminals $orcaTerms -Cwd 'C:\work\two' -Agent 'claude') $null '同じ worktree に Claude のターミナルが 2 つあれば、見分けられないので選ばない'
+Assert-Equal (Select-OrcaTerminal -Terminals $orcaTerms -Cwd 'C:\work\orphan' -Agent 'claude') $null '区画のなくなったターミナル（orphaned）は選ばない'
+Assert-Equal (Select-OrcaTerminal -Terminals $orcaTerms -Cwd 'C:\WORK\case\x' -Agent 'Claude') 'term_case' '/ と \、大文字・小文字、末尾の / を区別しない'
+Assert-Equal (Select-OrcaTerminal -Terminals $orcaTerms -Cwd 'C:\work\other' -Agent 'claude') $null '作業フォルダを含む worktree がなければ選ばない'
+Assert-Equal (Select-OrcaTerminal -Terminals $orcaTerms -Cwd 'C:\work\two' -Agent 'codex') $null '同じ種類のエージェントのターミナルがなければ選ばない'
+Assert-Equal (Select-OrcaTerminal -Terminals $orcaTerms -Cwd '' -Agent 'claude') $null '作業フォルダが分からなければ選ばない'
+Assert-Equal (Select-OrcaTerminal -Terminals @() -Cwd 'C:\work\repo' -Agent 'claude') $null 'ターミナルがなければ選ばない'
+
+Write-Host '== Orca の CLI（Get-OrcaCliPath、New-OrcaCliStartInfo）'
+$orcaTmp = Join-Path ([IO.Path]::GetTempPath()) ('andon-orca-' + [guid]::NewGuid().ToString('N'))
+try {
+    New-Item -ItemType Directory -Path (Join-Path $orcaTmp 'resources\bin') -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $orcaTmp 'resources\bin\orca.exe'), '')
+    Assert-PathEqual (Get-OrcaCliPath -OrcaPath (Join-Path $orcaTmp 'Orca.exe')) (Join-Path $orcaTmp 'resources\bin\orca.exe') 'CLI は、Orca.exe と同じフォルダの resources\bin\orca.exe'
+    Assert-Equal (Get-OrcaCliPath -OrcaPath (Join-Path $orcaTmp 'none\Orca.exe')) $null 'CLI がなければ $null（ウィンドウを前面に出すだけ）'
+    Assert-Equal (Get-OrcaCliPath -OrcaPath '') $null 'Orca.exe のパスが分からなければ $null'
+}
+finally { Remove-Item -LiteralPath $orcaTmp -Recurse -Force -ErrorAction SilentlyContinue }
+$env:ORCA_ANDON_TEST = '1'
+try {
+    $psi = New-OrcaCliStartInfo -Cli 'C:\Apps\orca\resources\bin\orca.exe' -Arguments @('terminal', 'switch', '--terminal', 'term_a', '--json')
+    Assert-Equal $psi.Arguments '"terminal" "switch" "--terminal" "term_a" "--json"' 'CLI の引数は、1 つずつ引用して渡す'
+    Assert-Equal "$($psi.UseShellExecute)|$($psi.CreateNoWindow)|$($psi.RedirectStandardOutput)" 'False|True|False' 'CLI はウィンドウを出さずに起動する。切り替えでは出力を受け取らない'
+    Assert-Equal $psi.EnvironmentVariables.ContainsKey('ORCA_ANDON_TEST') $false 'andon を Orca の区画から起動していても、区画の環境変数（ORCA_ で始まるもの）を CLI に渡さない'
+    Assert-True $psi.EnvironmentVariables.ContainsKey('PATH') 'ほかの環境変数は渡す'
+    $psi = New-OrcaCliStartInfo -Cli 'C:\Apps\orca\resources\bin\orca.exe' -Arguments @('terminal', 'list', '--json') -Capture
+    Assert-Equal "$($psi.RedirectStandardOutput)|$($psi.StandardOutputEncoding.WebName)" 'True|utf-8' '一覧は、標準出力を UTF-8 で受け取る'
+}
+finally { Remove-Item Env:\ORCA_ANDON_TEST -ErrorAction SilentlyContinue }
+$orcaApps = $null
+try { $orcaApps = @(Get-OrcaWindowList) } catch { Write-Host "       $($_.Exception.Message)" }
+Assert-True ($null -ne $orcaApps) 'Orca のウィンドウの一覧を取れる（Orca が動いていなければ空）'
 
 Write-Host '== コンソールのウィンドウの一覧（Get-ConsoleWindowList。C# の型を、この PowerShell で定義できるか）'
 $consoleWins = $null
@@ -593,6 +721,10 @@ Write-Host '== VS Code がなくても起動する・セッションを映して
 Assert-Equal ($andonText.Contains("MessageBox]::Show('VS Code の code.cmd")) $false 'VS Code（code.cmd）が見つからなくても起動する（メッセージを出して終わらない）'
 Assert-True ($andonText.Contains("`$miOpen = `$menu.Items.Add('開く')")) '行の右クリックのメニューは「開く」（VS Code の外のセッションも開く）'
 Assert-True ($andonText -match '(?s)function Open-Session \{.{0,900}?Find-SessionWindow -Entry \$Entry') 'セッションを開くときは、まずセッションを映しているウィンドウを探す'
+Assert-True ($andonText -match '(?s)function Open-Session \{.{0,1500}?\[AndonSessionWindow\]::Show\(\[long\]\$window\.Handle\).{0,200}?if \(\$window\.OrcaPath\) \{\s+try \{ Start-OrcaTabSwitch') 'Orca のセッションは、先に Orca のウィンドウを前面に出してから、タブを切り替える（D-124）'
+Assert-True ($andonText -match 'Find-SessionWindow -Entry \$e -CodeProcessName \$script:CodeProcessName -Processes \$procs -Windows \$wins -AppWindows \$apps') '点滅を始めるときも、Orca のウィンドウの一覧を渡す（Orca のセッションを見分ける）'
+Assert-True ($andonText -match '(?s)\$script:OrcaTimer\.Add_Tick\(\{\s+try \{ Update-OrcaTabSwitch') 'Orca の CLI は、timer で受け取る（andon の画面を止めない）'
+Assert-True ($andonText -match '(?s)\$form\.Add_FormClosed\(\{.{0,200}?Stop-OrcaTabSwitch') '終了するとき、動いている Orca の CLI を止める'
 Assert-True ($andonText -match '(?m)^try \{ Initialize-SessionWindowType \} catch \{ \}') '起動したときに、ウィンドウを探す型を定義しておく（初めてクリックしたときに待たせない）'
 Assert-Equal ([regex]::Matches($andonText, '-ForegroundWindow \(\[AndonWindow\]::GetForegroundWindow\(\)\.ToInt64\(\)\)').Count) 2 '点滅を始めるときと止めるときに、前面のウィンドウも渡す（ターミナルのセッションを見分ける）'
 Assert-True ($installText.Contains('注意: VS Code の code.cmd が見つかりません。andon は動きますが、クリックしても VS Code では開けません（cmd や PowerShell のウィンドウは前面に出せます）。')) 'install.ps1 は、VS Code がなくても andon が動くことを伝える'
@@ -1926,7 +2058,11 @@ $alert = Update-CodexState -Sessions @((New-CodexSession 'a' 'idle' 1), (New-Cod
 Assert-Equal $alert $false '初めて見た待機と実行中では知らせない'
 Assert-Equal "$(Get-StatusLabel $script:State['codex:a'])|$(Get-StatusLabel $script:State['codex:b'])" '待機|実行中' 'Codex のセッションの待機と実行中'
 Assert-Equal "$($script:State['codex:a'].Kind)|$($script:State['codex:a'].Sdk)" 'codex|False' 'Codex のセッションの Kind は codex。デーモンのセッションは隠さない'
-Assert-Equal (Find-SessionWindow -Entry $script:State['codex:a'] -Processes @() -Windows @()) $null 'Codex のセッションはウィンドウを探さない'
+Assert-Equal (Find-SessionWindow -Entry $script:State['codex:a'] -Processes @() -Windows @() -AppWindows @()) $null '共有のデーモンの Codex のセッションはウィンドウを探さない'
+$null = Update-CodexState -Sessions @((New-CodexSession 'a' 'idle' 1), (New-CodexSession 'b' 'busy' 1), (New-CodexSession 't' 'busy' 1 -Kind 'terminal' -HostPid 84)) -Now $t0
+Assert-Equal "$($script:State['codex:t'].HostPid)|$($script:State['codex:t'].HostStart)|$($script:State['codex:t'].HostKind)" '84|1|terminal' 'Codex のセッションに、Codex のプロセスと種類を覚える（ターミナルの中ならウィンドウを探す）'
+Assert-Equal (Get-SessionWindowProcessId $script:State['codex:t']) 84 '記録から作った Codex のセッションも、ターミナルの中なら Codex のプロセスから探す'
+$null = Update-CodexState -Sessions @((New-CodexSession 'a' 'idle' 1), (New-CodexSession 'b' 'busy' 1)) -Now $t0
 $alert = Update-CodexState -Sessions @((New-CodexSession 'a' 'idle' 1), (New-CodexSession 'b' 'waiting' 2 -WaitingFor 'permission prompt')) -Now $t0.AddSeconds(5)
 Assert-Equal "$alert|$(Get-StatusLabel $script:State['codex:b'])" 'True|許可待ち' '許可待ちになったら知らせる'
 $alert = Update-CodexState -Sessions @((New-CodexSession 'a' 'idle' 1), (New-CodexSession 'b' 'idle' 3 -Done)) -Now $t0.AddSeconds(10)
