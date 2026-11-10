@@ -135,6 +135,9 @@ function New-StateEntry {
         CodexAt = $null   # Codex のセッションの、最後に当てたイベントの時刻（Update-CodexState）
         # Codex のセッションの、Codex のプロセス（PID と起動時刻（UTC の Ticks））と、その種類（terminal、daemon、vscode）
         HostPid = 0; HostStart = [long]0; HostKind = ''
+        # Orca のリモート（ペアリング先）のセッションの、エージェントの種類（claude か codex）と、ペアリング先（EnvId、EnvName）と
+        # 区画（PaneKey）。Update-OrcaRemoteState が入れる。それ以外のセッションは、空と $null
+        Agent = ''; Remote = $null
     }
     if ($entry.Unread) { $entry.AlertAt = $Now }
     return $entry
@@ -158,7 +161,8 @@ function Set-EntryStatus {
 
 function Update-SessionState {
     <# claude agents --json の一覧を取り込み、新しく「待ち」か「完了」になったセッションがあれば $true を返す。
-       Codex のセッション（キーが codex: で始まるもの）は Update-CodexState が扱うので、ここでは消さない #>
+       Codex のセッション（キーが codex: で始まるもの）は Update-CodexState が、Orca のリモートのセッション（キーが orca: で
+       始まるもの）は Update-OrcaRemoteState が扱うので、ここでは消さない #>
     param([object[]]$Sessions, [datetime]$Now)
     $alert = $false
     $alive = @{}
@@ -189,7 +193,7 @@ function Update-SessionState {
         if ($null -ne $startedAt) { $entry.StartedAt = $startedAt }
     }
     foreach ($k in @($script:State.Keys)) {
-        if (-not (Test-CodexKey $k) -and -not $alive.ContainsKey($k)) { $script:State.Remove($k) }
+        if (-not (Test-CodexKey $k) -and -not (Test-OrcaKey $k) -and -not $alive.ContainsKey($k)) { $script:State.Remove($k) }
     }
     return $alert
 }
@@ -272,7 +276,7 @@ function Get-AlertNotice {
     if ($text.Length -gt 250) { $text = $text.Substring(0, 249) + '…' }   # 通知の本文は 255 文字まで
     # 題は、先頭のセッションで決める（Claude Code か Codex か）
     $tool = 'Claude Code'
-    if (Test-CodexKey $hits[0].Key) { $tool = 'Codex' }
+    if ((Test-CodexKey $hits[0].Key) -or $hits[0].Agent -eq 'codex') { $tool = 'Codex' }
     $heading = "$tool が完了しました"
     if ((Get-Rank $hits[0]) -eq 0) { $heading = "$tool が待っています" }
     return [pscustomobject]@{ Title = $heading; Text = $text; Key = $hits[0].Key }
@@ -711,7 +715,8 @@ function Get-SessionWindowProcessId {
          起動したターミナルで動いていないので探さない（README のとおり、作業フォルダを VS Code で開く）。kind が分からなければ、
          対話のセッションとして探す
        - Codex のセッションは、Codex のプロセスがターミナルの中の codex.exe（HostKind が terminal）のときだけ、そのプロセス（D-127）。
-         共有のデーモン（daemon）と VS Code の拡張機能（vscode）は、どのターミナルで動いているかが分からないので探さない #>
+         共有のデーモン（daemon）と VS Code の拡張機能（vscode）は、どのターミナルで動いているかが分からないので探さない
+       - Orca のリモートのセッション（Kind が orca）は、この PC にプロセスがないので探さない #>
     param($Entry)
     if ($Entry.Kind -eq 'codex') {
         if ($Entry.HostKind -eq 'terminal' -and [int]$Entry.HostPid -gt 0) { return [int]$Entry.HostPid }
@@ -745,9 +750,13 @@ function Find-SessionWindow {
 function Get-OrcaSessionKeys {
     <# セッションのキー -> ウィンドウ（Find-SessionWindow の結果。分からなければ $null）のうち、Orca の区画のセッション
        （ウィンドウが Orca のもの。OrcaPath がある）のキー -> $true。Orca のセッションを通知しない設定のとき、Get-AlertNotice の
-       $Quiet に渡す（D-136）。ウィンドウを調べられなかったとき（$Windows が $null）は空（通知する側に倒す） #>
-    param([hashtable]$Windows)
+       $Quiet に渡す（D-136）。ウィンドウを調べられなかったとき（$Windows が $null）は、区画のセッションは選ばない（通知する側に倒す）。
+       Orca のリモートのセッション（$Entries のうち、キーが orca: で始まるもの）は、ウィンドウを調べなくても Orca のセッション #>
+    param([hashtable]$Windows, [object[]]$Entries = $null)
     $keys = @{}
+    foreach ($e in @($Entries)) {
+        if ($null -ne $e -and (Test-OrcaKey ([string]$e.Key))) { $keys[[string]$e.Key] = $true }
+    }
     if ($null -eq $Windows) { return $keys }
     foreach ($k in @($Windows.Keys)) {
         $w = $Windows[$k]
@@ -759,7 +768,7 @@ function Get-OrcaSessionKeys {
 function Get-SessionAgent {
     <# Orca がターミナルに付けるエージェントの種類（orca terminal list --json の agentIdentity）のうち、このセッションのもの #>
     param($Entry)
-    if ($Entry.Kind -eq 'codex') { return 'codex' }
+    if ($Entry.Kind -eq 'codex' -or $Entry.Agent -eq 'codex') { return 'codex' }
     return 'claude'
 }
 
@@ -1495,6 +1504,246 @@ function Clear-CodexState {
         if (Test-CodexKey $k) { $script:State.Remove($k); $removed = $true }
     }
     return $removed
+}
+
+# ---------------------------------------------------------------------------
+# Orca のリモート（ペアリングした Orca サーバー）のセッション（D-141、D-143、D-145、D-147）。
+# 利用者がトレイのメニューで選んだペアリング先だけを、Orca の CLI（orca worktree ps --environment <ID> --json）で読む。
+# CLI は、この PC からペアリング先へ通信する。この PC で Orca が動いているときだけ読み、andon からは Orca を起動しない。
+# 出力にはプロンプトや返事の文字も入るが、使うのは、状態、エージェントの種類、区画、workspace の名前、パス、状態が変わった時刻だけ。
+# ほかは捨て、保存しない。CLI が返す文字は信用せず、ID の形と長さを確かめてから使う。
+# セッションのキーは orca:<ペアリング先の ID>:<区画（paneKey）>。この PC にプロセスがないので、ウィンドウは探さない
+# ---------------------------------------------------------------------------
+
+$script:OrcaKeyPrefix = 'orca:'
+
+function Test-OrcaKey {
+    param([string]$Key)
+    return $Key.StartsWith($script:OrcaKeyPrefix, [StringComparison]::Ordinal)
+}
+
+function Test-OrcaId {
+    <# Orca の CLI が返す ID（ペアリング先の ID、区画の paneKey、ターミナルの handle）の形。CLI の引数やキーに使うので、
+       英数字で始まり、英数字と _ . : - だけの、128 文字までのものに限る #>
+    param([string]$Value)
+    return $Value -cmatch '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
+}
+
+function ConvertTo-OrcaText {
+    <# Orca の CLI が返す文字（名前、パス）を、一覧に出せる 1 行にする。制御文字を空白にし、前後の空白を除き、$Max 文字で切る #>
+    param($Value, [int]$Max = 200)
+    if ($null -eq $Value -or $Value -isnot [string]) { return '' }
+    $text = ([regex]::Replace([string]$Value, '[\x00-\x1F\x7F]', ' ')).Trim()
+    if ($text.Length -gt $Max) { $text = $text.Substring(0, $Max) }
+    return $text
+}
+
+function ConvertFrom-OrcaResult {
+    <# Orca の CLI の --json の出力から、result を返す。空、JSON でない、ok でなければ例外。$What は例外に書くコマンドの名前 #>
+    param([string]$Json, [string]$What = 'orca')
+    if ([string]::IsNullOrWhiteSpace($Json)) { throw "$What の出力が空です" }
+    $start = $Json.IndexOf('{')
+    $end = $Json.LastIndexOf('}')
+    if ($start -lt 0 -or $end -lt $start) { throw "$What の出力が JSON ではありません" }
+    $o = ConvertFrom-Json -InputObject $Json.Substring($start, $end - $start + 1) -ErrorAction Stop
+    if ((Get-JsonValue $o 'ok') -ne $true) { throw "$What が失敗しました" }
+    return (Get-JsonValue $o 'result')
+}
+
+function ConvertFrom-OrcaEnvironmentList {
+    <# orca environment list --json の出力から、ペアリング先の一覧（Id、Name）を返す。ID の形が違うものは除く。
+       名前がなければ ID を名前にする。読めなければ例外 #>
+    param([string]$Json)
+    $result = ConvertFrom-OrcaResult -Json $Json -What 'orca environment list --json'
+    $list = @()
+    foreach ($e in @(Get-JsonValue $result 'environments')) {
+        if ($null -eq $e) { continue }
+        $id = Get-JsonValue $e 'id'
+        if ($id -isnot [string] -or -not (Test-OrcaId $id)) { continue }
+        $name = ConvertTo-OrcaText (Get-JsonValue $e 'name') -Max 60
+        if (-not $name) { $name = $id }
+        $list += [pscustomobject]@{ Id = $id; Name = $name }
+    }
+    return , $list
+}
+
+function ConvertTo-OrcaRemoteSessions {
+    <# orca worktree ps --environment <ID> --json の出力から、ペアリング先 $EnvId のセッションの一覧を作る。読めなければ例外。
+       一覧が切れていれば（result.truncated）も例外（切れた分のセッションを、終わったものとして消さないため）。
+       - エージェントの種類（agentType）が claude か codex の行だけを使う。ほかのエージェントは出さない
+       - ほかの区画から起動された行（parentPaneKey があるもの）は出さない
+       - 区画（paneKey）の形が違う行は出さない
+       - 状態（state）は、working を実行中（busy）、done を完了（idle で Done）、idle を待機（idle）にする。
+         中断した done（interrupted）は、完了にしない（手元で止めたので）。
+         知らない状態は、英小文字と - だけのものを、そのまま状態にする（一覧には出すが、知らせない。Get-Rank は 3）
+       - At は、状態が変わった時刻（stateStartedAt。ペアリング先の時計）。変わったかを見るためだけに使い、経過には使わない
+       - Active は、実行中か待ちか（取りに行く間隔を決める。Get-OrcaRemoteInterval） #>
+    param([string]$Json, [string]$EnvId)
+    if (-not (Test-OrcaId $EnvId)) { throw 'ペアリング先の ID の形が違います' }
+    $result = ConvertFrom-OrcaResult -Json $Json -What 'orca worktree ps --json'
+    if ((Get-JsonValue $result 'truncated') -eq $true) { throw 'orca worktree ps --json の一覧が切れています' }
+    $sessions = @()
+    $seen = @{}
+    foreach ($w in @(Get-JsonValue $result 'worktrees')) {
+        if ($null -eq $w) { continue }
+        $name = ConvertTo-OrcaText (Get-JsonValue $w 'displayName') -Max 100
+        $path = ConvertTo-OrcaText (Get-JsonValue $w 'path') -Max 260
+        foreach ($a in @(Get-JsonValue $w 'agents')) {
+            if ($null -eq $a) { continue }
+            $agent = Get-JsonValue $a 'agentType'
+            if ($agent -isnot [string] -or @('claude', 'codex') -cnotcontains $agent) { continue }
+            if (Get-JsonValue $a 'parentPaneKey') { continue }
+            $pane = Get-JsonValue $a 'paneKey'
+            if ($pane -isnot [string] -or -not (Test-OrcaId $pane)) { continue }
+            $key = $script:OrcaKeyPrefix + $EnvId + ':' + $pane
+            if ($seen.ContainsKey($key)) { continue }
+            $state = Get-JsonValue $a 'state'
+            if ($state -isnot [string]) { continue }
+            $status = $null
+            $done = $false
+            switch -CaseSensitive ($state) {
+                'working' { $status = 'busy' }
+                'done' { $status = 'idle'; $done = ((Get-JsonValue $a 'interrupted') -ne $true) }
+                'idle' { $status = 'idle' }
+                default { if ($state -cmatch '^[a-z][a-z-]{0,23}$' -and @('busy', 'waiting') -cnotcontains $state) { $status = $state } }
+            }
+            if (-not $status) { continue }
+            $at = [long]0
+            $started = Get-JsonValue $a 'stateStartedAt'
+            if ($started -is [int] -or $started -is [long] -or $started -is [double] -or $started -is [decimal]) {
+                try { $at = [long]$started } catch { $at = [long]0 }
+            }
+            $seen[$key] = $true
+            $sessions += [pscustomobject]@{
+                Key = $key; Status = $status; WaitingFor = ''; Done = $done; Name = $name; Cwd = $path
+                Agent = $agent; PaneKey = $pane; At = $at; Active = ($status -eq 'busy' -or $status -eq 'waiting')
+            }
+        }
+    }
+    return , $sessions
+}
+
+function Update-OrcaRemoteState {
+    <# ペアリング先 $EnvId のセッションの一覧（ConvertTo-OrcaRemoteSessions の形）を取り込み、新しく待ち・完了になったものが
+       あれば $true を返す。一覧にない、そのペアリング先のセッションは消す。ほかのセッションには触れない。
+       完了（Done）は、状態が変わった時刻（At）が前と違えば、前の状態によらず未確認にする（取りに行く間隔が長いあいだに、
+       実行中を見ないまま次の完了になることがあるため。D-147）。初めて見たときに完了しているものは、いつ終わったか
+       分からないので既読にする（New-StateEntry） #>
+    param([object[]]$Sessions, [string]$EnvId, [string]$EnvName, [datetime]$Now)
+    $alert = $false
+    $alive = @{}
+    $prefix = $script:OrcaKeyPrefix + $EnvId + ':'
+    foreach ($s in $Sessions) {
+        if (-not $s -or -not ([string]$s.Key).StartsWith($prefix, [StringComparison]::Ordinal)) { continue }
+        $alive[$s.Key] = $true
+        $entry = $script:State[$s.Key]
+        if (-not $entry) {
+            $entry = New-StateEntry -Key $s.Key -Status $s.Status -StartedAt $null -Now $Now
+            $entry.Kind = 'orca'    # この PC にプロセスがないので、ウィンドウは探さない（Get-SessionWindowProcessId）
+            $entry.Sdk = $false     # 起動引数は調べない
+            $script:State[$s.Key] = $entry
+            if ($entry.Unread) { $alert = $true }
+        }
+        elseif ($s.Done -and $entry.CodexAt -ne $s.At) {
+            if ($entry.Status -ne $s.Status) { $entry.Status = $s.Status; $entry.Since = $Now }
+            $entry.Unread = $true
+            $entry.AlertAt = $Now
+            $alert = $true
+        }
+        elseif (Set-EntryStatus -Entry $entry -Status $s.Status -Now $Now) {
+            # 完了でない idle（中断した done など）に変わったときは、知らせない
+            if ($s.Status -eq 'idle' -and -not $s.Done) { $entry.Unread = $false; $entry.AlertAt = $null }
+            else { $alert = $true }
+        }
+        $entry.CodexAt = $s.At   # 状態が変わった時刻（ペアリング先の時計）。Codex のセッションと同じ項目に置く
+        $entry.Name = $s.Name
+        $entry.Cwd = $s.Cwd
+        $entry.WaitingFor = $s.WaitingFor
+        $entry.Agent = $s.Agent
+        $entry.Remote = [pscustomobject]@{ EnvId = $EnvId; EnvName = $EnvName; PaneKey = $s.PaneKey }
+    }
+    foreach ($k in @($script:State.Keys)) {
+        if (([string]$k).StartsWith($prefix, [StringComparison]::Ordinal) -and -not $alive.ContainsKey($k)) { $script:State.Remove($k) }
+    }
+    return $alert
+}
+
+function Clear-OrcaRemoteState {
+    <# Orca のリモートのセッションを消す（ペアリング先の選択を外したとき、Orca が動いていないとき、続けて読めなかったとき）。
+       $EnvId を渡せば、そのペアリング先のものだけ。消したものがあれば $true #>
+    param([string]$EnvId = '')
+    $prefix = $script:OrcaKeyPrefix
+    if ($EnvId) { $prefix = $script:OrcaKeyPrefix + $EnvId + ':' }
+    $removed = $false
+    foreach ($k in @($script:State.Keys)) {
+        if (([string]$k).StartsWith($prefix, [StringComparison]::Ordinal)) { $script:State.Remove($k); $removed = $true }
+    }
+    return $removed
+}
+
+function Get-OrcaRemoteInterval {
+    <# 次にペアリング先を読むまでの秒数（D-147）。実行中か待ちのセッションが 1 つでもあれば $ActiveSec、なければ $IdleSec。
+       完了や待機の行は、Orca に残り続けるので、数えない。読めなかったとき（$Failed）は $IdleSec #>
+    param([object[]]$Sessions, [switch]$Failed, [int]$ActiveSec = 10, [int]$IdleSec = 60)
+    if ($Failed) { return $IdleSec }
+    foreach ($s in @($Sessions)) { if ($s -and $s.Active) { return $ActiveSec } }
+    return $IdleSec
+}
+
+function Get-OrcaRemoteStep {
+    <# ペアリング先を読む処理が、今の回にすることを決める。
+       - clear: 選んだペアリング先がない、または Orca が動いていない。動かしている CLI を止め、リモートのセッションを消す
+       - wait: CLI が動いていて、まだ返っていない
+       - timeout: CLI が $TimeoutSec たっても返らない。止めて、読めなかったものとして扱う
+       - collect: CLI が返った。出力を取り込む
+       - start: 次に読む時刻（$Next）になった。CLI を起動する
+       - none: 何もしない #>
+    param([datetime]$Now, [int]$Selected, [bool]$OrcaRunning, [bool]$Running, [bool]$Completed, $Started, $Next, [int]$TimeoutSec = 15)
+    if ($Selected -le 0 -or -not $OrcaRunning) { return 'clear' }
+    if ($Running) {
+        if ($Completed) { return 'collect' }
+        if ($Started -is [datetime] -and ($Now - $Started).TotalSeconds -gt $TimeoutSec) { return 'timeout' }
+        return 'wait'
+    }
+    if ($Next -isnot [datetime] -or $Now -ge $Next) { return 'start' }
+    return 'none'
+}
+
+function Select-OrcaTerminalByPane {
+    <# Orca のターミナルの一覧（ConvertFrom-OrcaTerminalList）から、区画（paneKey。<tabId>:<leafId>）のターミナルの handle を選ぶ。
+       1 つだけならその handle。なければ、2 つ以上あれば、handle の形が違えば $null #>
+    param([object[]]$Terminals, [string]$PaneKey)
+    if (-not $PaneKey) { return $null }
+    $hits = @()
+    foreach ($t in $Terminals) {
+        if ($null -eq $t) { continue }
+        $tab = Get-JsonValue $t 'tabId'
+        $leaf = Get-JsonValue $t 'leafId'
+        if ($tab -isnot [string] -or $leaf -isnot [string] -or -not $tab -or -not $leaf) { continue }
+        if (($tab + ':' + $leaf) -cne $PaneKey) { continue }
+        $hits += [string](Get-JsonValue $t 'handle')
+    }
+    if ($hits.Count -eq 1 -and (Test-OrcaId $hits[0])) { return $hits[0] }
+    return $null
+}
+
+function Get-EntryFolder {
+    <# 一覧の「フォルダ」に出す文字。Orca のリモートのセッションは、ペアリング先の名前を前に付ける（D-145）。それ以外は作業フォルダ #>
+    param($Entry)
+    if ($Entry.Remote -and $Entry.Remote.EnvName) { return ('{0}: {1}' -f $Entry.Remote.EnvName, $Entry.Cwd) }
+    return [string]$Entry.Cwd
+}
+
+function ConvertFrom-OrcaRemoteSetting {
+    <# 設定に覚えた、選んだペアリング先の ID の並び（; 区切り）を、ID の配列にする。形の違うものと重なりは除く。16 個まで #>
+    param($Value)
+    $ids = @()
+    if ($Value -isnot [string]) { return , $ids }
+    foreach ($part in $Value.Split(';')) {
+        $id = $part.Trim()
+        if ((Test-OrcaId $id) -and $ids -cnotcontains $id -and $ids.Count -lt 16) { $ids += $id }
+    }
+    return , $ids
 }
 
 # ドットソースされたときは関数の定義だけで止める
