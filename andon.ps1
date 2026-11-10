@@ -1821,8 +1821,14 @@ function Invoke-Alert {
     if ($form.ContainsFocus) { return }
     $hits = @($script:State.Values | Where-Object { $_.AlertAt -eq $Now -and (Get-Rank $_) -le 1 })
     if ($hits.Count -eq 0) { return }
+    # ウィンドウは、点滅させるとき（andon を表示しているとき）と、Orca のセッションを通知から外すときに調べる。
+    # andon をトレイにしまっていて、Orca も動いていなければ、調べない
     $windows = $null
-    if ($form.Visible -or -not $script:OrcaNotify) {
+    $scan = $form.Visible
+    if (-not $scan -and -not $script:OrcaNotify) {
+        try { $scan = @(Get-OrcaWindowList).Count -gt 0 } catch { $scan = $false }
+    }
+    if ($scan) {
         try { $windows = Get-AlertWindows -Hits $hits } catch { $windows = $null }
     }
     if ($form.Visible) { Start-Flash -Hits $hits -Windows $windows }
