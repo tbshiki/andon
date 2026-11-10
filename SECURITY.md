@@ -27,12 +27,12 @@
 - Claude Code の設定ディレクトリ（既定は `~/.claude`）にある `sessions/*.json` の、ファイル名と更新時刻を見る（中身は読まない。`*.key` には触れない）
 - セッションの作業フォルダとその周辺の `*.code-workspace` を読み、開く対象を VS Code（`Code.exe`）に渡す
 - プロセスの一覧（`Win32_Process` の PID、親の PID、起動時刻、名前）を読み、セッションのプロセス（Codex のセッションは、記録した Codex のプロセスがターミナルの中の `codex.exe` のときだけ、そのプロセス）から親へたどる。新しいセッションが出たときは、拡張機能のパネルのセッションかを見分けるため、そのプロセスの起動引数も読む
-- セッションの行や通知をクリックしたときと、点滅を始めるときに、コンソールのウィンドウ（Windows Terminal や VS Code の統合ターミナルが持つ、隠れたウィンドウを含む）を数え、そのクラスと持ち主を見る。クリックしたときは、セッションを映しているウィンドウを前面に出す（最小化していれば元に戻す）。Windows が断ったときは、前面のウィンドウの入力に一時的につないで（`AttachThreadInput`）、もう一度試す
-- 同じとき、Orca のプロセス（`Orca.exe`）が見えるウィンドウを持つかと、その実行ファイルのパスを読む。セッションが Orca の区画で動いていれば、Orca のウィンドウを前面に出す
-- そのあと、その `Orca.exe` と同じフォルダの Orca の CLI（`resources\bin\orca.exe`。PATH は見ない）を、ウィンドウを出さずに起動し、`orca terminal list --json` で Orca のターミナルの一覧（handle、worktree のパス、エージェントの種類）を読む。セッションのタブが 1 つに決まれば、`orca terminal switch --terminal <handle> --json` でそのタブに切り替える。CLI には `ORCA_` で始まる環境変数を渡さない。5 秒で終わらなければ止める。Orca の内部のファイルは読まない
+- セッションの行や通知をクリックしたときと、新しく待ちや完了が出たとき（点滅と通知の前）に、コンソールのウィンドウ（Windows Terminal や VS Code の統合ターミナルが持つ、隠れたウィンドウを含む）を数え、そのクラスと持ち主を見る。クリックしたときは、セッションを映しているウィンドウを前面に出す（最小化していれば元に戻す）。Windows が断ったときは、前面のウィンドウの入力に一時的につないで（`AttachThreadInput`）、もう一度試す
+- 同じとき、Orca のプロセス（`Orca.exe`）が見えるウィンドウを持つかと、その実行ファイルのパスを読む。セッションが Orca の区画で動いていれば、クリックのときは Orca のウィンドウを前面に出し、新しく待ちや完了が出たときは、「Orca のセッションも通知する」を選んでいなければ Windows の通知を出さない。トレイのメニューを開いたときも、このメニューを出すかを決めるために、Orca が動いているかを見る
+- クリックのときは、そのあと、その `Orca.exe` と同じフォルダの Orca の CLI（`resources\bin\orca.exe`。PATH は見ない）を、ウィンドウを出さずに起動し、`orca terminal list --json` で Orca のターミナルの一覧（handle、worktree のパス、エージェントの種類）を読む。セッションのタブが 1 つに決まれば、`orca terminal switch --terminal <handle> --json` でそのタブに切り替える。CLI には `ORCA_` で始まる環境変数を渡さない。5 秒で終わらなければ止める。Orca の内部のファイルは読まない
 - 点滅を止めるため、前面のウィンドウを調べ、VS Code のウィンドウなら題名を読む
 - 通知の送り元を `andon` と表示させるため、`HKCU\Software\Classes\AppUserModelId\tbshiki.andon` に表示名を書く
-- ウィンドウの位置と大きさ、「常に手前」、テーマ、縦表示を、`HKCU\Software\tbshiki\andon` に書き、起動したときに読む（数値だけ。読めない値は使わない）
+- ウィンドウの位置と大きさ、「常に手前」、テーマ、縦表示、Orca のセッションも通知するかを、`HKCU\Software\tbshiki\andon` に書き、起動したときに読む（数値だけ。読めない値は使わない）
 - テーマを「Windows に合わせる」にしているときは、Windows のアプリ モード（`HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize` の `AppsUseLightTheme`）を読む（書かない）
 - トレイのメニューの「ログオン時に起動」を選んだときだけ、スタートアップのフォルダに `andon.lnk`（スタートメニューの `andon` のショートカットの写し）を作る、または消す。あわせて、タスク マネージャーの有効・無効の記録（`HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder` の値 `andon.lnk`）を消す。インストールした andon だけが行い、clone から動かしている andon は行わない
 - 名前付きのイベント `Local\andon-exit` の合図を受けたら終了する（同じ Windows のセッションのプロセスなら、andon を終了できる）

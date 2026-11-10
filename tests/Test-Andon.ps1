@@ -217,6 +217,14 @@ Assert-Equal (Get-AlertNotice -Entries @($noName) -Now $t3).Text '待ち: proj' 
 $noName.Name = 'x' * 300
 Assert-Equal (Get-AlertNotice -Entries @($noName) -Now $t3).Text.Length 250 '長い本文は通知に収まるよう切り詰める'
 
+# 通知に載せないセッション（$Quiet。Orca のセッションを通知しない設定のとき。D-136）
+$notice = Get-AlertNotice -Entries @($script:State.Values) -Now $t3 -Quiet @{ '4' = $true }
+Assert-Equal $notice.Text "待ち: s5`n待ち: s6" 'Quiet にあるセッションは、通知に載せない'
+Assert-Equal $notice.Key '5' 'Quiet にあるセッションは、通知のクリックで開くセッションにもならない'
+Assert-Equal (Get-AlertNotice -Entries @($script:State.Values) -Now $t3 -Quiet @{ '4' = $true; '5' = $true; '6' = $true }) $null '新しい待ち・完了がどれも Quiet なら、通知しない'
+Assert-Equal (Get-AlertNotice -Entries @($script:State.Values) -Now $t3 -Quiet @{}).Key '4' 'Quiet が空なら、これまでと同じ'
+Assert-Equal (Get-AlertNotice -Entries @($script:State.Values) -Now $t3 -Quiet $null).Key '4' 'Quiet が $null でも、これまでと同じ'
+
 # ---------------------------------------------------------------------------
 Write-Host '== 点滅を止める（Get-VSCodeRootName / Test-VSCodeWindowTitle / Get-PendingFlashKeys）'
 Assert-Equal (Get-VSCodeRootName 'C:\work\proj\proj.code-workspace') 'proj' 'workspace はファイル名から拡張子を除いたもの'
@@ -393,6 +401,18 @@ foreach ($hostKind in @('daemon', 'vscode', '')) {
     Assert-Equal (Get-SessionWindowProcessId $codexOther) 0 "HostKind が「$hostKind」の Codex は、ウィンドウを探さない（作業フォルダを VS Code で開く）"
 }
 Assert-Equal (Get-SessionWindowProcessId ([pscustomobject]@{ Key = 'codex:z'; Kind = 'codex'; HostPid = 0; HostStart = [long]0; HostKind = 'terminal' })) 0 'Codex のプロセスが分からなければ、探さない'
+# Orca の区画のセッションの見分け（Get-OrcaSessionKeys。D-136）
+$alertWindows = @{
+    '83' = (Find-SessionConsoleWindow -Processes $sessionProcs -Windows $sessionWins -Id 83 -AppWindows $sessionApps)   # Orca の区画
+    '7'  = (Find-SessionConsoleWindow -Processes $sessionProcs -Windows $sessionWins -Id 7 -AppWindows $sessionApps)    # Windows Terminal
+    '87' = $null                                                                                                        # ウィンドウが分からない
+}
+$orcaKeys = Get-OrcaSessionKeys -Windows $alertWindows
+Assert-Equal (@($orcaKeys.Keys) -join ',') '83' 'Orca のウィンドウのセッションだけが、Orca のセッション'
+Assert-Equal (Get-OrcaSessionKeys -Windows @{}).Count 0 'ウィンドウがなければ、Orca のセッションはない'
+Assert-Equal (Get-OrcaSessionKeys -Windows $null).Count 0 'ウィンドウを調べられなければ、Orca のセッションはないとみなす（通知する）'
+Assert-True ((Get-OrcaSessionKeys -Windows $null) -is [hashtable]) 'Orca のセッションがなくても、hashtable を返す'
+
 Assert-Equal "$(Get-SessionAgent ([pscustomobject]@{ Kind = 'codex' }))|$(Get-SessionAgent ([pscustomobject]@{ Kind = 'interactive' }))|$(Get-SessionAgent ([pscustomobject]@{ Kind = '' }))" 'codex|claude|claude' 'Orca のターミナルのエージェントの種類は、Codex なら codex、それ以外は claude'
 
 Write-Host '== Orca のターミナルの一覧（ConvertFrom-OrcaTerminalList）とタブの選び方（Select-OrcaTerminal）'
@@ -859,6 +879,17 @@ try {
     Assert-Equal (Read-AndonSettings -Key $settingsKey).Vertical $null 'Vertical がマイナスでも使わない'
     New-ItemProperty -LiteralPath $settingsKey -Name 'Vertical' -PropertyType String -Value '1' -Force | Out-Null
     Assert-Equal (Read-AndonSettings -Key $settingsKey).Vertical $null 'DWORD でない Vertical は使わない'
+
+    # Orca のセッションも通知するか（D-136、D-140）。0 か 1 の DWORD だけを使い、ほかは既定（通知しない）にする
+    Assert-Equal (Read-AndonSettings -Key $settingsKey).OrcaNotify $null 'OrcaNotify を覚えていなければ $null（通知しない）'
+    Write-AndonSettings -Key $settingsKey -Values ([ordered]@{ OrcaNotify = 1 })
+    Assert-Equal (Read-AndonSettings -Key $settingsKey).OrcaNotify $true 'OrcaNotify が 1 なら通知する'
+    Write-AndonSettings -Key $settingsKey -Values ([ordered]@{ OrcaNotify = 0 })
+    Assert-Equal (Read-AndonSettings -Key $settingsKey).OrcaNotify $false 'OrcaNotify が 0 なら通知しない'
+    Write-AndonSettings -Key $settingsKey -Values ([ordered]@{ OrcaNotify = 2 })
+    Assert-Equal (Read-AndonSettings -Key $settingsKey).OrcaNotify $null 'OrcaNotify が 0 か 1 でなければ使わない'
+    New-ItemProperty -LiteralPath $settingsKey -Name 'OrcaNotify' -PropertyType String -Value '1' -Force | Out-Null
+    Assert-Equal (Read-AndonSettings -Key $settingsKey).OrcaNotify $null 'DWORD でない OrcaNotify は使わない'
 }
 finally {
     if (Test-Path -LiteralPath $settingsBase) { Remove-Item -LiteralPath $settingsBase -Recurse -Force }
@@ -1026,6 +1057,16 @@ $themeAdd = $andonText.IndexOf('$trayMenu.Items.Add($miTheme)')
 $verticalAdd = $andonText.IndexOf('$trayMenu.Items.Add($miVertical)')
 $exitAdd = $andonText.IndexOf('$trayMenu.Items.Add(''終了'')')
 Assert-True ($themeAdd -ge 0 -and $verticalAdd -gt $themeAdd -and $exitAdd -gt $verticalAdd) 'トレイのメニューの「縦表示」は、「テーマ」の下、「終了」の上（D-40）'
+
+Write-Host '== andon.ps1: Orca のセッションの通知（D-136、D-137、D-140）'
+$orcaNotifyAdd = $andonText.IndexOf('$trayMenu.Items.Add($miOrcaNotify)')
+$codexAdd = $andonText.IndexOf('$trayMenu.Items.Add($miCodex)')
+Assert-True ($codexAdd -ge 0 -and $orcaNotifyAdd -gt $codexAdd -and $themeAdd -gt $orcaNotifyAdd) 'トレイのメニューの「Orca のセッションも通知する」は、「Codex の状態を出す」の下、「テーマ」の上'
+Assert-True ($andonText.Contains('$script:OrcaNotify = $script:Settings.OrcaNotify -eq $true')) '覚えていなければ、Orca のセッションは通知しない（既定）'
+$alertAst = $andonAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-Alert' }, $true)
+Assert-True ($alertAst -and $alertAst.Extent.Text -match 'if \(-not \$script:OrcaNotify\) \{ \$quiet = Get-OrcaSessionKeys -Windows \$windows \}') '通知しない設定のときだけ、Orca のセッションを通知から外す'
+Assert-True ($alertAst -and $alertAst.Extent.Text -match 'Start-Flash -Hits \$hits -Windows \$windows' -and $alertAst.Extent.Text -notmatch 'Start-Flash[^\r\n]*quiet') '点滅は、Orca のセッションでも変えない（D-137）'
+Assert-True ($alertAst -and $alertAst.Extent.Text -match 'Get-AlertNotice -Entries \$hits -Now \$Now -Quiet \$quiet') '通知は、外したセッションを除いて作る'
 
 # ---------------------------------------------------------------------------
 $installTmp = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) ('andon-install-' + [guid]::NewGuid().ToString('N'))))

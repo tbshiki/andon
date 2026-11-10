@@ -35,6 +35,8 @@
       縦に細長いウィンドウ向け。フォルダが入りきらなければ、途中を「…」で省略して最後のフォルダ名を残す。選んだものも同じ場所に覚える。
       切り替えても、ウィンドウの位置と大きさは変えない。
     - 新しい待ちや完了が出たとき、このウィンドウが前面になければ Windows の通知を出す。
+      Orca の区画のセッションは、Orca が自分で通知するので、既定では通知に載せない（点滅と一覧は変えない）。
+      トレイのメニューの「Orca のセッションも通知する」で切り替え、選んだものも同じ場所に覚える。
       通知をクリックすると、そのセッションを開く。送り元は、プロセスにアプリ ID（tbshiki.andon）を付け、
       その表示名を HKCU に登録して「andon」と表示させる。
       ID はプロセス全体に付くので、andon のためだけに起動した PowerShell で動かしたときだけ付ける。
@@ -253,9 +255,10 @@ function Get-AlertLevel {
 }
 
 function Get-AlertNotice {
-    <# 時刻 $Now に新しく待ち・完了になったセッションから、通知の題・本文と、クリックで開くセッションを作る。なければ $null #>
-    param([object[]]$Entries, [datetime]$Now, [int]$MaxLines = 3)
-    $hits = @($Entries | Where-Object { $_.AlertAt -eq $Now -and (Get-Rank $_) -le 1 } |
+    <# 時刻 $Now に新しく待ち・完了になったセッションから、通知の題・本文と、クリックで開くセッションを作る。なければ $null。
+       $Quiet（キー -> $true）にあるセッションは、通知に載せない（Orca のセッションを通知しない設定のとき。D-136） #>
+    param([object[]]$Entries, [datetime]$Now, [int]$MaxLines = 3, [hashtable]$Quiet = $null)
+    $hits = @($Entries | Where-Object { $_.AlertAt -eq $Now -and (Get-Rank $_) -le 1 -and -not ($Quiet -and $Quiet.ContainsKey([string]$_.Key)) } |
             Sort-Object @{ Expression = { Get-Rank $_ } }, @{ Expression = { $_.Key } })
     if ($hits.Count -eq 0) { return $null }
     $lines = foreach ($e in ($hits | Select-Object -First $MaxLines)) {
@@ -739,6 +742,20 @@ function Find-SessionWindow {
     return Find-SessionConsoleWindow -Processes $Processes -Windows $Windows -Id $id -CodeProcessName $CodeProcessName -AppWindows $AppWindows
 }
 
+function Get-OrcaSessionKeys {
+    <# セッションのキー -> ウィンドウ（Find-SessionWindow の結果。分からなければ $null）のうち、Orca の区画のセッション
+       （ウィンドウが Orca のもの。OrcaPath がある）のキー -> $true。Orca のセッションを通知しない設定のとき、Get-AlertNotice の
+       $Quiet に渡す（D-136）。ウィンドウを調べられなかったとき（$Windows が $null）は空（通知する側に倒す） #>
+    param([hashtable]$Windows)
+    $keys = @{}
+    if ($null -eq $Windows) { return $keys }
+    foreach ($k in @($Windows.Keys)) {
+        $w = $Windows[$k]
+        if ($w -and $w.OrcaPath) { $keys[[string]$k] = $true }
+    }
+    return $keys
+}
+
 function Get-SessionAgent {
     <# Orca がターミナルに付けるエージェントの種類（orca terminal list --json の agentIdentity）のうち、このセッションのもの #>
     param($Entry)
@@ -1111,7 +1128,8 @@ function Set-LogonStartup {
 }
 
 # ---------------------------------------------------------------------------
-# 設定（レジストリの HKCU\Software\tbshiki\andon に、値ごとに DWORD で置く）。ウィンドウの位置と大きさ、「常に手前」、テーマ、縦表示。
+# 設定（レジストリの HKCU\Software\tbshiki\andon に、値ごとに DWORD で置く）。ウィンドウの位置と大きさ、「常に手前」、テーマ、縦表示、
+# Orca のセッションも通知するか。
 # 読めなくても、ありえない値でも、既定で動き続ける。関数の名前は install.ps1 と重ねない
 # ---------------------------------------------------------------------------
 
@@ -1121,7 +1139,7 @@ function Get-AndonSettingsKey {
 }
 
 function Read-AndonSettings {
-    <# 覚えた設定を読む。値がない、DWORD でない、ありえない値なら、その組（位置、大きさ、常に手前、テーマ、縦表示）を $null にし、既定を使わせる。
+    <# 覚えた設定を読む。値がない、DWORD でない、ありえない値なら、その組（位置、大きさ、常に手前、テーマ、縦表示、Orca の通知）を $null にし、既定を使わせる。
        位置はマイナスもありうる（主画面の左や上の画面）。小さすぎる大きさは、戻すと操作しにくいので使わない。
        キーが読めなくても失敗しない #>
     param([string]$Key, [int]$MinWidth = 160, [int]$MinHeight = 80, [int]$Limit = 100000)
@@ -1130,7 +1148,7 @@ function Read-AndonSettings {
         if ($Key -and (Test-Path -LiteralPath $Key)) {
             $item = Get-Item -LiteralPath $Key
             $names = $item.GetValueNames()
-            foreach ($name in 'Left', 'Top', 'Width', 'Height', 'TopMost', 'Theme', 'Vertical') {
+            foreach ($name in 'Left', 'Top', 'Width', 'Height', 'TopMost', 'Theme', 'Vertical', 'OrcaNotify') {
                 if ($names -notcontains $name) { continue }
                 if ($item.GetValueKind($name) -ne [Microsoft.Win32.RegistryValueKind]::DWord) { continue }
                 $raw[$name] = [int]$item.GetValue($name)
@@ -1138,7 +1156,7 @@ function Read-AndonSettings {
         }
     }
     catch { $raw = @{} }
-    $s = [pscustomobject]@{ Left = $null; Top = $null; Width = $null; Height = $null; TopMost = $null; Theme = $null; Vertical = $null }
+    $s = [pscustomobject]@{ Left = $null; Top = $null; Width = $null; Height = $null; TopMost = $null; Theme = $null; Vertical = $null; OrcaNotify = $null }
     if ($raw.ContainsKey('Left') -and $raw.ContainsKey('Top') -and
         [Math]::Abs($raw['Left']) -le $Limit -and [Math]::Abs($raw['Top']) -le $Limit) {
         $s.Left = $raw['Left']; $s.Top = $raw['Top']
@@ -1150,6 +1168,7 @@ function Read-AndonSettings {
     if ($raw.ContainsKey('TopMost') -and ($raw['TopMost'] -eq 0 -or $raw['TopMost'] -eq 1)) { $s.TopMost = ($raw['TopMost'] -eq 1) }
     if ($raw.ContainsKey('Theme') -and $raw['Theme'] -ge 0 -and $raw['Theme'] -lt $script:ThemeChoices.Count) { $s.Theme = $script:ThemeChoices[$raw['Theme']] }
     if ($raw.ContainsKey('Vertical') -and ($raw['Vertical'] -eq 0 -or $raw['Vertical'] -eq 1)) { $s.Vertical = ($raw['Vertical'] -eq 1) }
+    if ($raw.ContainsKey('OrcaNotify') -and ($raw['OrcaNotify'] -eq 0 -or $raw['OrcaNotify'] -eq 1)) { $s.OrcaNotify = ($raw['OrcaNotify'] -eq 1) }
     return $s
 }
 
@@ -1795,11 +1814,21 @@ function Set-CodexHooksEnabled {
 
 function Invoke-Alert {
     <# 時刻 $Now に新しく待ち・完了になったセッションを、点滅と通知で知らせる。andon が前面にあれば知らせない。
-       Claude と Codex が同じ回に知らせたときは、後の通知が前の通知を置き換え、両方のセッションを載せる #>
+       Claude と Codex が同じ回に知らせたときは、後の通知が前の通知を置き換え、両方のセッションを載せる。
+       Orca のセッションを通知しない設定（$script:OrcaNotify が $false。既定）なら、Orca の区画のセッションは通知に載せない
+       （点滅はさせる。D-136、D-137）。Orca のセッションかは、点滅のために調べるウィンドウで見分ける #>
     param([datetime]$Now)
     if ($form.ContainsFocus) { return }
-    if ($form.Visible) { Start-Flash -Now $Now }
-    $notice = Get-AlertNotice -Entries @($script:State.Values) -Now $Now
+    $hits = @($script:State.Values | Where-Object { $_.AlertAt -eq $Now -and (Get-Rank $_) -le 1 })
+    if ($hits.Count -eq 0) { return }
+    $windows = $null
+    if ($form.Visible -or -not $script:OrcaNotify) {
+        try { $windows = Get-AlertWindows -Hits $hits } catch { $windows = $null }
+    }
+    if ($form.Visible) { Start-Flash -Hits $hits -Windows $windows }
+    $quiet = $null
+    if (-not $script:OrcaNotify) { $quiet = Get-OrcaSessionKeys -Windows $windows }
+    $notice = Get-AlertNotice -Entries $hits -Now $Now -Quiet $quiet
     if ($notice) {
         # 通知をクリックしたら、このセッションを開く。覚えるのは最新の 1 件分でよい。
         # Windows は同じアイコンの通知を新しいもので置き換え、通知センターにも最新の 1 件しか残さないため
@@ -1827,33 +1856,41 @@ function Get-ForegroundCodeTitle {
     return [AndonWindow]::GetTitle($hwnd)
 }
 
-function Start-Flash {
-    <# 時刻 $Now に新しく待ち・完了になったセッションのために、andon のウィンドウを点滅させる。
-       そのセッションのウィンドウ（VS Code のウィンドウか、VS Code の外のターミナルのウィンドウ）がすでに前面にあれば、点滅させない #>
-    param([datetime]$Now)
+function Get-AlertWindows {
+    <# 新しく待ち・完了になったセッション（$Hits）の、キー -> そのセッションを映しているウィンドウ（Find-SessionWindow の結果。
+       分からなければ $null）。点滅を止める見分けと、Orca のセッションの見分け（Get-OrcaSessionKeys）に使う。
+       ターミナルのウィンドウは、プロセスとウィンドウを 1 回だけ調べて探す。調べられなければ、どれも $null（VS Code の題名で見分ける） #>
+    param([object[]]$Hits)
+    $map = @{}
+    $procs = $null
+    $wins = $null
+    $apps = $null
     try {
-        $hits = @($script:State.Values | Where-Object { $_.AlertAt -eq $Now -and (Get-Rank $_) -le 1 })
-        $keys = @{}
-        if ($hits.Count -gt 0) {
-            # ターミナルのウィンドウは、プロセスとウィンドウを 1 回だけ調べて探す。調べられなければ、VS Code の題名で見分ける
-            $procs = $null
-            $wins = $null
-            $apps = $null
-            try {
-                $procs = @(Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, CreationDate, Name -ErrorAction Stop)
-                $wins = @(Get-ConsoleWindowList)
-            }
-            catch { $procs = $null }
-            # Orca のウィンドウを調べられなくても、ほかのターミナルのセッションは見分ける（Orca のセッションだけ VS Code の題名で見分ける）
-            try { $apps = @(Get-OrcaWindowList) } catch { $apps = @() }
-            foreach ($e in $hits) {
-                $window = $null
-                if ($null -ne $procs) {
-                    $window = Find-SessionWindow -Entry $e -CodeProcessName $script:CodeProcessName -Processes $procs -Windows $wins -AppWindows $apps
-                }
-                $keys[$e.Key] = Get-FlashMark -Entry $e -SessionWindow $window
-            }
+        $procs = @(Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, CreationDate, Name -ErrorAction Stop)
+        $wins = @(Get-ConsoleWindowList)
+    }
+    catch { $procs = $null }
+    # Orca のウィンドウを調べられなくても、ほかのターミナルのセッションは見分ける（Orca のセッションだけ VS Code の題名で見分ける）
+    try { $apps = @(Get-OrcaWindowList) } catch { $apps = @() }
+    foreach ($e in $Hits) {
+        $window = $null
+        if ($null -ne $procs) {
+            $window = Find-SessionWindow -Entry $e -CodeProcessName $script:CodeProcessName -Processes $procs -Windows $wins -AppWindows $apps
         }
+        $map[[string]$e.Key] = $window
+    }
+    return $map
+}
+
+function Start-Flash {
+    <# 新しく待ち・完了になったセッション（$Hits）のために、andon のウィンドウを点滅させる。$Windows は Get-AlertWindows の結果。
+       そのセッションのウィンドウ（VS Code のウィンドウか、VS Code の外のターミナルのウィンドウ）がすでに前面にあれば、点滅させない #>
+    param([object[]]$Hits, [hashtable]$Windows)
+    if (@($Hits).Count -eq 0) { return }
+    try {
+        if ($null -eq $Windows) { throw 'ウィンドウを調べられませんでした' }
+        $keys = @{}
+        foreach ($e in $Hits) { $keys[$e.Key] = Get-FlashMark -Entry $e -SessionWindow $Windows[[string]$e.Key] }
         $keys = Get-PendingFlashKeys -FlashKeys $keys -State $script:State -ForegroundTitle (Get-ForegroundCodeTitle) `
             -ForegroundWindow ([AndonWindow]::GetForegroundWindow().ToInt64())
         if ($keys.Count -eq 0) { return }
@@ -1955,6 +1992,9 @@ $miLogon = New-Object System.Windows.Forms.ToolStripMenuItem('ログオン時に
 # Codex の hooks に andon の hook を入れ外しする（D-110）。hook のスクリプトがなければ出さない。Codex を使っていなければ灰色
 $miCodex = New-Object System.Windows.Forms.ToolStripMenuItem('Codex の状態を出す')
 [void]$trayMenu.Items.Add($miCodex)
+# Orca の区画のセッションも Windows の通知に出すか（D-136）。Orca が動いているときと、チェックが付いているときだけ出す
+$miOrcaNotify = New-Object System.Windows.Forms.ToolStripMenuItem('Orca のセッションも通知する')
+[void]$trayMenu.Items.Add($miOrcaNotify)
 $miTheme = New-Object System.Windows.Forms.ToolStripMenuItem('テーマ')
 $miThemeItems = @()
 foreach ($choice in @(@{ Text = 'ライト'; Name = 'Light' }, @{ Text = 'ダーク'; Name = 'Dark' }, @{ Text = 'Windows に合わせる'; Name = 'System' })) {
@@ -1974,6 +2014,8 @@ $tray.ContextMenuStrip = $trayMenu
 $script:Exiting = $false
 $script:NoticeKey = $null
 $script:NoticeUpdate = $false   # 最後に出した通知が、新しい版の知らせか（クリックで、アップデートするかを尋ねる）
+# Orca の区画のセッションも Windows の通知に出すか。既定は出さない（Orca が自分で通知するので、重ねない。D-140）。点滅と一覧は変わらない
+$script:OrcaNotify = $script:Settings.OrcaNotify -eq $true
 
 $lv = New-Object System.Windows.Forms.ListView
 $lv.Dock = 'Fill'
@@ -2727,6 +2769,10 @@ $trayMenu.Add_Opening({
         }
         foreach ($mi in $miThemeItems) { $mi.Checked = ([string]$mi.Tag -eq $script:ThemeChoice) }
         $miVertical.Checked = $script:Vertical
+        $orcaRunning = $false
+        try { $orcaRunning = @(Get-OrcaWindowList).Count -gt 0 } catch { $orcaRunning = $false }
+        $miOrcaNotify.Visible = $orcaRunning -or $script:OrcaNotify
+        $miOrcaNotify.Checked = $script:OrcaNotify
     })
 # テーマを選んだら、覚えて塗り直す
 foreach ($mi in $miThemeItems) {
@@ -2744,6 +2790,12 @@ $miVertical.Add_Click({
         try { Write-AndonSettings -Key $script:SettingsKey -Values ([ordered]@{ Vertical = [int]$script:Vertical }) }
         catch { }   # 覚えられなくても、今の andon の表示は変える
         Update-ListLayout
+    })
+# Orca のセッションの通知を切り替えたら、覚える。次の知らせから効く
+$miOrcaNotify.Add_Click({
+        $script:OrcaNotify = -not $script:OrcaNotify
+        try { Write-AndonSettings -Key $script:SettingsKey -Values ([ordered]@{ OrcaNotify = [int]$script:OrcaNotify }) }
+        catch { }   # 覚えられなくても、今の andon の通知は変える
     })
 $miLogon.Add_Click({
         $l = $script:LogonLayout
