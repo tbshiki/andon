@@ -2830,7 +2830,8 @@ $lv.Add_DrawSubItem({ param($source, $e) $e.DrawDefault = $true })
 function Show-VerticalItem {
     <# 縦表示の 1 件を 3 段で描く（D-78、D-79）。上の段に状態と経過（待ちと完了は太字）。中の段にセッション名（入りきらなければ末尾を
        「…」で省略）、下の段にフォルダ（入りきらなければ途中を「…」で省略して最後のフォルダ名を残す。D-75）。中と下の段は太字にしない。
-       行の下に区切りの線を引く。選んだ行は、一覧にフォーカスがあるときだけ Windows の強調色にする（横の一覧と同じ）。
+       行の下に区切りの線を引く。選んだ行は、一覧にフォーカスがあるときだけ Windows の強調色にする（横の一覧と同じ。
+       開いたあとは選択を外すので、強調色は残らない。Clear-ListSelection）。
        マウスを乗せた行は、色の組の Hover にする（D-77） #>
     param($DrawArgs)
     $item = $DrawArgs.Item
@@ -3251,20 +3252,27 @@ function Update-UpdateCheck {
     $script:CheckClient = $client
 }
 
-# 行をクリックしたら（Activation = OneClick）、そのセッションを開く。横と縦の一覧で同じ
+function Clear-ListSelection {
+    <# 一覧の行の選択を外す。選んだ行は、一覧にフォーカスがあるあいだ Windows の強調色（青）になり、行の状態の色が見えない。
+       開いたあとも andon にフォーカスが残ることがある（前面に出すウィンドウがないときなど）ので、行に対する操作を終えたら外す #>
+    try { (Get-ActiveList).SelectedItems.Clear() } catch { }
+}
+
+# 行をクリックしたら（Activation = OneClick）、そのセッションを開く。横と縦の一覧で同じ。
+# 開いたら、行の選択を外す（Clear-ListSelection）
 $onItemActivate = {
     $e = Get-SelectedEntry
-    if ($e) { Open-Session -Entry $e; Update-ListView }
+    if ($e) { Open-Session -Entry $e; Clear-ListSelection; Update-ListView }
 }
 $lv.Add_ItemActivate($onItemActivate)
 $lvV.Add_ItemActivate($onItemActivate)
 $miOpen.Add_Click({
         $e = Get-SelectedEntry
-        if ($e) { Open-Session -Entry $e; Update-ListView }
+        if ($e) { Open-Session -Entry $e; Clear-ListSelection; Update-ListView }
     })
 $miRead.Add_Click({
         $e = Get-SelectedEntry
-        if ($e) { $e.Unread = $false; Update-ListView }
+        if ($e) { $e.Unread = $false; Clear-ListSelection; Update-ListView }
     })
 $btnRead.Add_Click({ Set-AllRead })
 $chkTop.Add_CheckedChanged({
