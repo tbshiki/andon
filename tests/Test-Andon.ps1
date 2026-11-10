@@ -890,6 +890,15 @@ try {
     Assert-Equal (Read-AndonSettings -Key $settingsKey).OrcaNotify $null 'OrcaNotify が 0 か 1 でなければ使わない'
     New-ItemProperty -LiteralPath $settingsKey -Name 'OrcaNotify' -PropertyType String -Value '1' -Force | Out-Null
     Assert-Equal (Read-AndonSettings -Key $settingsKey).OrcaNotify $null 'DWORD でない OrcaNotify は使わない'
+
+    # 選んだ Orca のペアリング先（D-141、D-149）。文字の値で、ID を ; で区切る。形の違うものは使わない
+    Assert-Equal @((Read-AndonSettings -Key $settingsKey).OrcaRemote).Count 0 'OrcaRemote を覚えていなければ、どれも選んでいない'
+    Write-AndonSettingText -Key $settingsKey -Name 'OrcaRemote' -Value 'env-1;bad id;env-2'
+    Assert-Equal (@((Read-AndonSettings -Key $settingsKey).OrcaRemote) -join ',') 'env-1,env-2' 'OrcaRemote は、形の合う ID だけを読む'
+    Write-AndonSettingText -Key $settingsKey -Name 'OrcaRemote' -Value ''
+    Assert-Equal @((Read-AndonSettings -Key $settingsKey).OrcaRemote).Count 0 'OrcaRemote が空なら、どれも選んでいない'
+    Write-AndonSettings -Key $settingsKey -Values ([ordered]@{ OrcaRemote = 1 })
+    Assert-Equal @((Read-AndonSettings -Key $settingsKey).OrcaRemote).Count 0 '文字でない OrcaRemote は使わない'
 }
 finally {
     if (Test-Path -LiteralPath $settingsBase) { Remove-Item -LiteralPath $settingsBase -Recurse -Force }
@@ -1064,7 +1073,42 @@ $codexAdd = $andonText.IndexOf('$trayMenu.Items.Add($miCodex)')
 Assert-True ($codexAdd -ge 0 -and $orcaNotifyAdd -gt $codexAdd -and $themeAdd -gt $orcaNotifyAdd) 'トレイのメニューの「Orca のセッションも通知する」は、「Codex の状態を出す」の下、「テーマ」の上'
 Assert-True ($andonText.Contains('$script:OrcaNotify = $script:Settings.OrcaNotify -eq $true')) '覚えていなければ、Orca のセッションは通知しない（既定）'
 $alertAst = $andonAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-Alert' }, $true)
-Assert-True ($alertAst -and $alertAst.Extent.Text -match 'if \(-not \$script:OrcaNotify\) \{ \$quiet = Get-OrcaSessionKeys -Windows \$windows \}') '通知しない設定のときだけ、Orca のセッションを通知から外す'
+Assert-True ($alertAst -and $alertAst.Extent.Text -match 'if \(-not \$script:OrcaNotify\) \{ \$quiet = Get-OrcaSessionKeys -Windows \$windows -Entries \$hits \}') '通知しない設定のときだけ、Orca のセッション（区画とリモート）を通知から外す'
+
+Write-Host '== andon.ps1: Orca のリモートのセッションを画面に繋ぐ（D-141、D-145、D-147、D-149）'
+function Get-AndonFunctionText { param([string]$Name) $f = $andonAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $Name }.GetNewClosure(), $true); if ($f) { return $f.Extent.Text }; return '' }
+Assert-True ($andonText.Contains('$script:OrcaRemoteIds = @($script:Settings.OrcaRemote)')) '読むペアリング先は、設定に覚えたものだけ（既定は、どれも選んでいない）'
+$remoteAdd = $andonText.IndexOf('$trayMenu.Items.Add($miOrcaRemote)')
+Assert-True ($orcaNotifyAdd -ge 0 -and $remoteAdd -gt $orcaNotifyAdd -and $themeAdd -gt $remoteAdd) 'トレイのメニューの「Orca のリモートを出す」は、「Orca のセッションも通知する」の下、「テーマ」の上'
+$startRemote = Get-AndonFunctionText 'Start-OrcaRemotePoll'
+Assert-True ($startRemote.Contains("@('worktree', 'ps', '--environment', `$EnvId, '--json')") -and $startRemote.Contains('Test-OrcaId $EnvId')) 'ペアリング先は、形を確かめた ID で指定して読む'
+Assert-True ($startRemote.Contains('Get-OrcaCliPath -OrcaPath $app.Path') -and $startRemote.Contains('New-OrcaCliStartInfo')) 'CLI は、動いている Orca と同じフォルダのものを、ORCA_ の環境変数を渡さずに起動する'
+Assert-True (-not $andonText.Contains("@('open'")) 'andon からは Orca を起動しない（orca open を使わない）'
+$updateRemote = Get-AndonFunctionText 'Update-OrcaRemote'
+Assert-True ($updateRemote.Contains('Get-OrcaRemoteStep') -and $updateRemote -match "'clear' \{\s*Stop-OrcaRemotePoll") '今の回にすることは Get-OrcaRemoteStep で決め、Orca が動いていなければ CLI を止める'
+Assert-True ($updateRemote.Contains('Get-OrcaRemoteInterval -Sessions $sessions') -and $updateRemote.Contains('Set-OrcaRemoteFailed')) '次に読む時刻は、読めたら Get-OrcaRemoteInterval、読めなければ Set-OrcaRemoteFailed で決める'
+$failRemote = Get-AndonFunctionText 'Set-OrcaRemoteFailed'
+Assert-True ($failRemote.Contains('Get-OrcaRemoteInterval -Failed') -and $failRemote.Contains('-ge $script:OrcaRemoteFailLimit) { return (Clear-OrcaRemoteState -EnvId $EnvId) }')) '読めなかったら間隔をあけ、続けて読めなかったときだけ、そのペアリング先のセッションを消す'
+Assert-True ($andonText.Contains('$script:OrcaRemoteFailLimit = 3')) '続けて 3 回読めなければ消す'
+$openSession = Get-AndonFunctionText 'Open-Session'
+Assert-True ($openSession.Contains('{ Open-OrcaRemoteSession -Entry $Entry; return }')) 'リモートのセッションは、VS Code では開かず、Orca を開く'
+$openRemote = Get-AndonFunctionText 'Open-OrcaRemoteSession'
+Assert-True ($openRemote.Contains('-Environment $Entry.Remote.EnvId -PaneKey $Entry.Remote.PaneKey') -and $openRemote -notmatch 'Start-VSCode|Find-VSCodeTarget') 'リモートのセッションのタブは、ペアリング先と区画で選ぶ'
+$startSwitch = Get-AndonFunctionText 'Start-OrcaTabSwitch'
+Assert-True ($startSwitch.Contains("@('terminal', 'list', '--environment', `$Environment, '--json')") -and $startSwitch.Contains('Test-OrcaId $Environment) -or -not (Test-OrcaId $PaneKey)')) 'リモートのタブの一覧は、形を確かめたペアリング先の ID で取る'
+$updateSwitch = Get-AndonFunctionText 'Update-OrcaTabSwitch'
+Assert-True ($updateSwitch.Contains('Select-OrcaTerminalByPane -Terminals $terminals -PaneKey $s.PaneKey') -and $updateSwitch.Contains("'--terminal', `$handle, '--environment', `$s.Environment, '--json'")) 'リモートのタブは区画で選び、そのペアリング先に向けて切り替える'
+Assert-True ((Get-AndonFunctionText 'Update-ListView').Contains('SubItems.Add((Get-EntryFolder $e))')) '一覧の「フォルダ」は Get-EntryFolder（リモートは、ペアリング先の名前を前に付ける）'
+Assert-True ((Get-AndonFunctionText 'Get-AlertWindows') -match '(?s)if \(Test-OrcaKey .{0,300}OrcaPath = \[string\]\$app.Path') 'リモートのセッションの点滅は、この PC の Orca のウィンドウで見分ける'
+Assert-True ($andonText -match '(?s)\$remote = Update-OrcaRemote -Now \$now.{0,400}catch \{ try \{ Stop-OrcaRemotePoll \} catch \{ \} \}') 'リモートを読む処理が失敗しても、ほかのセッションの表示は続ける'
+Assert-True ($andonText -match '(?s)\$form.Add_FormClosed\(\{.{0,300}Stop-OrcaRemotePoll') '終了するときに、リモートを読んでいる CLI を止める'
+$remoteClick = [regex]::Match($andonText, '(?s)\$miOrcaRemote.Add_DropDownOpening\(\{.*?\r?\n    \}\)').Value
+Assert-True ($remoteClick.Contains('MessageBoxButtons]::YesNo') -and $remoteClick.Contains('MessageBoxDefaultButton]::Button2') -and $remoteClick.Contains('if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) { return }')) 'ペアリング先を選ぶときは、通信することを示して確かめる（初めから選ばれているのは「いいえ」）'
+
+$dueNext = @{ 'a' = $t0.AddSeconds(30); 'b' = $t0.AddSeconds(10) }
+Assert-Equal "$((Get-OrcaRemoteDue -Ids @('a', 'b') -Next $dueNext).Id)|$((Get-OrcaRemoteDue -Ids @('a', 'b') -Next $dueNext).At -eq $t0.AddSeconds(10))" 'b|True' '次に読むのは、読む時刻が一番早いペアリング先'
+Assert-Equal "$((Get-OrcaRemoteDue -Ids @('a', 'c', 'b') -Next $dueNext).Id)|$($null -eq (Get-OrcaRemoteDue -Ids @('a', 'c', 'b') -Next $dueNext).At)" 'c|True' '読む時刻が決まっていないペアリング先を先に読む'
+Assert-Equal "$($null -eq (Get-OrcaRemoteDue -Ids @() -Next $dueNext))|$((Get-OrcaRemoteDue -Ids @('a') -Next $null).Id)" 'True|a' '選んだものがなければ $null。時刻の表がなければ、最初のもの'
 Assert-True ($alertAst -and $alertAst.Extent.Text -match 'Start-Flash -Hits \$hits -Windows \$windows' -and $alertAst.Extent.Text -notmatch 'Start-Flash[^\r\n]*quiet') '点滅は、Orca のセッションでも変えない（D-137）'
 Assert-True ($alertAst -and $alertAst.Extent.Text -match 'Get-AlertNotice -Entries \$hits -Now \$Now -Quiet \$quiet') '通知は、外したセッションを除いて作る'
 
@@ -2150,8 +2194,11 @@ Write-Host '== Orca のリモートのセッション（D-141、D-143、D-145、
 $envA = '11111111-2222-3333-4444-555555555555'
 $envB = 'env-b'
 function New-OrcaAgent {
-    param([string]$Pane, [string]$State, [string]$Type = 'claude', [long]$At = 1000, [switch]$Interrupted, [string]$Parent = $null)
+    param([string]$Pane, [string]$State, [string]$Type = 'claude', [long]$At = 1000, [switch]$Interrupted, [string]$Parent = $null, [string]$Program = '')
+    $programStatus = $null
+    if ($Program) { $programStatus = [ordered]@{ state = $Program; message = 'secret status text' } }
     return [ordered]@{
+        programStatus = $programStatus
         paneKey = $Pane; parentPaneKey = $Parent; state = $State; agentType = $Type; prompt = 'secret prompt text'
         lastAssistantMessage = 'secret reply text'; toolName = 'Bash'; toolInput = 'secret command'; interrupted = [bool]$Interrupted
         stateStartedAt = $At; updatedAt = $At + 5
@@ -2159,7 +2206,7 @@ function New-OrcaAgent {
 }
 function New-OrcaWorktree { param([string]$Name, [string]$Path, [object[]]$Agents = @()) return [ordered]@{ displayName = $Name; path = $Path; status = 'active'; agents = @($Agents) } }
 function ConvertTo-OrcaPsJson { param([object[]]$Worktrees, [bool]$Ok = $true, [bool]$Truncated = $false) return (ConvertTo-Json -Depth 8 ([ordered]@{ id = 'x'; ok = $Ok; result = [ordered]@{ worktrees = @($Worktrees); totalCount = @($Worktrees).Count; truncated = $Truncated } })) }
-function Format-OrcaSession { param($S) return '{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}' -f $S.Key, $S.Status, $S.Done, $S.Name, $S.Cwd, $S.Agent, $S.At, $S.Active }
+function Format-OrcaSession { param($S) return '{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}' -f $S.Key, $S.Status, $S.Done, $S.Name, $S.Cwd, $S.Agent, $S.At, $S.Active, $S.WaitingFor }
 
 Assert-Equal "$(Test-OrcaKey 'orca:e:p')|$(Test-OrcaKey 'codex:a')|$(Test-OrcaKey '123')" 'True|False|False' 'Orca のリモートのセッションは、キーが orca: で始まる'
 Assert-Equal "$(Test-OrcaId $envA)|$(Test-OrcaId 'tab-1:leaf_2')|$(Test-OrcaId 'term_a.b')" 'True|True|True' 'ID は、英数字と _ . : - だけ'
@@ -2198,19 +2245,24 @@ $psJson = ConvertTo-OrcaPsJson @(
             (New-OrcaAgent 'tab2:leaf1' 'idle' -At 4000)
             (New-OrcaAgent 'tab2:leaf2' 'blocked' -At 5000)
             (New-OrcaAgent 'tab2:leaf3' 'Weird State!' -At 6000)
-            (New-OrcaAgent 'tab2:leaf4' 'waiting' -At 7000)
+            (New-OrcaAgent 'tab2:leaf4' 'waiting' -At 7000 -Program 'blocked')
             (New-OrcaAgent 'tab2:leaf5' 'busy' -At 8000)
+            (New-OrcaAgent 'tab2:leaf6' 'waiting' -At 9000 -Program 'working')
+            (New-OrcaAgent 'tab2:leaf7' 'waiting' -At 9500)
         ))
     (New-OrcaWorktree 'empty' '/home/user/empty')
 )
 $remote = ConvertTo-OrcaRemoteSessions -Json $psJson -EnvId $envA
 Assert-Equal (@($remote | ForEach-Object { Format-OrcaSession $_ }) -join "`n") (@(
-        "orca:${envA}:tab1:leaf1|busy|False|proj-a|/home/user/proj-a|claude|1000|True"
-        "orca:${envA}:tab1:leaf2|idle|True|proj-a|/home/user/proj-a|codex|2000|False"
-        "orca:${envA}:tab1:leaf3|idle|False|proj-a|/home/user/proj-a|claude|3000|False"
-        "orca:${envA}:tab2:leaf1|idle|False|proj-b x|/home/user/proj-b|claude|4000|False"
-        "orca:${envA}:tab2:leaf2|blocked|False|proj-b x|/home/user/proj-b|claude|5000|False"
-    ) -join "`n") 'working は実行中、done は完了、中断した done と idle は待機。知らない状態はそのまま出す。子の区画、ほかのエージェント、形の違う区画、重なり、形の違う状態、andon の状態の名前（waiting、busy）は出さない'
+        "orca:${envA}:tab1:leaf1|busy|False|proj-a|/home/user/proj-a|claude|1000|True|"
+        "orca:${envA}:tab1:leaf2|idle|True|proj-a|/home/user/proj-a|codex|2000|False|"
+        "orca:${envA}:tab1:leaf3|idle|False|proj-a|/home/user/proj-a|claude|3000|False|"
+        "orca:${envA}:tab2:leaf1|idle|False|proj-b x|/home/user/proj-b|claude|4000|False|"
+        "orca:${envA}:tab2:leaf2|blocked|False|proj-b x|/home/user/proj-b|claude|5000|False|"
+        "orca:${envA}:tab2:leaf4|waiting|False|proj-b x|/home/user/proj-b|claude|7000|True|permission prompt"
+        "orca:${envA}:tab2:leaf6|waiting|False|proj-b x|/home/user/proj-b|claude|9000|True|"
+        "orca:${envA}:tab2:leaf7|waiting|False|proj-b x|/home/user/proj-b|claude|9500|True|"
+    ) -join "`n") 'working は実行中、waiting は待ち（Orca が止まっていると見ていれば許可待ち）、done は完了、中断した done と idle は待機。知らない状態はそのまま出す。子の区画、ほかのエージェント、形の違う区画、重なり、形の違う状態、andon の状態の名前（busy）は出さない'
 Assert-Equal (@($remote[0].PSObject.Properties.Name) -join ',') 'Key,Status,WaitingFor,Done,Name,Cwd,Agent,PaneKey,At,Active' 'プロンプト、返事、ツールの入力は取り出さない'
 Assert-True (-not ((ConvertTo-Json -Depth 5 $remote) -match 'secret')) '取り出したものに、プロンプトや返事の文字が入っていない'
 Assert-Equal (ConvertTo-OrcaRemoteSessions -Json (ConvertTo-OrcaPsJson @()) -EnvId $envA).Count 0 'workspace がなければ空'
@@ -2218,7 +2270,7 @@ Assert-Throws { ConvertTo-OrcaRemoteSessions -Json (ConvertTo-OrcaPsJson @() -Tr
 Assert-Throws { ConvertTo-OrcaRemoteSessions -Json (ConvertTo-OrcaPsJson @() -Ok $false) -EnvId $envA } 'ok でなければ例外'
 Assert-Throws { ConvertTo-OrcaRemoteSessions -Json $psJson -EnvId 'bad id' } 'ペアリング先の ID の形が違えば例外'
 $noAt = ConvertTo-OrcaRemoteSessions -Json '{"ok":true,"result":{"worktrees":[{"displayName":5,"path":null,"agents":[{"paneKey":"t:l","state":"working","agentType":"claude","stateStartedAt":"abc"},{"paneKey":"t:m","state":5,"agentType":"claude"},null]},null]}}' -EnvId $envB
-Assert-Equal (@($noAt | ForEach-Object { Format-OrcaSession $_ }) -join "`n") 'orca:env-b:t:l|busy|False|||claude|0|True' '名前、パス、時刻が思った型でなくても読む。状態が文字でない行は出さない'
+Assert-Equal (@($noAt | ForEach-Object { Format-OrcaSession $_ }) -join "`n") 'orca:env-b:t:l|busy|False|||claude|0|True|' '名前、パス、時刻が思った型でなくても読む。状態が文字でない行は出さない'
 
 Write-Host '== Orca のリモートのセッションの取り込み（Update-OrcaRemoteState）'
 function New-RemoteSession {

@@ -855,6 +855,8 @@ function Get-FlashMark {
     if ($SessionWindow -and -not $SessionWindow.IsCode) {
         return [pscustomobject]@{ RootName = $null; Window = [long]$SessionWindow.Handle }
     }
+    # Orca のリモートのセッションは、この PC にフォルダがない。Orca のウィンドウが分からなければ、ウィンドウでは見分けない
+    if (Test-OrcaKey ([string]$Entry.Key)) { return [pscustomobject]@{ RootName = $null; Window = [long]0 } }
     return [pscustomobject]@{ RootName = (Get-VSCodeRootName (Find-VSCodeTarget -Cwd $Entry.Cwd)); Window = [long]0 }
 }
 
@@ -1153,10 +1155,15 @@ function Read-AndonSettings {
        キーが読めなくても失敗しない #>
     param([string]$Key, [int]$MinWidth = 160, [int]$MinHeight = 80, [int]$Limit = 100000)
     $raw = @{}
+    $remoteText = $null
     try {
         if ($Key -and (Test-Path -LiteralPath $Key)) {
             $item = Get-Item -LiteralPath $Key
             $names = $item.GetValueNames()
+            # 選んだ Orca のペアリング先だけは、文字の値（ID を ; で区切ったもの）
+            if ($names -contains 'OrcaRemote' -and $item.GetValueKind('OrcaRemote') -eq [Microsoft.Win32.RegistryValueKind]::String) {
+                $remoteText = [string]$item.GetValue('OrcaRemote')
+            }
             foreach ($name in 'Left', 'Top', 'Width', 'Height', 'TopMost', 'Theme', 'Vertical', 'OrcaNotify') {
                 if ($names -notcontains $name) { continue }
                 if ($item.GetValueKind($name) -ne [Microsoft.Win32.RegistryValueKind]::DWord) { continue }
@@ -1164,8 +1171,9 @@ function Read-AndonSettings {
             }
         }
     }
-    catch { $raw = @{} }
-    $s = [pscustomobject]@{ Left = $null; Top = $null; Width = $null; Height = $null; TopMost = $null; Theme = $null; Vertical = $null; OrcaNotify = $null }
+    catch { $raw = @{}; $remoteText = $null }
+    $s = [pscustomobject]@{ Left = $null; Top = $null; Width = $null; Height = $null; TopMost = $null; Theme = $null; Vertical = $null; OrcaNotify = $null; OrcaRemote = @() }
+    $s.OrcaRemote = ConvertFrom-OrcaRemoteSetting $remoteText   # 配列で返る（@() で包むと、配列の配列になる）
     if ($raw.ContainsKey('Left') -and $raw.ContainsKey('Top') -and
         [Math]::Abs($raw['Left']) -le $Limit -and [Math]::Abs($raw['Top']) -le $Limit) {
         $s.Left = $raw['Left']; $s.Top = $raw['Top']
@@ -1273,6 +1281,14 @@ function Write-AndonSettings {
     foreach ($name in $Values.Keys) {
         New-ItemProperty -LiteralPath $Key -Name $name -PropertyType DWord -Value ([int]$Values[$name]) -Force | Out-Null
     }
+}
+
+function Write-AndonSettingText {
+    <# 設定を文字の値で書く（選んだ Orca のペアリング先の ID の並び）。キーがなければ作る #>
+    param([string]$Key, [string]$Name, [string]$Value)
+    if (-not $Key) { throw '設定のキーがありません' }
+    if (-not (Test-Path -LiteralPath $Key)) { New-Item -Path $Key -Force | Out-Null }
+    New-ItemProperty -LiteralPath $Key -Name $Name -PropertyType String -Value $Value -Force | Out-Null
 }
 
 function Get-WindowPlacement {
@@ -1573,7 +1589,8 @@ function ConvertTo-OrcaRemoteSessions {
        - エージェントの種類（agentType）が claude か codex の行だけを使う。ほかのエージェントは出さない
        - ほかの区画から起動された行（parentPaneKey があるもの）は出さない
        - 区画（paneKey）の形が違う行は出さない
-       - 状態（state）は、working を実行中（busy）、done を完了（idle で Done）、idle を待機（idle）にする。
+       - 状態（state）は、working を実行中（busy）、waiting を待ち（waiting）、done を完了（idle で Done）、idle を待機（idle）にする。
+         待ちのうち、Orca が止まっていると見ているもの（programStatus.state が blocked。許可を求める画面で確かめた）は、許可待ち。
          中断した done（interrupted）は、完了にしない（手元で止めたので）。
          知らない状態は、英小文字と - だけのものを、そのまま状態にする（一覧には出すが、知らせない。Get-Rank は 3）
        - At は、状態が変わった時刻（stateStartedAt。ペアリング先の時計）。変わったかを見るためだけに使い、経過には使わない
@@ -1601,11 +1618,16 @@ function ConvertTo-OrcaRemoteSessions {
             if ($state -isnot [string]) { continue }
             $status = $null
             $done = $false
+            $waitingFor = ''
             switch -CaseSensitive ($state) {
                 'working' { $status = 'busy' }
+                'waiting' {
+                    $status = 'waiting'
+                    if ((Get-JsonValue (Get-JsonValue $a 'programStatus') 'state') -ceq 'blocked') { $waitingFor = 'permission prompt' }
+                }
                 'done' { $status = 'idle'; $done = ((Get-JsonValue $a 'interrupted') -ne $true) }
                 'idle' { $status = 'idle' }
-                default { if ($state -cmatch '^[a-z][a-z-]{0,23}$' -and @('busy', 'waiting') -cnotcontains $state) { $status = $state } }
+                default { if ($state -cmatch '^[a-z][a-z-]{0,23}$' -and $state -cne 'busy') { $status = $state } }
             }
             if (-not $status) { continue }
             $at = [long]0
@@ -1615,7 +1637,7 @@ function ConvertTo-OrcaRemoteSessions {
             }
             $seen[$key] = $true
             $sessions += [pscustomobject]@{
-                Key = $key; Status = $status; WaitingFor = ''; Done = $done; Name = $name; Cwd = $path
+                Key = $key; Status = $status; WaitingFor = $waitingFor; Done = $done; Name = $name; Cwd = $path
                 Agent = $agent; PaneKey = $pane; At = $at; Active = ($status -eq 'busy' -or $status -eq 'waiting')
             }
         }
@@ -1707,6 +1729,19 @@ function Get-OrcaRemoteStep {
     }
     if ($Next -isnot [datetime] -or $Now -ge $Next) { return 'start' }
     return 'none'
+}
+
+function Get-OrcaRemoteDue {
+    <# 選んだペアリング先（$Ids）のうち、次に読むもの（ID と、読む時刻）。読む時刻が決まっていないもの（$Next にないもの）が
+       あれば、それを先に（時刻は $null）。なければ、時刻が一番早いもの。選んだものがなければ $null #>
+    param([string[]]$Ids, [hashtable]$Next)
+    $best = $null
+    foreach ($id in @($Ids)) {
+        if (-not $id) { continue }
+        if (-not $Next -or $Next[$id] -isnot [datetime]) { return [pscustomobject]@{ Id = $id; At = $null } }
+        if ($null -eq $best -or $Next[$id] -lt $best.At) { $best = [pscustomobject]@{ Id = $id; At = $Next[$id] } }
+    }
+    return $best
 }
 
 function Select-OrcaTerminalByPane {
@@ -1902,12 +1937,29 @@ function Start-Poll {
     $script:PollStarted = Get-Date
 }
 
+function Open-OrcaRemoteSession {
+    <# Orca のリモートのセッションを開く。この PC の Orca のウィンドウを前面に出し、Orca の CLI でそのタブに切り替える（D-145）。
+       Orca が動いていなければ、既読にするだけ（この PC にフォルダがないので、VS Code では開かない） #>
+    param($Entry)
+    $app = $null
+    try { $app = @(Get-OrcaWindowList) | Select-Object -First 1 } catch { $app = $null }
+    if ($app) {
+        try { [void][AndonSessionWindow]::Show([long]$app.Handle) } catch { }
+        if ($Entry.Remote) {
+            try { Start-OrcaTabSwitch -OrcaPath $app.Path -Agent (Get-SessionAgent $Entry) -Environment $Entry.Remote.EnvId -PaneKey $Entry.Remote.PaneKey }
+            catch { Stop-OrcaTabSwitch }
+        }
+    }
+    $Entry.Unread = $false
+}
+
 function Open-Session {
     <# セッションを開く。VS Code の外のターミナルで動いていれば、そのウィンドウを前面に出す。Orca の区画で動いていれば、Orca の
        ウィンドウを前面に出し、Orca の CLI でそのタブに切り替える（D-124。Start-OrcaTabSwitch）。VS Code の中のセッションと、
        ウィンドウが分からないセッションは、作業フォルダを VS Code で開く。VS Code が見つからなければ、VS Code のウィンドウも
        そのまま前面に出し、ウィンドウが分からなければ既読にするだけ #>
     param($Entry)
+    if (Test-OrcaKey ([string]$Entry.Key)) { Open-OrcaRemoteSession -Entry $Entry; return }
     $window = $null
     try { $window = Find-SessionWindow -Entry $Entry -CodeProcessName $script:CodeProcessName } catch { }
     if ($window -and (-not $window.IsCode -or -not $script:CodeCmd)) {
@@ -1944,27 +1996,35 @@ function Stop-OrcaTabSwitch {
 
 function New-OrcaSwitchState {
     <# 動かし始めた Orca の CLI（$script:OrcaSwitch に置くもの） #>
-    param($Proc, $Task, [datetime]$Started, [string]$Cwd, [string]$Agent, [string]$Cli, [string]$Phase)
+    param($Proc, $Task, [datetime]$Started, [string]$Cwd, [string]$Agent, [string]$Cli, [string]$Phase, [string]$Environment = '', [string]$PaneKey = '')
     $startTime = $null
     try { $startTime = $Proc.StartTime } catch { }
     return [pscustomobject]@{
         Proc = $Proc; StartTime = $startTime; Task = $Task; Started = $Started
-        Cwd = $Cwd; Agent = $Agent; Cli = $Cli; Phase = $Phase
+        Cwd = $Cwd; Agent = $Agent; Cli = $Cli; Phase = $Phase; Environment = $Environment; PaneKey = $PaneKey
     }
 }
 
 function Start-OrcaTabSwitch {
     <# Orca の CLI で、ターミナルの一覧（orca terminal list --json）を裏で取り始める。受け取ったら（Update-OrcaTabSwitch）、
        セッションのタブが 1 つに決まれば、orca terminal switch で切り替える。CLI が見つからなければ何もしない（ウィンドウを
-       前面に出すだけ） #>
-    param([string]$OrcaPath, [string]$Cwd, [string]$Agent)
+       前面に出すだけ）。
+       リモートのセッションは、ペアリング先の ID（$Environment）と区画（$PaneKey）を渡す。一覧も切り替えも、そのペアリング先に
+       向けて行い（--environment）、タブは区画で選ぶ（Select-OrcaTerminalByPane） #>
+    param([string]$OrcaPath, [string]$Cwd, [string]$Agent, [string]$Environment = '', [string]$PaneKey = '')
     Stop-OrcaTabSwitch
     $cli = Get-OrcaCliPath -OrcaPath $OrcaPath
-    if (-not $cli -or -not $Cwd) { return }
-    $p = [Diagnostics.Process]::Start((New-OrcaCliStartInfo -Cli $cli -Arguments @('terminal', 'list', '--json') -Capture))
+    if (-not $cli) { return }
+    $arguments = @('terminal', 'list', '--json')
+    if ($Environment) {
+        if (-not (Test-OrcaId $Environment) -or -not (Test-OrcaId $PaneKey)) { return }
+        $arguments = @('terminal', 'list', '--environment', $Environment, '--json')
+    }
+    elseif (-not $Cwd) { return }
+    $p = [Diagnostics.Process]::Start((New-OrcaCliStartInfo -Cli $cli -Arguments $arguments -Capture))
     if (-not $p) { return }
     $script:OrcaSwitch = New-OrcaSwitchState -Proc $p -Task $p.StandardOutput.ReadToEndAsync() -Started (Get-Date) `
-        -Cwd $Cwd -Agent $Agent -Cli $cli -Phase 'list'
+        -Cwd $Cwd -Agent $Agent -Cli $cli -Phase 'list' -Environment $Environment -PaneKey $PaneKey
     $script:OrcaTimer.Start()
 }
 
@@ -1980,21 +2040,219 @@ function Update-OrcaTabSwitch {
             return
         }
         $handle = $null
-        try { $handle = Select-OrcaTerminal -Terminals (ConvertFrom-OrcaTerminalList $s.Task.Result) -Cwd $s.Cwd -Agent $s.Agent }
+        try {
+            $terminals = ConvertFrom-OrcaTerminalList $s.Task.Result
+            if ($s.Environment) { $handle = Select-OrcaTerminalByPane -Terminals $terminals -PaneKey $s.PaneKey }
+            else { $handle = Select-OrcaTerminal -Terminals $terminals -Cwd $s.Cwd -Agent $s.Agent }
+        }
         catch { $handle = $null }
         # 出力を読み終えたので、CLI はもう終わるところ。少し待ってから片付ける（終わっていなければ、子のプロセスごと止める）
         try { [void]$s.Proc.WaitForExit(1000) } catch { }
         Stop-OrcaTabSwitch
         if (-not $handle) { $script:OrcaTimer.Stop(); return }
-        $p = [Diagnostics.Process]::Start((New-OrcaCliStartInfo -Cli $s.Cli -Arguments @('terminal', 'switch', '--terminal', $handle, '--json')))
+        $arguments = @('terminal', 'switch', '--terminal', $handle, '--json')
+        if ($s.Environment) { $arguments = @('terminal', 'switch', '--terminal', $handle, '--environment', $s.Environment, '--json') }
+        $p = [Diagnostics.Process]::Start((New-OrcaCliStartInfo -Cli $s.Cli -Arguments $arguments))
         if (-not $p) { $script:OrcaTimer.Stop(); return }
-        $script:OrcaSwitch = New-OrcaSwitchState -Proc $p -Task $null -Started $Now -Cwd $s.Cwd -Agent $s.Agent -Cli $s.Cli -Phase 'switch'
+        $script:OrcaSwitch = New-OrcaSwitchState -Proc $p -Task $null -Started $Now -Cwd $s.Cwd -Agent $s.Agent -Cli $s.Cli -Phase 'switch' `
+            -Environment $s.Environment -PaneKey $s.PaneKey
         return
     }
     if ($s.Proc.HasExited -or ($Now - $s.Started).TotalSeconds -gt $script:OrcaTimeoutSec) {
         Stop-OrcaTabSwitch
         $script:OrcaTimer.Stop()
     }
+}
+
+# Orca のリモート（ペアリング先）のセッション（D-141、D-145、D-147、D-149）。Orca の CLI は裏で動かし、状態を見る timer で受け取る
+$script:OrcaRemoteIds = @()        # 選んだペアリング先の ID（設定の OrcaRemote）。下で設定から入れる
+$script:OrcaRemoteNames = @{}      # ペアリング先の ID -> 名前（orca environment list --json）。「フォルダ」の前に付ける
+$script:OrcaRemoteNamesAt = $null  # ペアリング先の名前を、最後に取りに行った時刻
+$script:OrcaRemotePoll = $null     # 動かしている CLI（Proc、StartTime、Task、Started、Phase（envs か ps）、EnvId）
+$script:OrcaRemoteNext = @{}       # ペアリング先の ID -> 次に読む時刻
+$script:OrcaRemoteFails = @{}      # ペアリング先の ID -> 続けて読めなかった回数
+$script:OrcaRemoteApps = @()       # 見えるウィンドウを持つ Orca（Get-OrcaWindowList）。10 秒ごとと、読む前に調べ直す
+$script:OrcaRemoteAppsAt = $null
+$script:OrcaRemoteFailLimit = 3    # 続けてこの回数読めなければ、そのペアリング先のセッションを消す
+
+function Stop-OrcaRemotePoll {
+    <# ペアリング先を読んでいる CLI を片付ける。まだ動いていれば、少し待ってから、子のプロセスごと止める #>
+    $poll = $script:OrcaRemotePoll
+    $script:OrcaRemotePoll = $null
+    if (-not $poll) { return }
+    try {
+        if (-not $poll.Proc.HasExited -and -not $poll.Proc.WaitForExit(200)) { Stop-ProcessTree -Id $poll.Proc.Id -StartTime $poll.StartTime }
+    }
+    catch { }
+    try { $poll.Proc.Dispose() } catch { }
+}
+
+function Start-OrcaRemotePoll {
+    <# Orca の CLI を裏で起動する。$Phase が envs ならペアリング先の一覧（この PC の中だけで済む）、ps ならペアリング先 $EnvId の
+       セッションの一覧（ペアリング先へ通信する）。起動できなければ $false #>
+    param([string]$Phase, [string]$EnvId = '')
+    $app = @($script:OrcaRemoteApps) | Select-Object -First 1
+    if (-not $app) { return $false }
+    $cli = Get-OrcaCliPath -OrcaPath $app.Path
+    if (-not $cli) { return $false }
+    $arguments = @('environment', 'list', '--json')
+    if ($Phase -eq 'ps') {
+        if (-not (Test-OrcaId $EnvId)) { return $false }
+        $arguments = @('worktree', 'ps', '--environment', $EnvId, '--json')
+    }
+    $p = [Diagnostics.Process]::Start((New-OrcaCliStartInfo -Cli $cli -Arguments $arguments -Capture))
+    if (-not $p) { return $false }
+    $startTime = $null
+    try { $startTime = $p.StartTime } catch { }
+    $script:OrcaRemotePoll = [pscustomobject]@{
+        Proc = $p; StartTime = $startTime; Task = $p.StandardOutput.ReadToEndAsync(); Started = (Get-Date); Phase = $Phase; EnvId = $EnvId
+    }
+    return $true
+}
+
+function Set-OrcaRemoteFailed {
+    <# ペアリング先 $EnvId を読めなかった。60 秒あけ、続けて $script:OrcaRemoteFailLimit 回読めなければ、そのセッションを消す。
+       消したものがあれば $true #>
+    param([string]$EnvId, [datetime]$Now)
+    $script:OrcaRemoteFails[$EnvId] = [int]$script:OrcaRemoteFails[$EnvId] + 1
+    $script:OrcaRemoteNext[$EnvId] = $Now.AddSeconds((Get-OrcaRemoteInterval -Failed))
+    if ($script:OrcaRemoteFails[$EnvId] -ge $script:OrcaRemoteFailLimit) { return (Clear-OrcaRemoteState -EnvId $EnvId) }
+    return $false
+}
+
+function Update-OrcaRemote {
+    <# 選んだペアリング先のセッションを、間隔をあけて読む（Get-OrcaRemoteStep）。timer から呼ぶ。
+       戻り値は、一覧が変わったか（Changed）と、新しく待ち・完了になったセッションがあるか（Alert） #>
+    param([datetime]$Now)
+    $r = [pscustomobject]@{ Changed = $false; Alert = $false }
+    $ids = @($script:OrcaRemoteIds)
+    if ($ids.Count -eq 0 -and -not $script:OrcaRemotePoll) {
+        if (Clear-OrcaRemoteState) { $r.Changed = $true }
+        return $r
+    }
+    $due = Get-OrcaRemoteDue -Ids $ids -Next $script:OrcaRemoteNext
+    $dueNow = $due -and ($due.At -isnot [datetime] -or $Now -ge $due.At)
+    # Orca が動いているかは、10 秒ごとと、読む前に調べる
+    if ($script:OrcaRemoteAppsAt -isnot [datetime] -or ($Now - $script:OrcaRemoteAppsAt).TotalSeconds -ge 10 -or ($dueNow -and -not $script:OrcaRemotePoll)) {
+        try { $script:OrcaRemoteApps = @(Get-OrcaWindowList) } catch { $script:OrcaRemoteApps = @() }
+        $script:OrcaRemoteAppsAt = $Now
+    }
+    $poll = $script:OrcaRemotePoll
+    $next = $null
+    if ($due) { $next = $due.At }
+    $started = $null
+    $completed = $false
+    if ($poll) { $started = $poll.Started; $completed = [bool]$poll.Task.IsCompleted }
+    $step = Get-OrcaRemoteStep -Now $Now -Selected $ids.Count -OrcaRunning (@($script:OrcaRemoteApps).Count -gt 0) -Running ([bool]$poll) `
+        -Completed $completed -Started $started -Next $next
+    switch ($step) {
+        'clear' {
+            Stop-OrcaRemotePoll
+            if (Clear-OrcaRemoteState) { $r.Changed = $true }
+            # Orca が動き出したら、すぐ読む
+            $script:OrcaRemoteNext = @{}
+            $script:OrcaRemoteFails = @{}
+        }
+        'timeout' {
+            $envId = $poll.EnvId
+            $phase = $poll.Phase
+            Stop-OrcaRemotePoll
+            if ($phase -eq 'ps' -and $envId) { if (Set-OrcaRemoteFailed -EnvId $envId -Now $Now) { $r.Changed = $true } }
+        }
+        'collect' {
+            $envId = $poll.EnvId
+            $phase = $poll.Phase
+            $json = $null
+            try { $json = $poll.Task.Result } catch { $json = $null }
+            Stop-OrcaRemotePoll
+            if ($phase -eq 'envs') {
+                # 読めなければ、名前は ID のままにして、60 秒後に取り直す
+                try {
+                    $names = @{}
+                    $list = ConvertFrom-OrcaEnvironmentList $json
+                    foreach ($e in $list) { $names[$e.Id] = $e.Name }
+                    $script:OrcaRemoteNames = $names
+                }
+                catch { }
+            }
+            elseif ($ids -cnotcontains $envId) {
+                # 読んでいるあいだに、選択を外した
+                if (Clear-OrcaRemoteState -EnvId $envId) { $r.Changed = $true }
+            }
+            else {
+                $sessions = $null
+                try { $sessions = ConvertTo-OrcaRemoteSessions -Json $json -EnvId $envId } catch { $sessions = $null }
+                if ($null -eq $sessions) {
+                    if (Set-OrcaRemoteFailed -EnvId $envId -Now $Now) { $r.Changed = $true }
+                }
+                else {
+                    $name = [string]$script:OrcaRemoteNames[$envId]
+                    if (-not $name) { $name = $envId }
+                    $script:OrcaRemoteFails[$envId] = 0
+                    $script:OrcaRemoteNext[$envId] = $Now.AddSeconds((Get-OrcaRemoteInterval -Sessions $sessions))
+                    if (Update-OrcaRemoteState -Sessions $sessions -EnvId $envId -EnvName $name -Now $Now) { $r.Alert = $true }
+                    $r.Changed = $true
+                }
+            }
+        }
+        'start' {
+            # 名前を知らないペアリング先があれば、先に一覧を取る（60 秒に 1 回まで）
+            $unnamed = @($ids | Where-Object { -not $script:OrcaRemoteNames.ContainsKey($_) }).Count -gt 0
+            if ($unnamed -and ($script:OrcaRemoteNamesAt -isnot [datetime] -or ($Now - $script:OrcaRemoteNamesAt).TotalSeconds -ge 60)) {
+                $script:OrcaRemoteNamesAt = $Now
+                if (Start-OrcaRemotePoll -Phase 'envs') { return $r }
+            }
+            if (-not (Start-OrcaRemotePoll -Phase 'ps' -EnvId $due.Id)) {
+                if (Set-OrcaRemoteFailed -EnvId $due.Id -Now $Now) { $r.Changed = $true }
+            }
+        }
+    }
+    return $r
+}
+
+function Get-OrcaEnvironments {
+    <# ペアリング先の一覧（Id、Name）を、Orca の CLI（orca environment list --json）で取る。メニューを開いたときに呼ぶ。
+       この PC の中だけで済む（ペアリング先へは通信しない）。$TimeoutMs で返らなければ止める。Orca が動いていない、
+       読めないときは $null #>
+    param([int]$TimeoutMs = 3000)
+    $app = $null
+    try { $app = @(Get-OrcaWindowList) | Select-Object -First 1 } catch { $app = $null }
+    if (-not $app) { return $null }
+    $cli = Get-OrcaCliPath -OrcaPath $app.Path
+    if (-not $cli) { return $null }
+    $p = $null
+    try {
+        $p = [Diagnostics.Process]::Start((New-OrcaCliStartInfo -Cli $cli -Arguments @('environment', 'list', '--json') -Capture))
+        if (-not $p) { return $null }
+        $startTime = $null
+        try { $startTime = $p.StartTime } catch { }
+        $task = $p.StandardOutput.ReadToEndAsync()
+        if (-not $task.Wait($TimeoutMs)) {
+            try { Stop-ProcessTree -Id $p.Id -StartTime $startTime } catch { }
+            return $null
+        }
+        $list = ConvertFrom-OrcaEnvironmentList $task.Result
+        return , $list
+    }
+    catch { return $null }
+    finally { if ($p) { try { $p.Dispose() } catch { } } }
+}
+
+function Set-OrcaRemoteSelected {
+    <# ペアリング先 $EnvId を選ぶ・外す。設定に覚え、外したときはそのセッションを消す。選んだときは、すぐ読む #>
+    param([string]$EnvId, [string]$EnvName, [bool]$Selected)
+    if (-not (Test-OrcaId $EnvId)) { return }
+    $ids = @($script:OrcaRemoteIds | Where-Object { $_ -cne $EnvId })
+    if ($Selected) { $ids += $EnvId }
+    $script:OrcaRemoteIds = ConvertFrom-OrcaRemoteSetting ($ids -join ';')
+    try { Write-AndonSettingText -Key $script:SettingsKey -Name 'OrcaRemote' -Value ($script:OrcaRemoteIds -join ';') }
+    catch { }   # 覚えられなくても、今の andon では切り替える
+    $script:OrcaRemoteNext.Remove($EnvId)
+    $script:OrcaRemoteFails.Remove($EnvId)
+    if ($Selected) {
+        if ($EnvName) { $script:OrcaRemoteNames[$EnvId] = $EnvName }
+    }
+    elseif (Clear-OrcaRemoteState -EnvId $EnvId) { Update-ListView }
 }
 
 # Codex のセッション（D-109〜D-115）
@@ -2082,7 +2340,7 @@ function Invoke-Alert {
     }
     if ($form.Visible) { Start-Flash -Hits $hits -Windows $windows }
     $quiet = $null
-    if (-not $script:OrcaNotify) { $quiet = Get-OrcaSessionKeys -Windows $windows }
+    if (-not $script:OrcaNotify) { $quiet = Get-OrcaSessionKeys -Windows $windows -Entries $hits }
     $notice = Get-AlertNotice -Entries $hits -Now $Now -Quiet $quiet
     if ($notice) {
         # 通知をクリックしたら、このセッションを開く。覚えるのは最新の 1 件分でよい。
@@ -2129,7 +2387,12 @@ function Get-AlertWindows {
     try { $apps = @(Get-OrcaWindowList) } catch { $apps = @() }
     foreach ($e in $Hits) {
         $window = $null
-        if ($null -ne $procs) {
+        if (Test-OrcaKey ([string]$e.Key)) {
+            # Orca のリモートのセッションは、この PC の Orca のウィンドウ（あれば）で見分ける
+            $app = @($apps) | Select-Object -First 1
+            if ($app) { $window = [pscustomobject]@{ Handle = [long]$app.Handle; IsCode = $false; OrcaPath = [string]$app.Path } }
+        }
+        elseif ($null -ne $procs) {
             $window = Find-SessionWindow -Entry $e -CodeProcessName $script:CodeProcessName -Processes $procs -Windows $wins -AppWindows $apps
         }
         $map[[string]$e.Key] = $window
@@ -2250,6 +2513,10 @@ $miCodex = New-Object System.Windows.Forms.ToolStripMenuItem('Codex の状態を
 # Orca の区画のセッションも Windows の通知に出すか（D-136）。Orca が動いているときと、チェックが付いているときだけ出す
 $miOrcaNotify = New-Object System.Windows.Forms.ToolStripMenuItem('Orca のセッションも通知する')
 [void]$trayMenu.Items.Add($miOrcaNotify)
+# Orca のリモート（ペアリング先）のセッションを出す（D-141）。下に、ペアリング先の名前を並べる（開いたときに取る）
+$miOrcaRemote = New-Object System.Windows.Forms.ToolStripMenuItem('Orca のリモートを出す')
+[void]$miOrcaRemote.DropDownItems.Add('読み込み中…')
+[void]$trayMenu.Items.Add($miOrcaRemote)
 $miTheme = New-Object System.Windows.Forms.ToolStripMenuItem('テーマ')
 $miThemeItems = @()
 foreach ($choice in @(@{ Text = 'ライト'; Name = 'Light' }, @{ Text = 'ダーク'; Name = 'Dark' }, @{ Text = 'Windows に合わせる'; Name = 'System' })) {
@@ -2271,6 +2538,7 @@ $script:NoticeKey = $null
 $script:NoticeUpdate = $false   # 最後に出した通知が、新しい版の知らせか（クリックで、アップデートするかを尋ねる）
 # Orca の区画のセッションも Windows の通知に出すか。既定は出さない（Orca が自分で通知するので、重ねない。D-140）。点滅と一覧は変わらない
 $script:OrcaNotify = $script:Settings.OrcaNotify -eq $true
+$script:OrcaRemoteIds = @($script:Settings.OrcaRemote)   # 選んだペアリング先。既定は、どれも選んでいない
 
 $lv = New-Object System.Windows.Forms.ListView
 $lv.Dock = 'Fill'
@@ -2681,7 +2949,7 @@ function Update-ListView {
         $name = $e.Name
         if ($script:Vertical) { $name = Get-VerticalName -Name $e.Name -Cwd $e.Cwd }
         [void]$item.SubItems.Add($name)
-        [void]$item.SubItems.Add($e.Cwd)
+        [void]$item.SubItems.Add((Get-EntryFolder $e))
         $item.Tag = $e.Key
         # 行の色はテーマの色の組（Get-ThemePalette）から。実行中は見てほしい行ではないので、太字にしない
         $style = $script:Palette.Rows[(Get-Rank $e)]
@@ -3028,6 +3296,47 @@ $trayMenu.Add_Opening({
         try { $orcaRunning = @(Get-OrcaWindowList).Count -gt 0 } catch { $orcaRunning = $false }
         $miOrcaNotify.Visible = $orcaRunning -or $script:OrcaNotify
         $miOrcaNotify.Checked = $script:OrcaNotify
+        $miOrcaRemote.Visible = $orcaRunning -or @($script:OrcaRemoteIds).Count -gt 0
+        $miOrcaRemote.Checked = @($script:OrcaRemoteIds).Count -gt 0
+    })
+# 「Orca のリモートを出す」を開いたら、ペアリング先の一覧を取って並べる。選んでいるのに一覧にないものも、外せるように出す
+$miOrcaRemote.Add_DropDownOpening({
+        $miOrcaRemote.DropDownItems.Clear()
+        $envs = $null
+        try { $envs = Get-OrcaEnvironments } catch { $envs = $null }
+        $shown = @{}
+        $rows = @()
+        foreach ($e in @($envs)) { if ($e) { $rows += [pscustomobject]@{ Id = $e.Id; Name = $e.Name; Text = $e.Name }; $shown[$e.Id] = $true } }
+        foreach ($id in @($script:OrcaRemoteIds)) {
+            if (-not $shown.ContainsKey($id)) { $rows += [pscustomobject]@{ Id = $id; Name = ''; Text = "$id（見つかりません）" } }
+        }
+        if ($rows.Count -eq 0) {
+            $text = 'ペアリング先がありません'
+            if ($null -eq $envs) { $text = 'Orca から一覧を取れませんでした' }
+            $none = $miOrcaRemote.DropDownItems.Add($text)
+            $none.Enabled = $false
+            return
+        }
+        foreach ($row in $rows) {
+            $mi = New-Object System.Windows.Forms.ToolStripMenuItem(([string]$row.Text).Replace('&', '&&'))
+            $mi.Tag = $row
+            $mi.Checked = @($script:OrcaRemoteIds) -ccontains $row.Id
+            $mi.Add_Click({
+                    param($source)
+                    $row = $source.Tag
+                    $select = -not $source.Checked
+                    if ($select) {
+                        $text = "「$($row.Name)」のセッションを一覧に出します。`n`n" +
+                        "andon は、Orca が動いているあいだ、Orca の CLI を 10〜60 秒ごとに動かします。CLI は、この PC から「$($row.Name)」へ通信します。`n" +
+                        "受け取った内容のうち、使うのは状態・種類・名前・パスだけで、保存しません。`n`n出しますか。"
+                        $answer = [System.Windows.Forms.MessageBox]::Show($text, 'andon', [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                            [System.Windows.Forms.MessageBoxIcon]::Question, [System.Windows.Forms.MessageBoxDefaultButton]::Button2)
+                        if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+                    }
+                    try { Set-OrcaRemoteSelected -EnvId $row.Id -EnvName $row.Name -Selected $select } catch { }
+                })
+            [void]$miOrcaRemote.DropDownItems.Add($mi)
+        }
     })
 # テーマを選んだら、覚えて塗り直す
 foreach ($mi in $miThemeItems) {
@@ -3148,6 +3457,16 @@ $timer.Add_Tick({
                 if ($codex.Alert) { Invoke-Alert -Now $now }
             }
             catch { $script:CodexSignature = $null }
+            # Orca のリモートのセッション。失敗しても、ほかのセッションの表示は続ける
+            try {
+                $remote = Update-OrcaRemote -Now $now
+                if ($remote.Changed) {
+                    Update-ListView
+                    $script:NextRender = $now.AddSeconds(5)
+                }
+                if ($remote.Alert) { Invoke-Alert -Now $now }
+            }
+            catch { try { Stop-OrcaRemotePoll } catch { } }
             if ($script:PollTask) {
                 if (-not $script:PollTask.IsCompleted) {
                     if (($now - $script:PollStarted).TotalSeconds -gt 30) {
@@ -3203,6 +3522,7 @@ $form.Add_FormClosed({
         $timer.Stop()
         $script:OrcaTimer.Stop()
         try { Stop-OrcaTabSwitch } catch { }
+        try { Stop-OrcaRemotePoll } catch { }
         # 消さずに終わると、マウスを重ねるまでトレイにアイコンが残る
         $tray.Visible = $false
         $tray.Dispose()
