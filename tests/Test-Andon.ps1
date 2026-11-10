@@ -2205,7 +2205,7 @@ function New-OrcaAgent {
         stateStartedAt = $At; updatedAt = $At + 5
     }
 }
-function New-OrcaWorktree { param([string]$Name, [string]$Path, [object[]]$Agents = @()) return [ordered]@{ displayName = $Name; path = $Path; status = 'active'; agents = @($Agents) } }
+function New-OrcaWorktree { param([string]$Name, [string]$Path, [object[]]$Agents = @(), $Repo = $null) return [ordered]@{ repo = $Repo; displayName = $Name; path = $Path; status = 'active'; agents = @($Agents) } }
 function ConvertTo-OrcaPsJson { param([object[]]$Worktrees, [bool]$Ok = $true, [bool]$Truncated = $false) return (ConvertTo-Json -Depth 8 ([ordered]@{ id = 'x'; ok = $Ok; result = [ordered]@{ worktrees = @($Worktrees); totalCount = @($Worktrees).Count; truncated = $Truncated } })) }
 function Format-OrcaSession { param($S) return '{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}' -f $S.Key, $S.Status, $S.Done, $S.Name, $S.Cwd, $S.Agent, $S.At, $S.Active, $S.WaitingFor }
 
@@ -2267,6 +2267,13 @@ Assert-Equal (@($remote | ForEach-Object { Format-OrcaSession $_ }) -join "`n") 
 Assert-Equal (@($remote[0].PSObject.Properties.Name) -join ',') 'Key,Status,WaitingFor,Done,Name,Cwd,Agent,PaneKey,At,Active' 'プロンプト、返事、ツールの入力は取り出さない'
 Assert-True (-not ((ConvertTo-Json -Depth 5 $remote) -match 'secret')) '取り出したものに、プロンプトや返事の文字が入っていない'
 Assert-Equal (ConvertTo-OrcaRemoteSessions -Json (ConvertTo-OrcaPsJson @()) -EnvId $envA).Count 0 'workspace がなければ空'
+$named = ConvertTo-OrcaRemoteSessions -EnvId $envA -Json (ConvertTo-OrcaPsJson @(
+        (New-OrcaWorktree 'main' '/home/user/proj-a' @((New-OrcaAgent 'n:1' 'working')) -Repo "proj-a`n")
+        (New-OrcaWorktree '' '/home/user/proj-b' @((New-OrcaAgent 'n:2' 'working')) -Repo 'proj-b')
+        (New-OrcaWorktree 'feature' '/home/user/proj-c' @((New-OrcaAgent 'n:3' 'working')) -Repo 7)
+        (New-OrcaWorktree '' '/home/user/proj-d' @((New-OrcaAgent 'n:4' 'working')))
+    ))
+Assert-Equal (@($named | ForEach-Object { $_.Name }) -join '|') 'proj-a : main|proj-b|feature|' '名前は「プロジェクトの名前 : workspace の名前」。片方しかなければ、ある方だけ。文字でないプロジェクトの名前は使わない（D-151）'
 Assert-Throws { ConvertTo-OrcaRemoteSessions -Json (ConvertTo-OrcaPsJson @() -Truncated $true) -EnvId $envA } '一覧が切れていれば例外（切れた分を、終わったものとして消さない）'
 Assert-Throws { ConvertTo-OrcaRemoteSessions -Json (ConvertTo-OrcaPsJson @() -Ok $false) -EnvId $envA } 'ok でなければ例外'
 Assert-Throws { ConvertTo-OrcaRemoteSessions -Json $psJson -EnvId 'bad id' } 'ペアリング先の ID の形が違えば例外'

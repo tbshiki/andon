@@ -1531,7 +1531,7 @@ function Clear-CodexState {
 # Orca のリモート（ペアリングした Orca サーバー）のセッション（D-141、D-143、D-145、D-147）。
 # 利用者がトレイのメニューで選んだペアリング先だけを、Orca の CLI（orca worktree ps --environment <ID> --json）で読む。
 # CLI は、この PC からペアリング先へ通信する。この PC で Orca が動いているときだけ読み、andon からは Orca を起動しない。
-# 出力にはプロンプトや返事の文字も入るが、使うのは、状態、エージェントの種類、区画、workspace の名前、パス、状態が変わった時刻だけ。
+# 出力にはプロンプトや返事の文字も入るが、使うのは、状態、エージェントの種類、区画、プロジェクトと workspace の名前、パス、状態が変わった時刻だけ。
 # ほかは捨て、保存しない。CLI が返す文字は信用せず、ID の形と長さを確かめてから使う。
 # セッションのキーは orca:<ペアリング先の ID>:<区画（paneKey）>。この PC にプロセスがないので、ウィンドウは探さない
 # ---------------------------------------------------------------------------
@@ -1608,7 +1608,12 @@ function ConvertTo-OrcaRemoteSessions {
     $seen = @{}
     foreach ($w in @(Get-JsonValue $result 'worktrees')) {
         if ($null -eq $w) { continue }
+        # 名前は「プロジェクトの名前 : workspace の名前」（workspace の名前は main などで、それだけでは見分けにくいため。D-151）。
+        # 片方しかなければ、ある方だけ
+        $project = ConvertTo-OrcaText (Get-JsonValue $w 'repo') -Max 60
         $name = ConvertTo-OrcaText (Get-JsonValue $w 'displayName') -Max 100
+        if ($project -and $name) { $name = '{0} : {1}' -f $project, $name }
+        elseif ($project) { $name = $project }
         $path = ConvertTo-OrcaText (Get-JsonValue $w 'path') -Max 260
         foreach ($a in @(Get-JsonValue $w 'agents')) {
             if ($null -eq $a) { continue }
