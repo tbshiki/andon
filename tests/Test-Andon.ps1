@@ -2255,14 +2255,14 @@ $psJson = ConvertTo-OrcaPsJson @(
 )
 $remote = ConvertTo-OrcaRemoteSessions -Json $psJson -EnvId $envA
 Assert-Equal (@($remote | ForEach-Object { Format-OrcaSession $_ }) -join "`n") (@(
-        "orca:${envA}:tab1:leaf1|busy|False|proj-a|/home/user/proj-a|claude|1000|True|"
-        "orca:${envA}:tab1:leaf2|idle|True|proj-a|/home/user/proj-a|codex|2000|False|"
-        "orca:${envA}:tab1:leaf3|idle|False|proj-a|/home/user/proj-a|claude|3000|False|"
-        "orca:${envA}:tab2:leaf1|idle|False|proj-b x|/home/user/proj-b|claude|4000|False|"
-        "orca:${envA}:tab2:leaf2|blocked|False|proj-b x|/home/user/proj-b|claude|5000|False|"
-        "orca:${envA}:tab2:leaf4|waiting|False|proj-b x|/home/user/proj-b|claude|7000|True|permission prompt"
-        "orca:${envA}:tab2:leaf6|waiting|False|proj-b x|/home/user/proj-b|claude|9000|True|"
-        "orca:${envA}:tab2:leaf7|waiting|False|proj-b x|/home/user/proj-b|claude|9500|True|"
+        "orca:${envA}:tab1:leaf1|busy|False|proj-a (1)|/home/user/proj-a|claude|1000|True|"
+        "orca:${envA}:tab1:leaf2|idle|True|proj-a (2)|/home/user/proj-a|codex|2000|False|"
+        "orca:${envA}:tab1:leaf3|idle|False|proj-a (3)|/home/user/proj-a|claude|3000|False|"
+        "orca:${envA}:tab2:leaf1|idle|False|proj-b x (1)|/home/user/proj-b|claude|4000|False|"
+        "orca:${envA}:tab2:leaf2|blocked|False|proj-b x (2)|/home/user/proj-b|claude|5000|False|"
+        "orca:${envA}:tab2:leaf4|waiting|False|proj-b x (3)|/home/user/proj-b|claude|7000|True|permission prompt"
+        "orca:${envA}:tab2:leaf6|waiting|False|proj-b x (4)|/home/user/proj-b|claude|9000|True|"
+        "orca:${envA}:tab2:leaf7|waiting|False|proj-b x (5)|/home/user/proj-b|claude|9500|True|"
     ) -join "`n") 'working は実行中、waiting は待ち（Orca が止まっていると見ていれば許可待ち）、done は完了、中断した done と idle は待機。知らない状態はそのまま出す。子の区画、ほかのエージェント、形の違う区画、重なり、形の違う状態、andon の状態の名前（busy）は出さない'
 Assert-Equal (@($remote[0].PSObject.Properties.Name) -join ',') 'Key,Status,WaitingFor,Done,Name,Cwd,Agent,PaneKey,At,Active' 'プロンプト、返事、ツールの入力は取り出さない'
 Assert-True (-not ((ConvertTo-Json -Depth 5 $remote) -match 'secret')) '取り出したものに、プロンプトや返事の文字が入っていない'
@@ -2274,6 +2274,16 @@ $named = ConvertTo-OrcaRemoteSessions -EnvId $envA -Json (ConvertTo-OrcaPsJson @
         (New-OrcaWorktree '' '/home/user/proj-d' @((New-OrcaAgent 'n:4' 'working')))
     ))
 Assert-Equal (@($named | ForEach-Object { $_.Name }) -join '|') 'proj-a : main|proj-b|feature|' '名前は「プロジェクトの名前 : workspace の名前」。片方しかなければ、ある方だけ。文字でないプロジェクトの名前は使わない（D-151）'
+$numbered = ConvertTo-OrcaRemoteSessions -EnvId $envA -Json (ConvertTo-OrcaPsJson @(
+        (New-OrcaWorktree 'main' '/home/user/proj-a' @((New-OrcaAgent 'tabB:leaf1' 'working'), (New-OrcaAgent 'tabA:leaf2' 'done'), (New-OrcaAgent 'taba:leaf1' 'working' -Type 'gemini'), (New-OrcaAgent 'tabA:leaf1' 'working' -Type 'codex')) -Repo 'proj-a')
+        (New-OrcaWorktree 'main' '/home/user/proj-b' @((New-OrcaAgent 'tabC:leaf1' 'working')) -Repo 'proj-b')
+        (New-OrcaWorktree '' '/home/user/proj-c' @((New-OrcaAgent 'tabD:leaf2' 'working'), (New-OrcaAgent 'tabD:leaf1' 'working')))
+    ))
+Assert-Equal (@($numbered | ForEach-Object { "$($_.PaneKey)=$($_.Name)" }) -join '|') 'tabB:leaf1=proj-a : main (3)|tabA:leaf2=proj-a : main (2)|tabA:leaf1=proj-a : main (1)|tabC:leaf1=proj-b : main|tabD:leaf2=(2)|tabD:leaf1=(1)' '同じ workspace に 2 つ以上あれば、区画の ID の順に番号を付ける。出さない行は数えない。1 つだけなら付けない（D-152）'
+$numberedAgain = ConvertTo-OrcaRemoteSessions -EnvId $envA -Json (ConvertTo-OrcaPsJson @(
+        (New-OrcaWorktree 'main' '/home/user/proj-a' @((New-OrcaAgent 'tabA:leaf1' 'done' -Type 'codex'), (New-OrcaAgent 'tabA:leaf2' 'working'), (New-OrcaAgent 'tabB:leaf1' 'done')) -Repo 'proj-a')
+    ))
+Assert-Equal (@($numberedAgain | ForEach-Object { "$($_.PaneKey)=$($_.Name)" }) -join '|') 'tabA:leaf1=proj-a : main (1)|tabA:leaf2=proj-a : main (2)|tabB:leaf1=proj-a : main (3)' '番号は、行の並びや状態が変わっても、区画ごとに同じ'
 Assert-Throws { ConvertTo-OrcaRemoteSessions -Json (ConvertTo-OrcaPsJson @() -Truncated $true) -EnvId $envA } '一覧が切れていれば例外（切れた分を、終わったものとして消さない）'
 Assert-Throws { ConvertTo-OrcaRemoteSessions -Json (ConvertTo-OrcaPsJson @() -Ok $false) -EnvId $envA } 'ok でなければ例外'
 Assert-Throws { ConvertTo-OrcaRemoteSessions -Json $psJson -EnvId 'bad id' } 'ペアリング先の ID の形が違えば例外'

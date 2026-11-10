@@ -1594,6 +1594,7 @@ function ConvertTo-OrcaRemoteSessions {
        - エージェントの種類（agentType）が claude か codex の行だけを使う。ほかのエージェントは出さない
        - ほかの区画から起動された行（parentPaneKey があるもの）は出さない
        - 区画（paneKey）の形が違う行は出さない
+       - 名前は「プロジェクトの名前 : workspace の名前」。同じ workspace に 2 つ以上あれば、区画の ID の順の番号を付ける
        - 状態（state）は、working を実行中（busy）、waiting を待ち（waiting）、done を完了（idle で Done）、idle を待機（idle）にする。
          待ちのうち、Orca が止まっていると見ているもの（programStatus.state が blocked。許可を求める画面で確かめた）は、許可待ち。
          中断した done（interrupted）は、完了にしない（手元で止めたので）。
@@ -1615,6 +1616,7 @@ function ConvertTo-OrcaRemoteSessions {
         if ($project -and $name) { $name = '{0} : {1}' -f $project, $name }
         elseif ($project) { $name = $project }
         $path = ConvertTo-OrcaText (Get-JsonValue $w 'path') -Max 260
+        $inWorkspace = @()   # この workspace のセッション。2 つ以上あれば、名前に番号を付ける
         foreach ($a in @(Get-JsonValue $w 'agents')) {
             if ($null -eq $a) { continue }
             $agent = Get-JsonValue $a 'agentType'
@@ -1646,11 +1648,22 @@ function ConvertTo-OrcaRemoteSessions {
                 try { $at = [long]$started } catch { $at = [long]0 }
             }
             $seen[$key] = $true
-            $sessions += [pscustomobject]@{
+            $inWorkspace += [pscustomobject]@{
                 Key = $key; Status = $status; WaitingFor = $waitingFor; Done = $done; Name = $name; Cwd = $path
                 Agent = $agent; PaneKey = $pane; At = $at; Active = ($status -eq 'busy' -or $status -eq 'waiting')
             }
         }
+        # 同じ workspace に 2 つ以上あれば、区画の ID の順に (1)、(2)… を付ける（D-152）。区画の ID は変わらないので、
+        # セッションが増えたり減ったりしなければ、番号は変わらない
+        if ($inWorkspace.Count -ge 2) {
+            $panes = [string[]]@($inWorkspace | ForEach-Object { $_.PaneKey })
+            [Array]::Sort($panes, [StringComparer]::Ordinal)
+            foreach ($s in $inWorkspace) {
+                $number = '({0})' -f ([Array]::IndexOf($panes, [string]$s.PaneKey) + 1)
+                if ($s.Name) { $s.Name = '{0} {1}' -f $s.Name, $number } else { $s.Name = $number }
+            }
+        }
+        $sessions += $inWorkspace
     }
     return , $sessions
 }
