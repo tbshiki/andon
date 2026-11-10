@@ -2079,6 +2079,7 @@ $script:OrcaRemoteFails = @{}      # ペアリング先の ID -> 続けて読め
 $script:OrcaRemoteApps = @()       # 見えるウィンドウを持つ Orca（Get-OrcaWindowList）。10 秒ごとと、読む前に調べ直す
 $script:OrcaRemoteAppsAt = $null
 $script:OrcaRemoteFailLimit = 3    # 続けてこの回数読めなければ、そのペアリング先のセッションを消す
+$script:OrcaRemoteLimit = 500      # 1 回に読む workspace の数（--limit）。これより多くて一覧が切れたら、読めなかったものとして扱う
 
 function Stop-OrcaRemotePoll {
     <# ペアリング先を読んでいる CLI を片付ける。まだ動いていれば、少し待ってから、子のプロセスごと止める #>
@@ -2103,7 +2104,7 @@ function Start-OrcaRemotePoll {
     $arguments = @('environment', 'list', '--json')
     if ($Phase -eq 'ps') {
         if (-not (Test-OrcaId $EnvId)) { return $false }
-        $arguments = @('worktree', 'ps', '--environment', $EnvId, '--json')
+        $arguments = @('worktree', 'ps', '--environment', $EnvId, '--limit', [string]$script:OrcaRemoteLimit, '--json')
     }
     $p = [Diagnostics.Process]::Start((New-OrcaCliStartInfo -Cli $cli -Arguments $arguments -Capture))
     if (-not $p) { return $false }
@@ -2137,8 +2138,9 @@ function Update-OrcaRemote {
     }
     $due = Get-OrcaRemoteDue -Ids $ids -Next $script:OrcaRemoteNext
     $dueNow = $due -and ($due.At -isnot [datetime] -or $Now -ge $due.At)
-    # Orca が動いているかは、10 秒ごとと、読む前に調べる
-    if ($script:OrcaRemoteAppsAt -isnot [datetime] -or ($Now - $script:OrcaRemoteAppsAt).TotalSeconds -ge 10 -or ($dueNow -and -not $script:OrcaRemotePoll)) {
+    # Orca が動いているかは、10 秒ごとと、読む前に調べる（動いていないと分かっているあいだは、10 秒ごとだけ）
+    if ($script:OrcaRemoteAppsAt -isnot [datetime] -or ($Now - $script:OrcaRemoteAppsAt).TotalSeconds -ge 10 -or
+        ($dueNow -and -not $script:OrcaRemotePoll -and @($script:OrcaRemoteApps).Count -gt 0)) {
         try { $script:OrcaRemoteApps = @(Get-OrcaWindowList) } catch { $script:OrcaRemoteApps = @() }
         $script:OrcaRemoteAppsAt = $Now
     }
