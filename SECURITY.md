@@ -30,16 +30,18 @@
 - セッションの行や通知をクリックしたときと、新しく待ちや完了が出たとき（点滅と通知の前）に、コンソールのウィンドウ（Windows Terminal や VS Code の統合ターミナルが持つ、隠れたウィンドウを含む）を数え、そのクラスと持ち主を見る。クリックしたときは、セッションを映しているウィンドウを前面に出す（最小化していれば元に戻す）。Windows が断ったときは、前面のウィンドウの入力に一時的につないで（`AttachThreadInput`）、もう一度試す
 - 同じとき、Orca のプロセス（`Orca.exe`）が見えるウィンドウを持つかと、その実行ファイルのパスを読む。セッションが Orca の区画で動いていれば、クリックのときは Orca のウィンドウを前面に出し、新しく待ちや完了が出たときは、「Orca のセッションも通知する」を選んでいなければ Windows の通知を出さない。トレイのメニューを開いたときも、このメニューを出すかを決めるために、Orca が動いているかを見る
 - クリックのときは、そのあと、その `Orca.exe` と同じフォルダの Orca の CLI（`resources\bin\orca.exe`。PATH は見ない）を、ウィンドウを出さずに起動し、`orca terminal list --json` で Orca のターミナルの一覧（handle、worktree のパス、エージェントの種類）を読む。セッションのタブが 1 つに決まれば、`orca terminal switch --terminal <handle> --json` でそのタブに切り替える。CLI には `ORCA_` で始まる環境変数を渡さない。5 秒で終わらなければ止める。Orca の内部のファイルは読まない
+- トレイのメニューの「Orca のリモートを出す」でペアリング先（ペアリングした Orca サーバー）を選んだときだけ、この PC で Orca のウィンドウが出ているあいだ、Orca の CLI を `orca worktree ps --environment <ペアリング先の ID> --json` で定期的に動かす（実行中か待ちのセッションがあれば 10 秒ごと、なければ 60 秒ごと。15 秒で終わらなければ止める）。CLI は、Orca がペアリングのときに覚えた繋ぎ先を使って、この PC からペアリング先のマシンへ通信する。andon は、繋ぎ先も、ペアリングの鍵も読まない。CLI の出力にはプロンプトや返事の文字も入るが、使うのは、状態、エージェントの種類、区画の ID、workspace の名前、パス、状態が変わった時刻だけで、ほかは捨て、保存しない。ID は、英数字と `_` `.` `:` `-` だけのものに限って使う。andon は Orca を起動しない
+- 同じメニューを開いたときと、リモートを読み始めるときに、`orca environment list --json` でペアリング先の一覧を読み、ID と名前だけを使う（この PC の中だけで済む）。リモートのセッションの行や通知をクリックしたときは、`orca terminal list --environment <ID> --json` と `orca terminal switch --terminal <handle> --environment <ID> --json` で、この PC の Orca をそのタブに切り替える
 - 点滅を止めるため、前面のウィンドウを調べ、VS Code のウィンドウなら題名を読む
 - 通知の送り元を `andon` と表示させるため、`HKCU\Software\Classes\AppUserModelId\tbshiki.andon` に表示名を書く
-- ウィンドウの位置と大きさ、「常に手前」、テーマ、縦表示、Orca のセッションも通知するかを、`HKCU\Software\tbshiki\andon` に書き、起動したときに読む（数値だけ。読めない値は使わない）
+- ウィンドウの位置と大きさ、「常に手前」、テーマ、縦表示、Orca のセッションも通知するか、選んだ Orca のペアリング先の ID を、`HKCU\Software\tbshiki\andon` に書き、起動したときに読む（数値と、ペアリング先の ID の並びだけ。読めない値は使わない）
 - テーマを「Windows に合わせる」にしているときは、Windows のアプリ モード（`HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize` の `AppsUseLightTheme`）を読む（書かない）
 - トレイのメニューの「ログオン時に起動」を選んだときだけ、スタートアップのフォルダに `andon.lnk`（スタートメニューの `andon` のショートカットの写し）を作る、または消す。あわせて、タスク マネージャーの有効・無効の記録（`HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder` の値 `andon.lnk`）を消す。インストールした andon だけが行い、clone から動かしている andon は行わない
 - 名前付きのイベント `Local\andon-exit` の合図を受けたら終了する（同じ Windows のセッションのプロセスなら、andon を終了できる）
 - 起動して少し後と、その後 1 日 1 回、`https://api.github.com/repos/tbshiki/andon/releases/latest` を取得して、新しいバージョンがあるかを確かめる。送るのは普通の HTTP の要求（User-Agent は `andon/<バージョン>`）だけで、セッションやファイルの情報は送らない。`-NoUpdateCheck` を付けたときと、`andon.ps1` の隣に `.git` があるときは確かめない
 - アップデートするかを尋ねる画面（通知のクリックか、トレイの「アップデート」で出る）で「アップデートする」を選んだときだけ、そのバージョンの `andon-<バージョン>.zip` を、このリポジトリの Release から落とす。使うのは、公開済みで immutable の Release だけ。zip が、Release が示す sha256 と同じかを確かめてから一時フォルダ（`%TEMP%\andon-update-*`）に展開し、新しいバージョンの `install.ps1` を実行するコンソールを開いて、andon は終了する
 
-andon が通信するのは、上の GitHub だけです。GitHub にはログインせずに問い合わせ、認証情報は読みません。Orca の CLI の繋ぎ先は指定せず、CLI の既定（ふつうは同じ PC で動いている Orca）に任せます。
+andon が自分で通信するのは、上の GitHub だけです。GitHub にはログインせずに問い合わせ、認証情報は読みません。Orca の CLI は、ふつうは繋ぎ先を指定せずに動かし、CLI の既定（ふつうは同じ PC で動いている Orca）に任せます。「Orca のリモートを出す」でペアリング先を選んだときだけ、そのペアリング先を指定して動かし、CLI がそのマシンへ通信します。
 
 `install.ps1` が行うのは次のことだけです。ネットワークには通信しません。管理者の権限を求めません。
 
