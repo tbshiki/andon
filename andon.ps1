@@ -2955,7 +2955,7 @@ function Update-AndonTheme {
     catch { }   # 古い Windows で効かなくても、色は塗れている
     $renderer = $null
     if ($dark) { $renderer = Get-DarkMenuRenderer }
-    foreach ($m in @($trayMenu, $menu, $miTheme.DropDown)) {
+    foreach ($m in @($trayMenu, $menu, $miTheme.DropDown, $miLocalSessions.DropDown, $miOrcaSessions.DropDown)) {
         if ($renderer) { $m.Renderer = $renderer }
         else { $m.RenderMode = [System.Windows.Forms.ToolStripRenderMode]::ManagerRenderMode }
     }
