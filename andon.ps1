@@ -36,13 +36,13 @@
       切り替えても、ウィンドウの位置と大きさは変えない。
     - 新しい待ちや完了が出たとき、このウィンドウが前面になければ Windows の通知を出す。
       セッションは 2 つのグループに分け、トレイのメニューの「ターミナルのセッション」と「Orca のセッション」で、それぞれ
-      「出して通知する」「出すだけ（通知しない）」「出さない」を選ぶ。選んだものも同じ場所に覚える。
+      「表示して通知する」「表示するだけ（通知しない）」「表示しない」を選ぶ。選んだものも同じ場所に覚える。
       Orca のセッションは、Orca の区画のセッションとリモートのセッション。ターミナルのセッションは、それ以外の全部
       （VS Code の中のセッション、拡張機能のパネル、VS Code の外のターミナル、background のセッション）。
       Orca の区画のセッションかは、セッションのプロセスから親へたどり、VS Code より先に Orca.exe に着くかで、セッションごとに 1 回見分ける。
-      Orca が自分で通知するので、Orca のセッションは既定では「出すだけ」（点滅と一覧は変えない）。0.3.2 の「Orca のセッションも通知する」を
-      選んでいたら、「出して通知する」を引き継ぐ。「出さない」にしたグループのセッションは、一覧、件数、アイコンの色、点滅、通知の
-      どれにも出さない。見分けられないセッションは、出して通知する。
+      Orca が自分で通知するので、Orca のセッションは既定では「表示するだけ」（点滅と一覧は変えない）。0.3.2 の「Orca のセッションも通知する」を
+      選んでいたら、「表示して通知する」を引き継ぐ。「表示しない」にしたグループのセッションは、一覧、件数、アイコンの色、点滅、通知の
+      どれにも出さない。見分けられないセッションは、表示して通知する。
       通知をクリックすると、そのセッションを開く。送り元は、プロセスにアプリ ID（tbshiki.andon）を付け、
       その表示名を HKCU に登録して「andon」と表示させる。
       ID はプロセス全体に付くので、andon のためだけに起動した PowerShell で動かしたときだけ付ける。
@@ -254,7 +254,7 @@ function Get-ProcessCommandLine {
 }
 
 function Test-SessionVisible {
-    <# 一覧に出すセッションか。グループの設定（$LocalMode、$OrcaMode。Get-EntryMode）が「出さない」なら出さない（D-158）。
+    <# 一覧に出すセッションか。グループの設定（$LocalMode、$OrcaMode。Get-EntryMode）が「表示しない」なら出さない（D-158）。
        拡張機能のパネルのセッションは、パネルを閉じても待機中のまま残るので、待機中（確認済み）なら一覧に出さない #>
     param($Entry, [int]$LocalMode = 2, [int]$OrcaMode = 2)
     if ((Get-EntryMode -Entry $Entry -LocalMode $LocalMode -OrcaMode $OrcaMode) -le 0) { return $false }
@@ -275,7 +275,7 @@ function Get-AlertLevel {
 
 function Get-AlertNotice {
     <# 時刻 $Now に新しく待ち・完了になったセッションから、通知の題・本文と、クリックで開くセッションを作る。なければ $null。
-       $Quiet（キー -> $true）にあるセッションは、通知に載せない（グループの設定が「出すだけ」のもの。Get-QuietKeys。D-156） #>
+       $Quiet（キー -> $true）にあるセッションは、通知に載せない（グループの設定が「表示するだけ」のもの。Get-QuietKeys。D-156） #>
     param([object[]]$Entries, [datetime]$Now, [int]$MaxLines = 3, [hashtable]$Quiet = $null)
     $hits = @($Entries | Where-Object { $_.AlertAt -eq $Now -and (Get-Rank $_) -le 1 -and -not ($Quiet -and $Quiet.ContainsKey([string]$_.Key)) } |
             Sort-Object @{ Expression = { Get-Rank $_ } }, @{ Expression = { $_.Key } })
@@ -302,7 +302,7 @@ function Get-PendingFlashKeys {
        終わったもの、待ちでも完了でもなくなったもの、そのセッションのウィンドウが前面にあるものは外す。
        VS Code の外のターミナルのセッション（Window あり）は前面のウィンドウ（$ForegroundWindow）で、それ以外は前面の
        VS Code のウィンドウの題名（$ForegroundTitle。前面が VS Code でなければ空）で見分ける。
-       グループの設定（$LocalMode、$OrcaMode）を「出さない」にしたセッションも外す（D-161 の 4） #>
+       グループの設定（$LocalMode、$OrcaMode）を「表示しない」にしたセッションも外す（D-161 の 4） #>
     param([hashtable]$FlashKeys, [hashtable]$State, [string]$ForegroundTitle, [long]$ForegroundWindow = 0, [int]$LocalMode = 2, [int]$OrcaMode = 2)
     $keep = @{}
     foreach ($k in @($FlashKeys.Keys)) {
@@ -766,12 +766,12 @@ function Find-SessionWindow {
 
 # ---------------------------------------------------------------------------
 # セッションのグループ（D-156〜D-162）。orca は Orca の区画のセッションとリモートのセッション、local はそれ以外のこの PC のセッション
-# （メニューの名前は「ターミナルのセッション」）。グループごとに、出して通知する（2）、出すだけ（1）、出さない（0）を選ぶ
+# （メニューの名前は「ターミナルのセッション」）。グループごとに、表示して通知する（2）、表示するだけ（1）、表示しない（0）を選ぶ
 # ---------------------------------------------------------------------------
 
-$script:ModeNotify = 2   # 出して通知する
-$script:ModeShow = 1     # 出すだけ（通知しない。点滅はさせる。D-137）
-$script:ModeHide = 0     # 出さない（一覧、件数、アイコンの色、点滅、通知のどれにも出さない。D-158）
+$script:ModeNotify = 2   # 表示して通知する
+$script:ModeShow = 1     # 表示するだけ（通知しない。点滅はさせる。D-137）
+$script:ModeHide = 0     # 表示しない（一覧、件数、アイコンの色、点滅、通知のどれにも出さない。D-158）
 
 function Test-OrcaAncestor {
     <# プロセス $Id から親へたどり、VS Code（$CodeProcessName）より先に Orca（Orca.exe。区画を動かす daemon-host も同じ名前）に
@@ -794,7 +794,7 @@ function Test-OrcaAncestor {
 }
 
 function Get-SessionGroup {
-    <# セッションのグループ。orca か local。見分けられなければ unknown（出して通知する。D-160）。
+    <# セッションのグループ。orca か local。見分けられなければ unknown（表示して通知する。D-160）。
        - リモートのセッション（キーが orca: で始まる）は orca
        - Codex のセッションは、Codex のプロセスがターミナルの中の codex.exe（HostKind が terminal）なら、そのプロセスからたどる。
          共有のデーモン（daemon）と VS Code の拡張機能（vscode）で動くものは local。HostKind が分からなければ unknown
@@ -826,7 +826,7 @@ function Get-SessionGroup {
 function Update-SessionGroups {
     <# まだ見分けていないセッション（Group が $null）のグループを決めて覚える（Get-SessionGroup）。セッションのあいだ、グループは
        変わらないので、1 回だけ見分ける。プロセスの一覧（約 0.2 秒かかる）は、たどるものがあるときだけ 1 回取る。$Processes を渡せば
-       それを使う（テスト用）。取れなければ、たどるものは未判定のまま残し、次の回に取り直す（それまでは出して通知する。D-160）。
+       それを使う（テスト用）。取れなければ、たどるものは未判定のまま残し、次の回に取り直す（それまでは表示して通知する。D-160）。
        グループを決めたものがあれば $true #>
     param([hashtable]$State, [string]$CodeProcessName = 'Code', [object[]]$Processes = $null)
     $todo = @(foreach ($e in @($State.Values)) { if ($null -ne $e -and $null -eq $e.Group) { $e } })
@@ -862,7 +862,7 @@ function Get-EntryGroup {
 
 function Get-EntryMode {
     <# セッションの扱い（$script:ModeNotify、ModeShow、ModeHide）。グループの設定（$LocalMode、$OrcaMode）で決める。
-       まだ見分けていないものと、見分けられなかったものは、出して通知する（D-160） #>
+       まだ見分けていないものと、見分けられなかったものは、表示して通知する（D-160） #>
     param($Entry, [int]$LocalMode = 2, [int]$OrcaMode = 2)
     switch (Get-EntryGroup $Entry) {
         'orca' { return $OrcaMode }
@@ -872,7 +872,7 @@ function Get-EntryMode {
 }
 
 function Get-QuietKeys {
-    <# 通知に載せないセッション（キー -> $true）。グループの設定が「出して通知する」でないもの。Get-AlertNotice の $Quiet に渡す #>
+    <# 通知に載せないセッション（キー -> $true）。グループの設定が「表示して通知する」でないもの。Get-AlertNotice の $Quiet に渡す #>
     param([object[]]$Entries, [int]$LocalMode = 2, [int]$OrcaMode = 2)
     $keys = @{}
     foreach ($e in @($Entries)) {
@@ -882,7 +882,7 @@ function Get-QuietKeys {
 }
 
 function Clear-GroupUnread {
-    <# 「出さない」から戻したグループ（$Group）の、隠していたあいだに完了したセッションを既読にする（待機として出す。D-161 の 5）。
+    <# 「表示しない」から戻したグループ（$Group）の、隠していたあいだに完了したセッションを既読にする（待機として出す。D-161 の 5）。
        待ちは今の状態なので、そのまま（赤く出す）。既読にしたものがあれば $true #>
     param([object[]]$Entries, [string]$Group)
     $changed = $false
@@ -896,8 +896,8 @@ function Clear-GroupUnread {
 
 function Get-SessionModes {
     <# 設定（Read-AndonSettings の結果）から、グループの扱いを決める。ターミナルのセッション（LocalSessions）は、覚えていなければ
-       出して通知する（これまでと同じ）。Orca のセッション（OrcaSessions）は、覚えていなければ 0.3.2 の「Orca のセッションも
-       通知する」（OrcaNotify）から引き継ぐ。選んでいれば出して通知する、そうでなければ出すだけ（D-140、D-161 の 2） #>
+       表示して通知する（これまでと同じ）。Orca のセッション（OrcaSessions）は、覚えていなければ 0.3.2 の「Orca のセッションも
+       通知する」（OrcaNotify）から引き継ぐ。選んでいれば表示して通知する、そうでなければ表示するだけ（D-140、D-161 の 2） #>
     param($Settings)
     $local = $script:ModeNotify
     $orca = $script:ModeShow
@@ -1332,7 +1332,7 @@ function Read-AndonSettings {
     if ($raw.ContainsKey('Theme') -and $raw['Theme'] -ge 0 -and $raw['Theme'] -lt $script:ThemeChoices.Count) { $s.Theme = $script:ThemeChoices[$raw['Theme']] }
     if ($raw.ContainsKey('Vertical') -and ($raw['Vertical'] -eq 0 -or $raw['Vertical'] -eq 1)) { $s.Vertical = ($raw['Vertical'] -eq 1) }
     if ($raw.ContainsKey('OrcaNotify') -and ($raw['OrcaNotify'] -eq 0 -or $raw['OrcaNotify'] -eq 1)) { $s.OrcaNotify = ($raw['OrcaNotify'] -eq 1) }
-    # グループの扱いは 0（出さない）、1（出すだけ）、2（出して通知する）
+    # グループの扱いは 0（表示しない）、1（表示するだけ）、2（表示して通知する）
     foreach ($name in 'LocalSessions', 'OrcaSessions') {
         if ($raw.ContainsKey($name) -and $raw[$name] -ge 0 -and $raw[$name] -le 2) { $s.$name = $raw[$name] }
     }
@@ -2295,7 +2295,7 @@ function Update-OrcaRemote {
     param([datetime]$Now)
     $r = [pscustomobject]@{ Changed = $false; Alert = $false }
     $ids = @($script:OrcaRemoteIds)
-    # Orca のセッションを「出さない」にしたら、リモートも読まない（選んだペアリング先は覚えたまま。D-157、D-161 の 6）
+    # Orca のセッションを「表示しない」にしたら、リモートも読まない（選んだペアリング先は覚えたまま。D-157、D-161 の 6）
     if ($script:OrcaMode -eq $script:ModeHide) { $ids = @() }
     if ($ids.Count -eq 0 -and -not $script:OrcaRemotePoll) {
         if (Clear-OrcaRemoteState) { $r.Changed = $true }
@@ -2494,7 +2494,7 @@ function Set-CodexHooksEnabled {
 function Invoke-Alert {
     <# 時刻 $Now に新しく待ち・完了になったセッションを、点滅と通知で知らせる。andon が前面にあれば知らせない。
        Claude と Codex が同じ回に知らせたときは、後の通知が前の通知を置き換え、両方のセッションを載せる。
-       グループの設定（$script:LocalMode、$script:OrcaMode）が「出さない」のセッションは、点滅も通知もしない。「出すだけ」のセッションは、
+       グループの設定（$script:LocalMode、$script:OrcaMode）が「表示しない」のセッションは、点滅も通知もしない。「表示するだけ」のセッションは、
        点滅はさせ、通知に載せない（D-137、D-156、D-158）。グループは、一覧を作るときに見分けている（Update-SessionGroups） #>
     param([datetime]$Now)
     if ($form.ContainsFocus) { return }
@@ -2588,7 +2588,7 @@ function Start-Flash {
 
 function Update-Flash {
     <# 点滅のきっかけになったセッションが、どれも点滅を続ける理由をなくしたら、点滅を止める。
-       そのセッションのウィンドウを前面に出した、待ちでも完了でもなくなった、終わった、そのグループを「出さない」にした、のいずれか #>
+       そのセッションのウィンドウを前面に出した、待ちでも完了でもなくなった、終わった、そのグループを「表示しない」にした、のいずれか #>
     if ($script:FlashKeys.Count -eq 0) { return }
     if ($form.ContainsFocus) { $script:FlashKeys = @{}; return }   # andon を前面に出すと、Windows が点滅を止める
     try {
@@ -2679,12 +2679,12 @@ $miLogon = New-Object System.Windows.Forms.ToolStripMenuItem('ログオン時に
 $miCodex = New-Object System.Windows.Forms.ToolStripMenuItem('Codex の状態を出す')
 [void]$trayMenu.Items.Add($miCodex)
 # セッションのグループごとの扱い（D-156〜D-162）。「テーマ」と同じく、3 つから選ぶ。クリックでどれを選んだかを Tag で見分ける。
-# 「Orca のセッション」は、Orca が動いているときと、初めの値（出すだけ）から変えたときだけ出す（メニューを開いたときに決める）
+# 「Orca のセッション」は、Orca が動いているときと、初めの値（表示するだけ）から変えたときだけ出す（メニューを開いたときに決める）
 function New-GroupModeMenu {
     param([string]$Text, [string]$Group)
     $parent = New-Object System.Windows.Forms.ToolStripMenuItem($Text)
-    foreach ($choice in @(@{ Text = '出して通知する'; Mode = $script:ModeNotify }, @{ Text = '出すだけ（通知しない）'; Mode = $script:ModeShow },
-            @{ Text = '出さない'; Mode = $script:ModeHide })) {
+    foreach ($choice in @(@{ Text = '表示して通知する'; Mode = $script:ModeNotify }, @{ Text = '表示するだけ（通知しない）'; Mode = $script:ModeShow },
+            @{ Text = '表示しない'; Mode = $script:ModeHide })) {
         $mi = New-Object System.Windows.Forms.ToolStripMenuItem($choice.Text)
         $mi.Tag = [pscustomobject]@{ Group = $Group; Mode = [int]$choice.Mode }
         [void]$parent.DropDownItems.Add($mi)
@@ -2718,8 +2718,8 @@ $tray.ContextMenuStrip = $trayMenu
 $script:Exiting = $false
 $script:NoticeKey = $null
 $script:NoticeUpdate = $false   # 最後に出した通知が、新しい版の知らせか（クリックで、アップデートするかを尋ねる）
-# セッションのグループの扱い。ターミナルのセッションは、既定は出して通知する。Orca のセッションは、既定は出すだけ（Orca が自分で
-# 通知するので、重ねない。D-140）で、0.3.2 で「Orca のセッションも通知する」を選んでいたら、出して通知する（Get-SessionModes）
+# セッションのグループの扱い。ターミナルのセッションは、既定は表示して通知する。Orca のセッションは、既定は表示するだけ（Orca が自分で
+# 通知するので、重ねない。D-140）で、0.3.2 で「Orca のセッションも通知する」を選んでいたら、表示して通知する（Get-SessionModes）
 $sessionModes = Get-SessionModes $script:Settings
 $script:LocalMode = $sessionModes.Local
 $script:OrcaMode = $sessionModes.Orca
@@ -3117,7 +3117,7 @@ function Get-SelectedEntry {
 
 function Update-ListView {
     $now = Get-Date
-    # 新しいセッションのグループを、出す前に見分ける（見分けるものがなければ、すぐ返る）。失敗しても一覧は出す（出して通知する。D-160）
+    # 新しいセッションのグループを、出す前に見分ける（見分けるものがなければ、すぐ返る）。失敗しても一覧は出す（表示して通知する。D-160）
     try { [void](Update-SessionGroups -State $script:State -CodeProcessName $script:CodeProcessName) } catch { }
     $entries = @($script:State.Values | Where-Object { Test-SessionVisible $_ -LocalMode $script:LocalMode -OrcaMode $script:OrcaMode } | Sort-Object `
             @{ Expression = { Get-Rank $_ } }, `
@@ -3494,7 +3494,7 @@ $trayMenu.Add_Opening({
         $miOrcaSessions.Visible = $orcaRunning -or $script:OrcaMode -ne $script:ModeShow
         $miOrcaRemote.Visible = $orcaRunning -or @($script:OrcaRemoteIds).Count -gt 0
         $miOrcaRemote.Checked = @($script:OrcaRemoteIds).Count -gt 0
-        # Orca のセッションを「出さない」にしているあいだは、リモートを読まないので、選べないようにする（D-161 の 6）
+        # Orca のセッションを「表示しない」にしているあいだは、リモートを読まないので、選べないようにする（D-161 の 6）
         $miOrcaRemote.Enabled = $script:OrcaMode -ne $script:ModeHide
     })
 # 「Orca のリモートを出す」を開いたら、ペアリング先の一覧を取って並べる。選んでいるのに一覧にないものも、外せるように出す
@@ -3554,7 +3554,7 @@ $miVertical.Add_Click({
         Update-ListLayout
     })
 # グループの扱いを選んだら、覚えて一覧を作り直す。通知は次の知らせから効く。
-# 「出さない」にしたら、そのグループのセッションの点滅も止める。「出さない」から戻したら、隠していたあいだの完了は既読にする（D-161 の 4、5）
+# 「表示しない」にしたら、そのグループのセッションの点滅も止める。「表示しない」から戻したら、隠していたあいだの完了は既読にする（D-161 の 4、5）
 function Set-GroupMode {
     param([string]$Group, [int]$Mode)
     $prev = $script:LocalMode
