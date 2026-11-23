@@ -55,7 +55,8 @@
       分からないセッション（background のセッションを含む）は、cwd を含む *.code-workspace（なければ repository の root）を
       VS Code で開く。既に開いているウィンドウがあれば、そのウィンドウが前面に出る。ターミナルのタブまでは選ばない。
     - Orca の区画（ターミナル）で動いているセッションは、Orca のウィンドウを前面に出す。区画のコンソールは映しているウィンドウが
-      分からないので、さらに親へたどり、ウィンドウを持つ Orca.exe で決める。そのうえで、Orca の CLI（その Orca.exe と同じフォルダの
+      分からないので、さらに親へたどり、ウィンドウを持つ Orca.exe で決める。Orca がコンソールを持たせずに動かすセッション
+      （チャットの形のエージェント）も、親へたどって着いた、ウィンドウを持つ Orca.exe で決める。そのうえで、Orca の CLI（その Orca.exe と同じフォルダの
       resources\bin\orca.exe）でターミナルの一覧を裏で取り、作業フォルダを含む worktree に同じ種類のエージェント（Claude か Codex）の
       ターミナルが 1 つだけなら、そのタブに切り替える。見分けられなければ、ウィンドウを前面に出すだけにする。
     - トレイのメニューの「Orca のリモートを出す」で選んだペアリング先（ペアリングした Orca サーバー）のセッションも出す。
@@ -568,6 +569,16 @@ function Find-SessionConsoleWindow {
                     }
                 }
                 return [pscustomobject]@{ Handle = [long]$w.OwnerHandle; IsCode = $isCode; OrcaPath = $orcaPath }
+            }
+        }
+        # Orca がコンソールを持たせずに起動したセッション（Orca がチャットの形で動かすエージェントなど）は、コンソールのウィンドウより
+        # 先に Orca に着く。見えるウィンドウを持つ Orca（$AppWindows にあるもの）なら、そのウィンドウにする（D-165）。
+        # 区画を動かす Orca（daemon-host）はウィンドウを持たないので、その親（Orca の本体）まで、たどり続ける
+        if ($depth -gt 0 -and [IO.Path]::GetFileNameWithoutExtension([string]$cur.Name) -ieq $script:OrcaProcessName) {
+            foreach ($a in $AppWindows) {
+                if ($a -and [int]$a.ProcessId -eq $curId -and [long]$a.Handle) {
+                    return [pscustomobject]@{ Handle = [long]$a.Handle; IsCode = $false; OrcaPath = [string]$a.Path }
+                }
             }
         }
         $parent = $byId[[int]$cur.ParentProcessId]

@@ -327,6 +327,9 @@ $sessionProcs = @(
     (New-Proc 90 88 'claude.exe' 4)
     (New-Proc 91 80 'pwsh.exe' 3)            # 持ち主が Orca のウィンドウの PseudoConsoleWindow
     (New-Proc 92 91 'claude.exe' 4)
+    (New-Proc 96 80 'claude.exe' 5)          # Orca の本体が、コンソールのウィンドウを持たせずに起動したセッション（チャットの形のエージェント）
+    (New-Proc 97 81 'claude.exe' 5)          # 区画を動かす Orca（daemon-host）が、コンソールのウィンドウを持たせずに起動したセッション
+    (New-Proc 98 85 'claude.exe' 4)          # ウィンドウが見えない Orca が、コンソールのウィンドウを持たせずに起動したセッション
     (New-Proc 95 80 'Code.exe' 2)            # Orca の区画から起動した VS Code
     (New-Proc 93 95 'pwsh.exe' 3)            # その VS Code のターミナルで、持ち主のない PseudoConsoleWindow
     (New-Proc 94 93 'claude.exe' 4)
@@ -386,6 +389,10 @@ Assert-Equal (Find-TestOrcaWindow 94) 'null' '持ち主のない PseudoConsoleWi
 Assert-Equal (Find-TestOrcaWindow 7) '8008|False|' 'Windows Terminal のセッションは、Orca として扱わない'
 Assert-Equal (Format-OrcaWindow (Find-SessionConsoleWindow -Processes $sessionProcs -Windows $sessionWins -Id 83)) 'null' 'Orca のウィンドウの一覧を渡さなければ（Orca が動いていなければ）、Orca の区画のセッションは見つからない'
 Assert-Equal (Find-TestOrcaWindow 12) '1011|False|' 'conhost が描く cmd のウィンドウは、Orca として扱わない'
+Assert-Equal (Find-TestOrcaWindow 96) '8080|False|C:\Apps\orca\Orca.exe' 'Orca の本体がコンソールのウィンドウを持たせずに起動したセッションは、その Orca のウィンドウ（D-165）'
+Assert-Equal (Find-TestOrcaWindow 97) '8080|False|C:\Apps\orca\Orca.exe' 'daemon-host が起動したセッションでも、コンソールのウィンドウがなければ、Orca の本体のウィンドウ'
+Assert-Equal (Find-TestOrcaWindow 98) 'null' 'ウィンドウが見えない Orca が起動したセッションは、映しているウィンドウが分からない（VS Code で開く）'
+Assert-Equal (Format-OrcaWindow (Find-SessionConsoleWindow -Processes $sessionProcs -Windows $sessionWins -Id 96)) 'null' 'Orca のウィンドウの一覧を渡さなければ、Orca が直接起動したセッションも見つからない'
 
 Write-Host '== ウィンドウを探す起点（Get-SessionWindowProcessId）と、Codex のセッションのウィンドウ'
 Assert-Equal (Get-SessionWindowProcessId ([pscustomobject]@{ Key = '83'; Kind = 'interactive' })) 83 'Claude の対話のセッションは、セッションのプロセスから探す'
@@ -415,6 +422,7 @@ function Get-TestGroup { param([string]$Key, [string]$Kind = 'interactive') retu
 Assert-Equal (Get-TestGroup '83') 'orca' 'Orca の区画のセッションは orca'
 Assert-Equal (Get-TestGroup '87') 'orca' 'Orca のウィンドウが見えなくても、先祖に Orca があれば orca（ウィンドウは見ない）'
 Assert-Equal (Get-TestGroup '92') 'orca' '持ち主が Orca のウィンドウのコンソールのセッションも orca'
+Assert-Equal (Get-TestGroup '96') 'orca' 'Orca が直接起動したセッションも、Orca のグループ'
 Assert-Equal (Get-TestGroup '94') 'local' 'Orca の区画から起動した VS Code の中のセッションは、VS Code に先に着くので local'
 Assert-Equal (Get-TestGroup '90') 'local' '子より後に起動した Orca（親の PID の使い回し）はたどらないので local'
 Assert-Equal (Get-TestGroup '5') 'local' 'VS Code の統合ターミナルのセッションは local'
