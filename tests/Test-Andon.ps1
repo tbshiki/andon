@@ -1168,6 +1168,8 @@ $verticalAdd = $andonText.IndexOf('$trayMenu.Items.Add($miVertical)')
 $exitAdd = $andonText.IndexOf('$trayMenu.Items.Add(''終了'')')
 Assert-True ($themeAdd -ge 0 -and $verticalAdd -gt $themeAdd -and $exitAdd -gt $verticalAdd) 'トレイのメニューの「縦表示」は、「テーマ」の下、「終了」の上（D-40）'
 
+Assert-True ($andonText.Contains("`$miShow = `$trayMenu.Items.Add('andon を表示')")) 'トレイのメニューの、ウィンドウを出す項目は「andon を表示」（D-164）'
+
 Write-Host '== andon.ps1: セッションのグループの扱い（D-156〜D-162）'
 function Get-AndonFunctionText { param([string]$Name) $f = $andonAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $Name }.GetNewClosure(), $true); if ($f) { return $f.Extent.Text }; return '' }
 $localSessionsAdd = $andonText.IndexOf('$trayMenu.Items.Add($miLocalSessions)')

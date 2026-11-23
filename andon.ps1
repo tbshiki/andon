@@ -2668,7 +2668,7 @@ $miVersion.Enabled = $false
 $miUpdate = $trayMenu.Items.Add('アップデート')
 $miUpdate.Visible = $false
 [void]$trayMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
-$miShow = $trayMenu.Items.Add('表示')
+$miShow = $trayMenu.Items.Add('andon を表示')
 $miTrayRead = $trayMenu.Items.Add('すべて既読')
 # 設定の組。「ログオン時に起動」は、インストールした andon だけで出す（clone から動かしているときは出さない）
 $sepSettings = New-Object System.Windows.Forms.ToolStripSeparator
