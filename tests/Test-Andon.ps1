@@ -263,6 +263,13 @@ Assert-Equal $kept.Count 1 'ターミナルのセッションは、題名に同�
 $flashState['2'].Unread = $false
 $kept = Get-PendingFlashKeys -FlashKeys @{ '2' = (New-FlashMark 'p2') } -State $flashState -ForegroundTitle $null
 Assert-Equal $kept.Count 0 '既読にした完了も外す（残りがなければ点滅を止める）'
+$flashState['1'] | Add-Member -NotePropertyName Group -NotePropertyValue 'orca'
+$flashState['5'] | Add-Member -NotePropertyName Group -NotePropertyValue 'local'
+$flashBoth = @{ '1' = (New-FlashMark 'p1'); '5' = (New-FlashMark $null 5005) }
+$kept = Get-PendingFlashKeys -FlashKeys $flashBoth -State $flashState -ForegroundTitle $null -OrcaMode 0
+Assert-Equal ((@($kept.Keys) | Sort-Object) -join ',') '5' '「表示しない」にしたグループのセッションは、点滅のきっかけから外す（D-161 の 4）'
+$kept = Get-PendingFlashKeys -FlashKeys $flashBoth -State $flashState -ForegroundTitle $null -LocalMode 0 -OrcaMode 1
+Assert-Equal ((@($kept.Keys) | Sort-Object) -join ',') '1' '「表示するだけ」のグループのセッションは、点滅を続ける（D-137）'
 
 $markCwd = Join-Path ([IO.Path]::GetTempPath()) ('andon-mark-' + [guid]::NewGuid().ToString('N'))
 $markEntry = [pscustomobject]@{ Key = '1'; Cwd = $markCwd }
@@ -320,6 +327,9 @@ $sessionProcs = @(
     (New-Proc 90 88 'claude.exe' 4)
     (New-Proc 91 80 'pwsh.exe' 3)            # 持ち主が Orca のウィンドウの PseudoConsoleWindow
     (New-Proc 92 91 'claude.exe' 4)
+    (New-Proc 96 80 'claude.exe' 5)          # Orca の本体が、コンソールのウィンドウを持たせずに起動したセッション（チャットの形のエージェント）
+    (New-Proc 97 81 'claude.exe' 5)          # 区画を動かす Orca（daemon-host）が、コンソールのウィンドウを持たせずに起動したセッション
+    (New-Proc 98 85 'claude.exe' 4)          # ウィンドウが見えない Orca が、コンソールのウィンドウを持たせずに起動したセッション
     (New-Proc 95 80 'Code.exe' 2)            # Orca の区画から起動した VS Code
     (New-Proc 93 95 'pwsh.exe' 3)            # その VS Code のターミナルで、持ち主のない PseudoConsoleWindow
     (New-Proc 94 93 'claude.exe' 4)
@@ -379,6 +389,10 @@ Assert-Equal (Find-TestOrcaWindow 94) 'null' '持ち主のない PseudoConsoleWi
 Assert-Equal (Find-TestOrcaWindow 7) '8008|False|' 'Windows Terminal のセッションは、Orca として扱わない'
 Assert-Equal (Format-OrcaWindow (Find-SessionConsoleWindow -Processes $sessionProcs -Windows $sessionWins -Id 83)) 'null' 'Orca のウィンドウの一覧を渡さなければ（Orca が動いていなければ）、Orca の区画のセッションは見つからない'
 Assert-Equal (Find-TestOrcaWindow 12) '1011|False|' 'conhost が描く cmd のウィンドウは、Orca として扱わない'
+Assert-Equal (Find-TestOrcaWindow 96) '8080|False|C:\Apps\orca\Orca.exe' 'Orca の本体がコンソールのウィンドウを持たせずに起動したセッションは、その Orca のウィンドウ（D-165）'
+Assert-Equal (Find-TestOrcaWindow 97) '8080|False|C:\Apps\orca\Orca.exe' 'daemon-host が起動したセッションでも、コンソールのウィンドウがなければ、Orca の本体のウィンドウ'
+Assert-Equal (Find-TestOrcaWindow 98) 'null' 'ウィンドウが見えない Orca が起動したセッションは、映しているウィンドウが分からない（VS Code で開く）'
+Assert-Equal (Format-OrcaWindow (Find-SessionConsoleWindow -Processes $sessionProcs -Windows $sessionWins -Id 96)) 'null' 'Orca のウィンドウの一覧を渡さなければ、Orca が直接起動したセッションも見つからない'
 
 Write-Host '== ウィンドウを探す起点（Get-SessionWindowProcessId）と、Codex のセッションのウィンドウ'
 Assert-Equal (Get-SessionWindowProcessId ([pscustomobject]@{ Key = '83'; Kind = 'interactive' })) 83 'Claude の対話のセッションは、セッションのプロセスから探す'
@@ -401,17 +415,54 @@ foreach ($hostKind in @('daemon', 'vscode', '')) {
     Assert-Equal (Get-SessionWindowProcessId $codexOther) 0 "HostKind が「$hostKind」の Codex は、ウィンドウを探さない（作業フォルダを VS Code で開く）"
 }
 Assert-Equal (Get-SessionWindowProcessId ([pscustomobject]@{ Key = 'codex:z'; Kind = 'codex'; HostPid = 0; HostStart = [long]0; HostKind = 'terminal' })) 0 'Codex のプロセスが分からなければ、探さない'
-# Orca の区画のセッションの見分け（Get-OrcaSessionKeys。D-136）
-$alertWindows = @{
-    '83' = (Find-SessionConsoleWindow -Processes $sessionProcs -Windows $sessionWins -Id 83 -AppWindows $sessionApps)   # Orca の区画
-    '7'  = (Find-SessionConsoleWindow -Processes $sessionProcs -Windows $sessionWins -Id 7 -AppWindows $sessionApps)    # Windows Terminal
-    '87' = $null                                                                                                        # ウィンドウが分からない
+Write-Host '== セッションのグループ（Test-OrcaAncestor / Get-SessionGroup / Update-SessionGroups。D-156、D-160、D-161）'
+$groupById = @{}
+foreach ($p in $sessionProcs) { $groupById[[int]$p.ProcessId] = $p }
+function Get-TestGroup { param([string]$Key, [string]$Kind = 'interactive') return Get-SessionGroup -Entry ([pscustomobject]@{ Key = $Key; Kind = $Kind }) -ById $groupById }
+Assert-Equal (Get-TestGroup '83') 'orca' 'Orca の区画のセッションは orca'
+Assert-Equal (Get-TestGroup '87') 'orca' 'Orca のウィンドウが見えなくても、先祖に Orca があれば orca（ウィンドウは見ない）'
+Assert-Equal (Get-TestGroup '92') 'orca' '持ち主が Orca のウィンドウのコンソールのセッションも orca'
+Assert-Equal (Get-TestGroup '96') 'orca' 'Orca が直接起動したセッションも、Orca のグループ'
+Assert-Equal (Get-TestGroup '94') 'local' 'Orca の区画から起動した VS Code の中のセッションは、VS Code に先に着くので local'
+Assert-Equal (Get-TestGroup '90') 'local' '子より後に起動した Orca（親の PID の使い回し）はたどらないので local'
+Assert-Equal (Get-TestGroup '5') 'local' 'VS Code の統合ターミナルのセッションは local'
+Assert-Equal (Get-TestGroup '10') 'local' 'VS Code の拡張機能のパネルのセッションは local'
+Assert-Equal (Get-TestGroup '12') 'local' 'cmd のウィンドウのセッションは local'
+Assert-Equal (Get-TestGroup '83' 'background') 'orca' 'background のセッションも、プロセスからたどる'
+Assert-Equal (Get-TestGroup '999') 'unknown' 'プロセスが一覧になければ unknown（表示して通知する。D-160）'
+Assert-Equal (Get-TestGroup 'abc') 'unknown' 'キーが PID でなければ unknown'
+Assert-Equal (Get-SessionGroup -Entry ([pscustomobject]@{ Key = '83'; Kind = 'interactive' })) $null 'プロセスの一覧がなければ、たどるものは未判定（$null）'
+Assert-Equal (Get-SessionGroup -Entry ([pscustomobject]@{ Key = 'orca:env-1:pane'; Kind = 'orca' })) 'orca' 'リモートのセッションは、プロセスを見ずに orca'
+$codexGroup = [pscustomobject]@{ Key = 'codex:t'; Kind = 'codex'; HostPid = 84; HostStart = $t0.AddSeconds(5).ToUniversalTime().Ticks; HostKind = 'terminal' }
+Assert-Equal (Get-SessionGroup -Entry $codexGroup -ById $groupById) 'orca' 'Orca の区画の Codex は、Codex のプロセスからたどって orca'
+$codexGroup.HostStart = $t0.AddSeconds(9).ToUniversalTime().Ticks
+Assert-Equal (Get-SessionGroup -Entry $codexGroup -ById $groupById) 'unknown' 'Codex のプロセスの起動時刻が記録と違えば（PID の使い回し）unknown'
+$codexGroup.HostPid = 7
+$codexGroup.HostStart = [long]0
+Assert-Equal (Get-SessionGroup -Entry $codexGroup -ById $groupById) 'local' 'Orca の外のターミナルの Codex は local'
+foreach ($hostKind in @('daemon', 'vscode')) {
+    Assert-Equal (Get-SessionGroup -Entry ([pscustomobject]@{ Key = 'codex:d'; Kind = 'codex'; HostPid = 84; HostStart = [long]0; HostKind = $hostKind })) 'local' "HostKind が $hostKind の Codex は、プロセスを見ずに local"
 }
-$orcaKeys = Get-OrcaSessionKeys -Windows $alertWindows
-Assert-Equal (@($orcaKeys.Keys) -join ',') '83' 'Orca のウィンドウのセッションだけが、Orca のセッション'
-Assert-Equal (Get-OrcaSessionKeys -Windows @{}).Count 0 'ウィンドウがなければ、Orca のセッションはない'
-Assert-Equal (Get-OrcaSessionKeys -Windows $null).Count 0 'ウィンドウを調べられなければ、Orca のセッションはないとみなす（通知する）'
-Assert-True ((Get-OrcaSessionKeys -Windows $null) -is [hashtable]) 'Orca のセッションがなくても、hashtable を返す'
+Assert-Equal (Get-SessionGroup -Entry ([pscustomobject]@{ Key = 'codex:u'; Kind = 'codex'; HostPid = 84; HostStart = [long]0; HostKind = '' })) 'unknown' 'Codex のプロセスの種類が分からなければ unknown'
+Assert-Equal (Get-SessionGroup -Entry ([pscustomobject]@{ Key = 'codex:z'; Kind = 'codex'; HostPid = 0; HostStart = [long]0; HostKind = 'terminal' })) 'unknown' 'Codex のプロセスが分からなければ unknown'
+Assert-Equal (Test-OrcaAncestor -ById $groupById -Id 94 -CodeProcessName 'Code') $false '先に VS Code に着けば、Orca のセッションではない'
+Assert-Equal (Test-OrcaAncestor -ById $groupById -Id 94 -CodeProcessName 'Code - Insiders') $true 'VS Code のプロセス名は、渡した名前で見分ける'
+Assert-Equal (Test-OrcaAncestor -ById $groupById -Id 999) $null 'プロセスが一覧になければ $null'
+
+$groupState = @{
+    '83' = (New-StateEntry -Key '83' -Status 'busy' -StartedAt $null -Now $t0)
+    '5' = (New-StateEntry -Key '5' -Status 'busy' -StartedAt $null -Now $t0)
+    'orca:env-1:pane' = (New-StateEntry -Key 'orca:env-1:pane' -Status 'busy' -StartedAt $null -Now $t0)
+}
+$groupState['orca:env-1:pane'].Kind = 'orca'
+Assert-Equal $groupState['83'].Group $null '新しいセッションのグループは未判定（$null）'
+Assert-Equal (Update-SessionGroups -State $groupState -Processes $sessionProcs) $true '未判定のものがあれば見分けて $true'
+Assert-Equal "$($groupState['83'].Group)|$($groupState['5'].Group)|$($groupState['orca:env-1:pane'].Group)" 'orca|local|orca' 'まだ見分けていないセッションのグループを決めて覚える'
+Assert-Equal (Update-SessionGroups -State $groupState -Processes @()) $false '見分けたものは見分け直さない（グループはセッションのあいだ変わらない）'
+Assert-Equal $groupState['83'].Group 'orca' '覚えたグループは変わらない'
+$groupState['86'] = (New-StateEntry -Key 'orca:env-2:pane' -Status 'busy' -StartedAt $null -Now $t0)
+Assert-Equal (Update-SessionGroups -State $groupState -Processes $null) $true 'リモートのセッションだけなら、プロセスの一覧を取らずに決める'
+Assert-Equal (Update-SessionGroups -State @{}) $false 'セッションがなければ何もしない'
 
 Assert-Equal "$(Get-SessionAgent ([pscustomobject]@{ Kind = 'codex' }))|$(Get-SessionAgent ([pscustomobject]@{ Kind = 'interactive' }))|$(Get-SessionAgent ([pscustomobject]@{ Kind = '' }))" 'codex|claude|claude' 'Orca のターミナルのエージェントの種類は、Codex なら codex、それ以外は claude'
 
@@ -515,6 +566,50 @@ Assert-True (Test-SessionVisible ([pscustomobject]@{ Status = 'waiting'; Unread 
 Assert-True (Test-SessionVisible ([pscustomobject]@{ Status = 'idle'; Unread = $true; Sdk = $true })) 'SDK でも完了は出す'
 Assert-True (Test-SessionVisible ([pscustomobject]@{ Status = 'idle'; Unread = $false; Sdk = $false })) 'ターミナルの待機中は出す'
 Assert-True (Test-SessionVisible ([pscustomobject]@{ Status = 'idle'; Unread = $false; Sdk = $null })) '未判定の待機中は出す'
+
+Write-Host '== グループの扱い（Get-EntryMode / Test-SessionVisible / Get-QuietKeys / Clear-GroupUnread / Get-SessionModes。D-156〜D-161）'
+function New-GroupEntry { param([string]$Key, [string]$Group, [string]$Status = 'waiting', [bool]$Unread = $true) return [pscustomobject]@{ Key = $Key; Status = $Status; Unread = $Unread; Sdk = $false; Group = $Group; AlertAt = $null; Name = "s$Key"; Cwd = ''; WaitingFor = ''; Agent = '' } }
+$gOrca = New-GroupEntry '1' 'orca'
+$gLocal = New-GroupEntry '2' 'local'
+$gUnknown = New-GroupEntry '3' 'unknown'
+$gNew = New-GroupEntry '4' $null
+$gRemote = New-GroupEntry 'orca:env-1:pane' $null
+Assert-Equal "$(Get-EntryMode $gOrca -LocalMode 0 -OrcaMode 1)|$(Get-EntryMode $gLocal -LocalMode 0 -OrcaMode 1)" '1|0' 'グループの設定は、そのグループのセッションにだけ効く'
+Assert-Equal "$(Get-EntryMode $gUnknown -LocalMode 0 -OrcaMode 0)|$(Get-EntryMode $gNew -LocalMode 0 -OrcaMode 0)" '2|2' '見分けられなかったものと、まだ見分けていないものは、表示して通知する（D-160）'
+Assert-Equal (Get-EntryMode $gRemote -LocalMode 2 -OrcaMode 0) 0 'リモートのセッションは、見分ける前でも Orca の設定に従う（D-157）'
+Assert-Equal (Get-EntryMode $gOrca) 2 '設定を渡さなければ、表示して通知する（これまでと同じ）'
+Assert-Equal (Test-SessionVisible $gOrca -LocalMode 2 -OrcaMode 0) $false '「表示しない」のグループのセッションは、一覧に出さない（D-158）'
+Assert-True (Test-SessionVisible $gOrca -LocalMode 0 -OrcaMode 1) '「表示するだけ」のグループのセッションは、一覧に出す'
+Assert-True (Test-SessionVisible $gUnknown -LocalMode 0 -OrcaMode 0) '見分けられなかったセッションは、どちらを「表示しない」にしても出す（D-160）'
+Assert-Equal (Test-SessionVisible $gRemote -LocalMode 2 -OrcaMode 0) $false 'Orca を「表示しない」にしたら、リモートのセッションも出さない（D-157）'
+$quietKeys = Get-QuietKeys -Entries @($gOrca, $gLocal, $gUnknown, $gNew, $gRemote) -LocalMode 2 -OrcaMode 1
+Assert-Equal ((@($quietKeys.Keys) | Sort-Object) -join ',') '1,orca:env-1:pane' '「表示するだけ」のグループのセッションを、通知から外す'
+$quietKeys = Get-QuietKeys -Entries @($gOrca, $gLocal, $gUnknown) -LocalMode 1 -OrcaMode 2
+Assert-Equal ((@($quietKeys.Keys) | Sort-Object) -join ',') '2' 'ターミナルのセッションも、「表示するだけ」なら通知から外す'
+Assert-Equal (Get-QuietKeys -Entries @($gOrca, $gLocal, $gUnknown) -LocalMode 2 -OrcaMode 2).Count 0 'どちらも「表示して通知する」なら、外すものはない'
+Assert-True ((Get-QuietKeys -Entries @()) -is [hashtable]) '外すものがなくても、hashtable を返す'
+$quietNow = [datetime]'2026-01-01T13:00:00'
+foreach ($e in $gOrca, $gLocal) { $e.AlertAt = $quietNow }
+$notice = Get-AlertNotice -Entries @($gOrca, $gLocal) -Now $quietNow -Quiet (Get-QuietKeys -Entries @($gOrca, $gLocal) -LocalMode 2 -OrcaMode 1)
+Assert-Equal "$($notice.Key)|$($notice.Text)" '2|待ち: s2' '通知には、「表示して通知する」のグループのセッションだけを載せる'
+
+$doneOrca = New-GroupEntry '11' 'orca' 'idle' $true
+$waitOrca = New-GroupEntry '12' 'orca' 'waiting' $true
+$doneLocal = New-GroupEntry '13' 'local' 'idle' $true
+$doneRemote = New-GroupEntry 'orca:env-1:p2' $null 'idle' $true
+Assert-Equal (Clear-GroupUnread -Entries @($doneOrca, $waitOrca, $doneLocal, $doneRemote) -Group 'orca') $true '既読にしたものがあれば $true'
+Assert-Equal "$($doneOrca.Unread)|$($waitOrca.Unread)|$($doneLocal.Unread)|$($doneRemote.Unread)" 'False|True|True|False' '「表示しない」から戻したグループの完了だけを既読にする（待ちと、ほかのグループはそのまま。D-161 の 5）'
+Assert-Equal (Get-StatusLabel $doneOrca) '待機' '既読にした完了は、待機として出る'
+Assert-Equal (Clear-GroupUnread -Entries @($doneOrca, $waitOrca) -Group 'orca') $false '既読にするものがなければ $false'
+
+$modes = Get-SessionModes ([pscustomobject]@{ LocalSessions = $null; OrcaSessions = $null; OrcaNotify = $null })
+Assert-Equal "$($modes.Local)|$($modes.Orca)" '2|1' '覚えていなければ、ターミナルは表示して通知する、Orca は表示するだけ（D-140）'
+$modes = Get-SessionModes ([pscustomobject]@{ LocalSessions = $null; OrcaSessions = $null; OrcaNotify = $true })
+Assert-Equal $modes.Orca 2 '0.3.2 で「Orca のセッションも通知する」を選んでいたら、表示して通知するを引き継ぐ（D-161 の 2）'
+$modes = Get-SessionModes ([pscustomobject]@{ LocalSessions = $null; OrcaSessions = $null; OrcaNotify = $false })
+Assert-Equal $modes.Orca 1 '「Orca のセッションも通知する」を外していたら、表示するだけ'
+$modes = Get-SessionModes ([pscustomobject]@{ LocalSessions = 0; OrcaSessions = 1; OrcaNotify = $true })
+Assert-Equal "$($modes.Local)|$($modes.Orca)" '0|1' '新しい設定を覚えていれば、OrcaNotify より新しい設定を使う'
 
 # PowerShell のコメント（#）の後ろに置いて、起動引数にだけ現れるようにする
 $psi = New-Object Diagnostics.ProcessStartInfo 'powershell.exe', '-NoProfile -Command "Start-Sleep -Seconds 30 # --input-format stream-json"'
@@ -891,6 +986,20 @@ try {
     New-ItemProperty -LiteralPath $settingsKey -Name 'OrcaNotify' -PropertyType String -Value '1' -Force | Out-Null
     Assert-Equal (Read-AndonSettings -Key $settingsKey).OrcaNotify $null 'DWORD でない OrcaNotify は使わない'
 
+    # グループの扱い（D-161 の 2）。0（表示しない）、1（表示するだけ）、2（表示して通知する）
+    $s = Read-AndonSettings -Key $settingsKey
+    Assert-Equal "$($null -eq $s.LocalSessions)|$($null -eq $s.OrcaSessions)" 'True|True' 'グループの扱いを覚えていなければ $null（既定を使う）'
+    foreach ($mode in 0, 1, 2) {
+        Write-AndonSettings -Key $settingsKey -Values ([ordered]@{ LocalSessions = $mode; OrcaSessions = 2 - $mode })
+        $s = Read-AndonSettings -Key $settingsKey
+        Assert-Equal "$($s.LocalSessions)|$($s.OrcaSessions)" "$mode|$(2 - $mode)" "LocalSessions が $mode、OrcaSessions が $(2 - $mode) なら、そのまま使う"
+    }
+    Write-AndonSettings -Key $settingsKey -Values ([ordered]@{ LocalSessions = 3; OrcaSessions = -1 })
+    $s = Read-AndonSettings -Key $settingsKey
+    Assert-Equal "$($null -eq $s.LocalSessions)|$($null -eq $s.OrcaSessions)" 'True|True' 'グループの扱いが 0〜2 でなければ使わない'
+    New-ItemProperty -LiteralPath $settingsKey -Name 'OrcaSessions' -PropertyType String -Value '1' -Force | Out-Null
+    Assert-Equal (Read-AndonSettings -Key $settingsKey).OrcaSessions $null 'DWORD でない OrcaSessions は使わない'
+
     # 選んだ Orca のペアリング先（D-141、D-149）。文字の値で、ID を ; で区切る。形の違うものは使わない
     Assert-Equal @((Read-AndonSettings -Key $settingsKey).OrcaRemote).Count 0 'OrcaRemote を覚えていなければ、どれも選んでいない'
     Write-AndonSettingText -Key $settingsKey -Name 'OrcaRemote' -Value 'env-1;bad id;env-2'
@@ -1067,19 +1176,36 @@ $verticalAdd = $andonText.IndexOf('$trayMenu.Items.Add($miVertical)')
 $exitAdd = $andonText.IndexOf('$trayMenu.Items.Add(''終了'')')
 Assert-True ($themeAdd -ge 0 -and $verticalAdd -gt $themeAdd -and $exitAdd -gt $verticalAdd) 'トレイのメニューの「縦表示」は、「テーマ」の下、「終了」の上（D-40）'
 
-Write-Host '== andon.ps1: Orca のセッションの通知（D-136、D-137、D-140）'
-$orcaNotifyAdd = $andonText.IndexOf('$trayMenu.Items.Add($miOrcaNotify)')
+Assert-True ($andonText.Contains("`$miShow = `$trayMenu.Items.Add('andon を表示')")) 'トレイのメニューの、ウィンドウを出す項目は「andon を表示」（D-164）'
+
+Write-Host '== andon.ps1: セッションのグループの扱い（D-156〜D-162）'
+function Get-AndonFunctionText { param([string]$Name) $f = $andonAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $Name }.GetNewClosure(), $true); if ($f) { return $f.Extent.Text }; return '' }
+$localSessionsAdd = $andonText.IndexOf('$trayMenu.Items.Add($miLocalSessions)')
+$orcaSessionsAdd = $andonText.IndexOf('$trayMenu.Items.Add($miOrcaSessions)')
 $codexAdd = $andonText.IndexOf('$trayMenu.Items.Add($miCodex)')
-Assert-True ($codexAdd -ge 0 -and $orcaNotifyAdd -gt $codexAdd -and $themeAdd -gt $orcaNotifyAdd) 'トレイのメニューの「Orca のセッションも通知する」は、「Codex の状態を出す」の下、「テーマ」の上'
-Assert-True ($andonText.Contains('$script:OrcaNotify = $script:Settings.OrcaNotify -eq $true')) '覚えていなければ、Orca のセッションは通知しない（既定）'
+Assert-True ($codexAdd -ge 0 -and $localSessionsAdd -gt $codexAdd -and $orcaSessionsAdd -gt $localSessionsAdd -and $themeAdd -gt $orcaSessionsAdd) 'トレイのメニューの「ターミナルのセッション」「Orca のセッション」は、「Codex の状態を出す」の下、「テーマ」の上'
+Assert-True ($andonText.Contains("New-GroupModeMenu -Text 'ターミナルのセッション' -Group 'local'") -and $andonText.Contains("New-GroupModeMenu -Text 'Orca のセッション' -Group 'orca'")) 'メニューの名前は「ターミナルのセッション」と「Orca のセッション」（D-162）'
+$groupMenu = Get-AndonFunctionText 'New-GroupModeMenu'
+Assert-True ($groupMenu.Contains("Text = '表示して通知する'; Mode = `$script:ModeNotify") -and $groupMenu.Contains("Text = '表示するだけ（通知しない）'; Mode = `$script:ModeShow") -and $groupMenu.Contains("Text = '表示しない'; Mode = `$script:ModeHide")) 'グループごとに、表示して通知する・表示するだけ・出さないから選ぶ'
+Assert-True ($andonText.Contains('$sessionModes = Get-SessionModes $script:Settings') -and $andonText.Contains('$script:LocalMode = $sessionModes.Local') -and $andonText.Contains('$script:OrcaMode = $sessionModes.Orca')) '起動したときに、覚えた扱い（なければ既定と、OrcaNotify の引き継ぎ）を使う'
+Assert-True ($andonText.Contains('$miOrcaSessions.Visible = $orcaRunning -or $script:OrcaMode -ne $script:ModeShow') -and $andonText.Contains('$miOrcaRemote.Enabled = $script:OrcaMode -ne $script:ModeHide')) '「Orca のセッション」は Orca が動いているか既定から変えたときだけ出し、「表示しない」のあいだはリモートを選べない'
+Assert-True ((Get-AndonFunctionText 'Update-AndonTheme').Contains('$miLocalSessions.DropDown, $miOrcaSessions.DropDown')) 'ダークでは、グループのサブメニューも暗く塗る'
+$setGroup = Get-AndonFunctionText 'Set-GroupMode'
+Assert-True ($setGroup.Contains("`$name = 'OrcaSessions'") -and $setGroup.Contains("`$name = 'LocalSessions'") -and $setGroup.Contains('Write-AndonSettings -Key $script:SettingsKey -Values ([ordered]@{ $name = $Mode })')) '選んだ扱いは、グループごとの値に覚える'
+Assert-True ($setGroup -match '(?s)if \(\$prev -eq \$script:ModeHide\) \{ \[void\]\(Clear-GroupUnread .{0,80}\}\s+Update-Flash\s+Update-ListView') '「表示しない」から戻したら完了を既読にし、点滅と一覧を直す'
+Assert-True ((Get-AndonFunctionText 'Update-ListView') -match '(?s)Update-SessionGroups -State \$script:State.{0,300}Test-SessionVisible \$_ -LocalMode \$script:LocalMode -OrcaMode \$script:OrcaMode') '一覧は、グループを見分けてから、扱いに合わせて出す'
+Assert-True ((Get-AndonFunctionText 'Update-OrcaRemote') -match 'if \(\$script:OrcaMode -eq \$script:ModeHide\) \{ \$ids = @\(\) \}') 'Orca のセッションを「表示しない」にしたら、リモートも読まない（D-157）'
+foreach ($fn in 'Start-Flash', 'Update-Flash') {
+    Assert-True ((Get-AndonFunctionText $fn).Contains('-LocalMode $script:LocalMode -OrcaMode $script:OrcaMode')) "$fn は、「表示しない」のセッションを点滅のきっかけから外す"
+}
 $alertAst = $andonAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-Alert' }, $true)
-Assert-True ($alertAst -and $alertAst.Extent.Text -match 'if \(-not \$script:OrcaNotify\) \{ \$quiet = Get-OrcaSessionKeys -Windows \$windows -Entries \$hits \}') '通知しない設定のときだけ、Orca のセッション（区画とリモート）を通知から外す'
+Assert-True ($alertAst -and $alertAst.Extent.Text -match '(?s)Update-SessionGroups.{0,300}Test-SessionVisible \$_ -LocalMode \$script:LocalMode -OrcaMode \$script:OrcaMode') '「表示しない」のセッションは、点滅も通知もしない'
+Assert-True ($alertAst -and $alertAst.Extent.Text.Contains('$quiet = Get-QuietKeys -Entries $hits -LocalMode $script:LocalMode -OrcaMode $script:OrcaMode')) '「表示するだけ」のセッションは、通知から外す'
 
 Write-Host '== andon.ps1: Orca のリモートのセッションを画面に繋ぐ（D-141、D-145、D-147、D-149）'
-function Get-AndonFunctionText { param([string]$Name) $f = $andonAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $Name }.GetNewClosure(), $true); if ($f) { return $f.Extent.Text }; return '' }
 Assert-True ($andonText.Contains('$script:OrcaRemoteIds = @($script:Settings.OrcaRemote)')) '読むペアリング先は、設定に覚えたものだけ（既定は、どれも選んでいない）'
 $remoteAdd = $andonText.IndexOf('$trayMenu.Items.Add($miOrcaRemote)')
-Assert-True ($orcaNotifyAdd -ge 0 -and $remoteAdd -gt $orcaNotifyAdd -and $themeAdd -gt $remoteAdd) 'トレイのメニューの「Orca のリモートを出す」は、「Orca のセッションも通知する」の下、「テーマ」の上'
+Assert-True ($orcaSessionsAdd -ge 0 -and $remoteAdd -gt $orcaSessionsAdd -and $themeAdd -gt $remoteAdd) 'トレイのメニューの「Orca のリモートを出す」は、「Orca のセッション」の下、「テーマ」の上'
 $startRemote = Get-AndonFunctionText 'Start-OrcaRemotePoll'
 Assert-True ($startRemote.Contains("@('worktree', 'ps', '--environment', `$EnvId, '--limit', [string]`$script:OrcaRemoteLimit, '--json')") -and $andonText.Contains('$script:OrcaRemoteLimit = 500') -and $startRemote.Contains('Test-OrcaId $EnvId')) 'ペアリング先は、形を確かめた ID で指定して読む'
 Assert-True ($startRemote.Contains('Get-OrcaCliPath -OrcaPath $app.Path') -and $startRemote.Contains('New-OrcaCliStartInfo')) 'CLI は、動いている Orca と同じフォルダのものを、ORCA_ の環境変数を渡さずに起動する'
@@ -2342,10 +2468,11 @@ Write-Host '== Orca のリモートのセッションの通知と、取りに行
 $script:State = @{}
 $null = Update-SessionState -Sessions @((New-Session 1 'waiting')) -Now $t0
 $null = Update-OrcaRemoteState -Sessions @((New-RemoteSession 'a:1' 'waiting' 1)) -EnvId $envA -EnvName 'Work Laptop' -Now $t0
-$quiet = Get-OrcaSessionKeys -Windows $null -Entries @($script:State.Values)
-Assert-Equal (@($quiet.Keys) -join ',') $ka1 'リモートのセッションは、ウィンドウを調べられなくても Orca のセッション（通知しない設定で、通知から外す）'
-Assert-Equal (Get-AlertNotice -Entries @($script:State.Values) -Now $t0 -Quiet $quiet).Text '待ち: s1' '通知しない設定では、リモートのセッションを通知に載せない'
-Assert-Equal (@((Get-OrcaSessionKeys -Windows @{ '83' = (Find-SessionConsoleWindow -Processes $sessionProcs -Windows $sessionWins -Id 83 -AppWindows $sessionApps) } -Entries @($script:State.Values)).Keys | Sort-Object) -join ',') "83,$ka1" '区画のセッションとリモートのセッションの両方を選ぶ'
+$quiet = Get-QuietKeys -Entries @($script:State.Values) -LocalMode 2 -OrcaMode 1
+Assert-Equal (@($quiet.Keys) -join ',') $ka1 'リモートのセッションは、見分ける前でも Orca のセッション（「表示するだけ」で、通知から外す）'
+Assert-Equal (Get-AlertNotice -Entries @($script:State.Values) -Now $t0 -Quiet $quiet).Text '待ち: s1' 'Orca を「表示するだけ」にしていれば、リモートのセッションを通知に載せない'
+Assert-Equal (Update-SessionGroups -State $script:State -Processes @()) $true 'リモートのセッションのグループも、一覧を作るときに覚える'
+Assert-Equal "$($script:State[$ka1].Group)|$($script:State['1'].Group)" 'orca|unknown' 'リモートは orca。プロセスが一覧にないセッションは unknown'
 $script:State = @{}
 
 Assert-Equal "$(Get-OrcaRemoteInterval -Sessions @((New-RemoteSession 'a:1' 'idle' 1 -Done), (New-RemoteSession 'a:2' 'busy' 1)))|$(Get-OrcaRemoteInterval -Sessions @((New-RemoteSession 'a:1' 'waiting' 1)))" '10|10' '実行中か待ちのセッションがあれば、10 秒ごと'
