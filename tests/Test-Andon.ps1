@@ -153,6 +153,13 @@ Assert-Equal (Get-Rank ([pscustomobject]@{ Status = 'idle'; Unread = $true })) 1
 Assert-Equal (Get-Rank ([pscustomobject]@{ Status = 'busy'; Unread = $false })) 2 '並び順: 実行中'
 Assert-Equal (Get-Rank ([pscustomobject]@{ Status = 'idle'; Unread = $false })) 3 '並び順: 待機が最後'
 Assert-Equal (Get-StatusLabel ([pscustomobject]@{ Status = 'waiting'; WaitingFor = 'sandbox request' })) '待ち（sandbox request）' '未知の waitingFor はそのまま表示する'
+# shell（ターンが終わって裏のシェルだけが動いている。D-167〜D-169）
+Assert-Equal (Get-Rank ([pscustomobject]@{ Status = 'shell'; Unread = $true })) 1 '並び順: 未確認の shell は完了と同じ'
+Assert-Equal (Get-Rank ([pscustomobject]@{ Status = 'shell'; Unread = $false })) 2 '並び順: 確認した shell は実行中と同じ'
+Assert-Equal (Get-StatusLabel ([pscustomobject]@{ Status = 'shell'; Unread = $true })) '完了' '未確認の shell は完了'
+Assert-Equal (Get-StatusLabel ([pscustomobject]@{ Status = 'shell'; Unread = $false })) 'シェル実行中' '確認した shell はシェル実行中'
+Assert-Equal (Get-AlertLevel @([pscustomobject]@{ Key = '1'; Status = 'busy'; Unread = $false }, [pscustomobject]@{ Key = '2'; Status = 'shell'; Unread = $false })) 'busy' 'トレイ: 実行中とシェル実行中だけなら緑'
+Assert-Equal (Get-AlertLevel @([pscustomobject]@{ Key = '2'; Status = 'shell'; Unread = $true })) 'done' 'トレイ: 未確認の shell は完了'
 
 # ---------------------------------------------------------------------------
 Write-Host '== Get-AlertLevel / Get-AlertNotice'
@@ -564,6 +571,7 @@ Assert-Equal (Test-SessionVisible ([pscustomobject]@{ Status = 'idle'; Unread = 
 Assert-True (Test-SessionVisible ([pscustomobject]@{ Status = 'busy'; Unread = $false; Sdk = $true })) 'SDK でも実行中は出す'
 Assert-True (Test-SessionVisible ([pscustomobject]@{ Status = 'waiting'; Unread = $true; Sdk = $true })) 'SDK でも待ちは出す'
 Assert-True (Test-SessionVisible ([pscustomobject]@{ Status = 'idle'; Unread = $true; Sdk = $true })) 'SDK でも完了は出す'
+Assert-True (Test-SessionVisible ([pscustomobject]@{ Status = 'shell'; Unread = $false; Sdk = $true })) 'SDK でもシェル実行中は出す（実行中と同じ。D-169）'
 Assert-True (Test-SessionVisible ([pscustomobject]@{ Status = 'idle'; Unread = $false; Sdk = $false })) 'ターミナルの待機中は出す'
 Assert-True (Test-SessionVisible ([pscustomobject]@{ Status = 'idle'; Unread = $false; Sdk = $null })) '未判定の待機中は出す'
 
@@ -1723,6 +1731,85 @@ try {
     [IO.File]::SetLastWriteTimeUtc($jsonFile, [datetime]::UtcNow.AddMinutes(1))
     Assert-True ((Get-SessionSignature -Path $sessions) -ne $sig1) '更新時刻が変わると署名も変わる'
     Assert-Equal (Get-SessionSignature -Path (Join-Path $tmp 'missing')) '' 'ディレクトリがなければ空'
+
+    Write-Host '== Get-SessionFileStatus / Update-SessionState の shell（D-167〜D-169）'
+    $utf8 = New-Object Text.UTF8Encoding($false)
+    [IO.File]::WriteAllText((Join-Path $sessions '201.json'), '{"pid":201,"name":"セッション","status":"shell","updatedAt":1}', $utf8)
+    [IO.File]::WriteAllText((Join-Path $sessions '202.json'), '{"pid":202,"status":"busy"}', $utf8)
+    [IO.File]::WriteAllText((Join-Path $sessions '203.json'), '{"pid":203,"status":', $utf8)
+    [IO.File]::WriteAllText((Join-Path $sessions '204.json'), '{"pid":204,"status":"Shell"}', $utf8)
+    [IO.File]::WriteAllText((Join-Path $sessions '205.json'), '{"pid":205}', $utf8)
+    [IO.File]::WriteAllText((Join-Path $sessions '206.json'), ('{"pid":206,"status":"shell","pad":"' + ('x' * 300000) + '"}'), $utf8)
+    [IO.File]::WriteAllText((Join-Path $sessions '207.json'), '{"pid":207,"status":["shell"]}', $utf8)
+    # PID の形を確かめないと読んでしまう場所に、読める記録を置いておく
+    [IO.File]::WriteAllText((Join-Path $sessions '100.0123abcd.json'), '{"status":"shell"}', $utf8)
+    [IO.File]::WriteAllText((Join-Path $tmp '201.json'), '{"status":"shell"}', $utf8)
+    Assert-Equal (Get-SessionFileStatus -Path $sessions -ProcessId '201') 'shell' '記録の status を読む'
+    Assert-Equal (Get-SessionFileStatus -Path $sessions -ProcessId '202') 'busy' 'shell 以外の値もそのまま返す'
+    Assert-Equal (Get-SessionFileStatus -Path $sessions -ProcessId '203') $null '壊れた記録は $null'
+    Assert-Equal (Get-SessionFileStatus -Path $sessions -ProcessId '205') $null 'status がなければ $null'
+    Assert-Equal (Get-SessionFileStatus -Path $sessions -ProcessId '206') $null '大きすぎる記録は読まない'
+    Assert-Equal (Get-SessionFileStatus -Path $sessions -ProcessId '207') $null 'status が文字列でなければ $null'
+    Assert-Equal (Get-SessionFileStatus -Path $sessions -ProcessId '299') $null '記録がなければ $null'
+    Assert-Equal (Get-SessionFileStatus -Path (Join-Path $tmp 'missing') -ProcessId '201') $null 'フォルダがなければ $null'
+    Assert-Equal (Get-SessionFileStatus -Path $sessions -ProcessId '100.0123abcd') $null 'PID の形でなければ読まない（*.key の名前を作らない）'
+    Assert-Equal (Get-SessionFileStatus -Path $sessions -ProcessId '..\201') $null 'PID に区切りを含めない'
+    Assert-Equal (Get-SessionFileStatus -Path '' -ProcessId '201') $null 'フォルダを渡さなければ読まない'
+
+    $script:State = @{}
+    $ts = [datetime]'2026-01-02T00:00:00'
+    $null = Update-SessionState -Sessions @((New-Session 201 'busy')) -Now $ts
+    Assert-Equal $script:State['201'].Status 'busy' 'sessions フォルダを渡さなければ、記録を読まない'
+    $script:State = @{}
+    $null = Update-SessionState -Sessions @((New-Session 201 'busy'), (New-Session 202 'busy'), (New-Session 203 'busy'), (New-Session 204 'busy'), (New-Session 299 'busy')) -Now $ts -SessionsDir $sessions
+    Assert-Equal $script:State['201'].Status 'shell' '起動したとき: --json が busy で記録が shell なら shell'
+    Assert-Equal $script:State['201'].Unread $false '起動したときの shell は確認済み（シェル実行中）'
+    Assert-Equal $script:State['202'].Status 'busy' '記録も busy なら busy のまま'
+    Assert-Equal $script:State['203'].Status 'busy' '記録が読めなければ busy のまま（フェイルソフト）'
+    Assert-Equal $script:State['204'].Status 'busy' '記録の値がちょうど shell でなければ使わない'
+    Assert-Equal $script:State['299'].Status 'busy' '記録がなければ busy のまま'
+
+    $script:State = @{}
+    $null = Update-SessionState -Sessions @((New-Session 201 'idle'), (New-Session 202 'busy')) -Now $ts -SessionsDir $sessions
+    Assert-Equal $script:State['201'].Status 'idle' '--json が busy でなければ記録は使わない'
+    [IO.File]::WriteAllText((Join-Path $sessions '202.json'), '{"pid":202,"status":"shell"}', $utf8)
+    $alert = Update-SessionState -Sessions @((New-Session 201 'idle'), (New-Session 202 'busy')) -Now $ts.AddSeconds(5) -SessionsDir $sessions
+    Assert-Equal $alert $true 'busy から shell は通知する（D-168）'
+    Assert-Equal $script:State['202'].Status 'shell' 'busy から shell になる'
+    Assert-Equal (Get-StatusLabel $script:State['202']) '完了' 'busy から shell になったものは完了'
+    Assert-Equal $script:State['202'].AlertAt $ts.AddSeconds(5) 'shell になった時刻で通知する'
+    Assert-Equal (Get-AlertNotice -Entries @($script:State.Values) -Now $ts.AddSeconds(5)).Text '完了: s202' '通知の本文は完了'
+    [IO.File]::WriteAllText((Join-Path $sessions '202.json'), '{"pid":202,"status":"idle"}', $utf8)
+    $alert = Update-SessionState -Sessions @((New-Session 201 'idle'), (New-Session 202 'idle')) -Now $ts.AddSeconds(10) -SessionsDir $sessions
+    Assert-Equal $alert $false '未確認の shell から idle（裏のシェルが止まった）は通知しない'
+    Assert-Equal $script:State['202'].Unread $true '未確認の shell から idle は、完了のまま'
+    Assert-Equal $script:State['202'].Since $ts.AddSeconds(5) '未確認の完了の経過は、完了したときから数える'
+    $null = Update-SessionState -Sessions @((New-Session 201 'idle'), (New-Session 202 'busy')) -Now $ts.AddSeconds(15) -SessionsDir $sessions
+    [IO.File]::WriteAllText((Join-Path $sessions '202.json'), '{"pid":202,"status":"shell"}', $utf8)
+    $null = Update-SessionState -Sessions @((New-Session 201 'idle'), (New-Session 202 'busy')) -Now $ts.AddSeconds(20) -SessionsDir $sessions
+    $script:State['202'].Unread = $false   # 確認した
+    Assert-Equal (Get-StatusLabel $script:State['202']) 'シェル実行中' '確認したあとはシェル実行中'
+    [IO.File]::WriteAllText((Join-Path $sessions '202.json'), '{"pid":202,"status":"idle"}', $utf8)
+    $alert = Update-SessionState -Sessions @((New-Session 201 'idle'), (New-Session 202 'idle')) -Now $ts.AddSeconds(25) -SessionsDir $sessions
+    Assert-Equal $alert $false '確認した shell から idle は通知しない'
+    Assert-Equal (Get-StatusLabel $script:State['202']) '待機' '確認した shell から idle は待機'
+    Assert-Equal $script:State['202'].Since $ts.AddSeconds(25) '確認した shell から idle は、待機になった時刻から数える'
+    [IO.File]::WriteAllText((Join-Path $sessions '202.json'), '{"pid":202,"status":"shell"}', $utf8)
+    $alert = Update-SessionState -Sessions @((New-Session 201 'idle'), (New-Session 202 'busy')) -Now $ts.AddSeconds(30) -SessionsDir $sessions
+    Assert-Equal $alert $false '待機から shell（ターンの外で裏のシェルが動き出した）は通知しない'
+    Assert-Equal (Get-StatusLabel $script:State['202']) 'シェル実行中' '確認した待機から shell はシェル実行中'
+    $null = Update-SessionState -Sessions @((New-Session 201 'idle'), (New-Session 202 'waiting' 'permission prompt')) -Now $ts.AddSeconds(35) -SessionsDir $sessions
+    $alert = Update-SessionState -Sessions @((New-Session 201 'idle'), (New-Session 202 'busy')) -Now $ts.AddSeconds(40) -SessionsDir $sessions
+    Assert-Equal $alert $false 'waiting から shell（手元で拒否）は通知しない'
+    Assert-Equal $script:State['202'].Unread $false 'waiting から shell は未読にしない'
+    [IO.File]::WriteAllText((Join-Path $sessions '202.json'), '{"pid":202,"status":"busy"}', $utf8)
+    $null = Update-SessionState -Sessions @((New-Session 201 'idle'), (New-Session 202 'busy')) -Now $ts.AddSeconds(45) -SessionsDir $sessions
+    Assert-Equal (Get-StatusLabel $script:State['202']) '実行中' '記録が busy に戻れば実行中'
+    $script:State = @{}
+    Remove-Item -LiteralPath (Join-Path $sessions '100.0123abcd.json'), (Join-Path $tmp '201.json') -Force
+    # 画面の部分（ドットソースの境界より後ろ）で、claude agents --json の結果を取り込むときに sessions フォルダを渡しているか
+    $stateCalls = @($andonAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Update-SessionState' }, $true))
+    Assert-True ($stateCalls.Count -ge 1 -and @($stateCalls | Where-Object { $_.Extent.Text -notmatch '-SessionsDir\s+\$script:SessionsDir\b' }).Count -eq 0) 'Update-SessionState を呼ぶ所は、どれも sessions フォルダを渡す'
 
     Write-Host '== Resolve-VSCodeTarget'
     $ws = Join-Path $tmp 'ws'

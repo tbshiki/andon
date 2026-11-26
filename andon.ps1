@@ -7,7 +7,10 @@
     状態の正本は公式の `claude agents --json`（status: busy / waiting / idle）である。
     Claude Code は状態が変わるたびに `<設定ディレクトリ>/sessions/<pid>.json` を書き換えるので、
     その名前と更新時刻だけを見て、変化があったときに `claude agents --json` を呼ぶ。
-    ファイルの中身は読まない。同じ場所にある *.key には触れない。
+    中身は、`claude agents --json` が busy と返したセッションのファイルの status だけを読む。ターンが終わって裏のシェル
+    （dev サーバーなど）だけが動いているとき、Claude Code はそこに shell と書くが、`claude agents --json` は busy と返すため
+    （Claude Code 2.1.332 で見た動き。文書にはない）。ちょうど shell のときだけ使い、読めなければ busy のままにする。
+    ほかの値は使わない。同じ場所にある *.key には触れない。
 
     Codex（OpenAI の Codex CLI）のセッションも出す。Codex の状態は、Codex の hooks で受け取る。トレイのメニューの
     「Codex の状態を出す」で、~/.codex/hooks.json に andon の hook（andon-codex-hook.ps1）を足したり消したりする
@@ -17,8 +20,8 @@
     （共有のデーモンや VS Code の拡張機能で動いていなければ）、Claude のセッションと同じく、そのウィンドウを探して前面に出す。
     VS Code の拡張機能のセッションは、待機なら出さない。
 
-    - waiting（許可待ち・質問待ち）を赤、busy から idle に変わった未確認のもの（完了）を黄で上に並べる。
-      busy（実行中）の行は薄い緑にする。
+    - waiting（許可待ち・質問待ち）を赤、busy から idle か shell に変わった未確認のもの（完了）を黄で上に並べる。
+      busy（実行中）の行は薄い緑にする。shell は、確認したあとも、実行中と同じ薄い緑で「シェル実行中」と出す。
     - VS Code の拡張機能のパネルなど、SDK から動かしているセッションは、待機中（確認済み）なら出さない。
       拡張機能は、パネルを閉じても claude を終了させず、待機中のまま残すため。
     - タスクバーには出さず、通知領域（タスクトレイ）のアイコンの色で状態を示す。
@@ -158,26 +161,56 @@ function New-StateEntry {
 }
 
 function Set-EntryStatus {
-    <# セッションの状態を変える。新しく待ち・完了（busy から idle）になったら $true #>
+    <# セッションの状態を変える。新しく待ち・完了（busy から idle か shell）になったら $true。
+       shell は、ターンが終わって裏のシェルだけが動いている状態（Get-SessionFileStatus。D-167） #>
     param($Entry, [string]$Status, [datetime]$Now)
     if ($Entry.Status -eq $Status) { return $false }
     $prev = $Entry.Status
     $Entry.Status = $Status
-    $Entry.Since = $Now
-    if ($Status -eq 'waiting' -or ($Status -eq 'idle' -and $prev -eq 'busy')) {
+    if ($Status -eq 'waiting' -or (($Status -eq 'idle' -or $Status -eq 'shell') -and $prev -eq 'busy')) {
+        $Entry.Since = $Now
         $Entry.Unread = $true
         $Entry.AlertAt = $Now
         return $true
     }
+    # shell と idle のあいだは、ターンが終わったまま、裏のシェルが止まったか動き出しただけで、誰も応答していない。
+    # 未確認の完了は、完了のまま残す（経過も、完了したときから数える）
+    if (($prev -eq 'shell' -and $Status -eq 'idle') -or ($prev -eq 'idle' -and $Status -eq 'shell')) {
+        if (-not $Entry.Unread) { $Entry.Since = $Now }
+        return $false
+    }
+    $Entry.Since = $Now
     $Entry.Unread = $false   # busy に戻った = 誰かが応答した。waiting -> idle は手元で拒否した場合
     return $false
+}
+
+function Get-SessionFileStatus {
+    <# Claude Code の sessions/<pid>.json の status。読めなければ $null。
+       ターンが終わって裏のシェル（dev サーバーなど）だけが動いているとき、Claude Code はここに shell と書くが、
+       claude agents --json は busy と返す（Claude Code 2.1.332 で見た動き。文書にはない。D-167）。
+       中身のうち status だけを使う。ファイルの名前は PID から作るので、同じ場所の *.key には触れない #>
+    param([string]$Path, [string]$ProcessId)
+    if (-not $Path -or $ProcessId -notmatch '^[1-9][0-9]{0,9}$') { return $null }
+    $file = Join-Path $Path ($ProcessId + '.json')
+    try {
+        $info = New-Object IO.FileInfo $file
+        if (-not $info.Exists -or $info.Length -gt 262144) { return $null }   # Claude Code の記録は数百バイト
+        $record = ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($file, [Text.Encoding]::UTF8)) -ErrorAction Stop
+        # Get-JsonValue を通すと、要素が 1 つの配列が戻り値で展開されて文字列に見えるので、ここで型を見る
+        $p = $record.PSObject.Properties['status']
+        if ($p -and $p.Value -is [string]) { return $p.Value }
+    }
+    catch { }
+    return $null
 }
 
 function Update-SessionState {
     <# claude agents --json の一覧を取り込み、新しく「待ち」か「完了」になったセッションがあれば $true を返す。
        Codex のセッション（キーが codex: で始まるもの）は Update-CodexState が、Orca のリモートのセッション（キーが orca: で
-       始まるもの）は Update-OrcaRemoteState が扱うので、ここでは消さない #>
-    param([object[]]$Sessions, [datetime]$Now)
+       始まるもの）は Update-OrcaRemoteState が扱うので、ここでは消さない。
+       $SessionsDir（Claude Code の sessions フォルダ）を渡すと、busy のセッションは、そのファイルの status が
+       ちょうど shell なら shell にする（Get-SessionFileStatus。D-167） #>
+    param([object[]]$Sessions, [datetime]$Now, [string]$SessionsDir = '')
     $alert = $false
     $alive = @{}
     foreach ($s in $Sessions) {
@@ -187,6 +220,9 @@ function Update-SessionState {
         $alive[$key] = $true
         $status = Get-JsonValue $s 'status'
         if (-not $status) { $status = 'unknown' }
+        if ($status -ceq 'busy' -and $SessionsDir -and (Get-SessionFileStatus -Path $SessionsDir -ProcessId $key) -ceq 'shell') {
+            $status = 'shell'
+        }
         $startedAt = Get-JsonValue $s 'startedAt'
 
         $entry = $script:State[$key]
@@ -215,8 +251,9 @@ function Update-SessionState {
 function Get-Rank {
     param($Entry)
     if ($Entry.Status -eq 'waiting') { return 0 }
-    if ($Entry.Status -eq 'idle' -and $Entry.Unread) { return 1 }
-    if ($Entry.Status -eq 'busy') { return 2 }
+    if (($Entry.Status -eq 'idle' -or $Entry.Status -eq 'shell') -and $Entry.Unread) { return 1 }
+    # 確認したあとも裏のシェルが動いていれば、実行中と同じに並べ、同じ色にする（D-169）
+    if ($Entry.Status -eq 'busy' -or $Entry.Status -eq 'shell') { return 2 }
     return 3
 }
 
@@ -230,6 +267,7 @@ function Get-StatusLabel {
             return '待ち'
         }
         'idle' { if ($Entry.Unread) { return '完了' } else { return '待機' } }
+        'shell' { if ($Entry.Unread) { return '完了' } else { return 'シェル実行中' } }
         'busy' { return '実行中' }
         default { return [string]$Entry.Status }
     }
@@ -3707,7 +3745,7 @@ $timer.Add_Tick({
                 $script:PollTask = $null
                 $script:PollProc.Dispose()
                 $script:PollProc = $null
-                $alert = Update-SessionState -Sessions (ConvertFrom-SessionJson $json) -Now $now
+                $alert = Update-SessionState -Sessions (ConvertFrom-SessionJson $json) -Now $now -SessionsDir $script:SessionsDir
                 foreach ($e in $script:State.Values) {
                     # 起動引数は変わらないので、新しいセッションだけ 1 回見る。取れなければ普通のセッションとして扱う
                     if ($null -eq $e.Sdk) { $e.Sdk = Test-SdkCommandLine (Get-ProcessCommandLine -Id $e.Key) }

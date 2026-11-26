@@ -24,7 +24,7 @@
 - トレイのメニューの「Codex の状態を出す」を選んだときだけ、Codex の hooks の設定（`~/.codex/hooks.json`。`CODEX_HOME` があればその下）に、andon の hook（`andon-codex-hook.ps1` を `async: true` で動かすもの）を足す、または消す。ほかの hook は変えない。書き換える前に、`hooks.json.andon-backup` に写しを作る。JSON として読めなければ触らない。Codex の `config.toml` には触らない。メニューを開いたときは、チェックを決めるために `hooks.json` を読む
 - `andon-codex-hook.ps1` は、Codex が hook として動かす。Codex から渡る JSON のうち、セッションの ID、状態、作業フォルダ、ターンの ID だけを使い、`%LOCALAPPDATA%\andon\codex\<セッションの ID>.json` に書く（プロンプト、コマンド、返事の中身は書かない）。セッションの最初のイベントのときだけ、プロセスの一覧（`Win32_Process` の PID、親の PID、起動時刻、名前、起動引数）を読み、自分の親をたどって Codex のプロセスを探す。何も出力しない。Codex が信頼するのは、このスクリプトを動かすコマンドなので、スクリプトの中身は andon のアップデートで変わる
 - andon は、`%LOCALAPPDATA%\andon\codex` のファイル名と更新時刻を見て、変わったら中身を読む。Codex のプロセスが終わったセッションと、24 時間たったセッションの記録を消す
-- Claude Code の設定ディレクトリ（既定は `~/.claude`）にある `sessions/*.json` の、ファイル名と更新時刻を見る（中身は読まない。`*.key` には触れない）
+- Claude Code の設定ディレクトリ（既定は `~/.claude`）にある `sessions/*.json` の、ファイル名と更新時刻を見る。`claude agents --json` が `busy` と返したセッションだけ、`sessions/<pid>.json`（名前は PID から作る）を読み、その中の `status` だけを使う（返事が終わって裏のシェルだけが動いているかを見分けるため）。ほかの値は使わず、保存しない。256 KB より大きければ読まない。`*.key` には触れない
 - セッションの作業フォルダとその周辺の `*.code-workspace` を読み、開く対象を VS Code（`Code.exe`）に渡す
 - プロセスの一覧（`Win32_Process` の PID、親の PID、起動時刻、名前）を読み、セッションのプロセス（Codex のセッションは、記録した Codex のプロセスがターミナルの中の `codex.exe` のときだけ、そのプロセス）から親へたどる。新しいセッションが出たときは、Orca の区画のセッションか（VS Code より先に `Orca.exe` に着くか）を見分けるため、1 回だけ親へたどる。拡張機能のパネルのセッションかを見分けるため、そのプロセスの起動引数も読む
 - セッションの行や通知をクリックしたときと、新しく待ちや完了が出たとき（点滅と通知の前）に、コンソールのウィンドウ（Windows Terminal や VS Code の統合ターミナルが持つ、隠れたウィンドウを含む）を数え、そのクラスと持ち主を見る。クリックしたときは、セッションを映しているウィンドウを前面に出す（最小化していれば元に戻す）。Windows が断ったときは、前面のウィンドウの入力に一時的につないで（`AttachThreadInput`）、もう一度試す
