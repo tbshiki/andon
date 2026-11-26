@@ -162,6 +162,131 @@ Assert-Equal (Get-AlertLevel @([pscustomobject]@{ Key = '1'; Status = 'busy'; Un
 Assert-Equal (Get-AlertLevel @([pscustomobject]@{ Key = '2'; Status = 'shell'; Unread = $true })) 'done' 'トレイ: 未確認の shell は完了'
 
 # ---------------------------------------------------------------------------
+Write-Host '== dev サーバーの見分け（Test-ServerShell / Update-ServerShells / Update-ShellIdle。D-171、D-172）'
+$tp = [datetime]'2026-01-03T00:00:00'
+function New-Proc {
+    param([int]$Id, [int]$Parent, [string]$Name, $Created)
+    return [pscustomobject]@{ ProcessId = $Id; ParentProcessId = $Parent; Name = $Name; CreationDate = $Created }
+}
+$script:FakeProcs = @(
+    (New-Proc 100 1 'claude.exe' $tp)
+    (New-Proc 101 100 'bash.exe' $tp.AddSeconds(1))
+    (New-Proc 102 101 'bash.exe' $tp.AddSeconds(2))
+    (New-Proc 103 102 'python.exe' $tp.AddSeconds(3))
+    (New-Proc 110 100 'node.exe' $tp.AddSeconds(1))        # MCP サーバーなど、シェルでない直下のプロセス
+    (New-Proc 111 110 'node.exe' $tp.AddSeconds(2))
+    (New-Proc 120 100 'cmd.exe' $tp.AddSeconds(-5))        # セッションより前に起動した（PID の使い回し）
+    (New-Proc 121 120 'node.exe' $tp.AddSeconds(1))
+    (New-Proc 130 100 'pwsh.exe' $tp.AddSeconds(1))
+    (New-Proc 131 130 'node.exe' $tp.AddSeconds(-10))      # 親より前に起動した
+    (New-Proc 200 1 'claude.exe' $tp)
+    (New-Proc 201 200 'BASH.EXE' $tp.AddSeconds(1))
+    (New-Proc 202 201 'node.exe' $null)                    # 起動時刻が分からない
+    (New-Proc 300 1 'claude.exe' $null)                    # セッションの起動時刻が分からない
+    (New-Proc 301 300 'bash.exe' $tp.AddSeconds(1))
+)
+Assert-True (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 103 = $true } -SessionId 100) '裏のシェルの子孫が待ち受けていれば dev サーバー'
+Assert-True (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 101 = $true } -SessionId 100) 'シェルそのものが待ち受けていても dev サーバー'
+Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{} -SessionId 100) $false '待ち受けるプロセスがなければ dev サーバーでない'
+Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 100 = $true; 110 = $true; 111 = $true } -SessionId 100) $false 'セッションそのものと、シェルでない直下のプロセス（MCP サーバーなど）とその子は見ない'
+Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 120 = $true; 121 = $true } -SessionId 100) $false 'セッションより前に起動したシェル（PID の使い回し）はたどらない'
+Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 131 = $true } -SessionId 100) $false '親より前に起動した子はたどらない'
+Assert-True (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 130 = $true } -SessionId 100) 'pwsh.exe（PowerShell のツール）も裏のシェルとしてたどる'
+Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 103 = $true } -SessionId 200) $false 'ほかのセッションの dev サーバーは見ない'
+Assert-True (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 201 = $true } -SessionId 200) 'シェルの名前は大文字小文字を区別しない'
+Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 202 = $true } -SessionId 200) $false '起動時刻が分からない子はたどらない'
+Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 301 = $true } -SessionId 300) $false 'セッションの起動時刻が分からなければ、たどらない'
+Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 103 = $true } -SessionId 999) $false 'セッションのプロセスがなければ dev サーバーでない'
+
+$fresh = New-StateEntry -Key '100' -Status 'shell' -StartedAt $null -Now $tp
+Assert-Equal "$($null -eq $fresh.Server)|$($null -eq $fresh.ShellOverride)|$($fresh.ShellIdle)" 'True|True|False' '新しいセッションは、見分けも右クリックの選択もまだ'
+$eShell = New-StateEntry -Key '100' -Status 'shell' -StartedAt $null -Now $tp
+$eBusy = New-StateEntry -Key '200' -Status 'busy' -StartedAt $null -Now $tp; $eBusy.Server = $true
+$eCodex = New-StateEntry -Key 'codex:s1' -Status 'idle' -StartedAt $null -Now $tp
+$eOdd = New-StateEntry -Key 'orca:e:p' -Status 'shell' -StartedAt $null -Now $tp
+$script:ProbeCalls = 0
+$getProcs = { $script:ProbeCalls++; $script:FakeProcs }
+$getListen = { @(103) }
+Update-ServerShells -Entries @($eShell, $eBusy, $eCodex, $eOdd) -GetProcesses $getProcs -GetListening $getListen
+Assert-Equal $eShell.Server $true 'shell のセッションに dev サーバーがあるかを見分ける'
+Assert-Equal $eBusy.Server $null 'shell でないセッションは、見分けを消す'
+Assert-Equal $eOdd.Server $null 'PID でないキーのセッションは、見分けない'
+Assert-Equal $script:ProbeCalls 1 'プロセスの一覧は、1 回の取り込みで 1 回だけ取る'
+Update-ServerShells -Entries @($eBusy, $eCodex) -GetProcesses $getProcs -GetListening $getListen
+Assert-Equal $script:ProbeCalls 1 'shell のセッションがなければ、プロセスを調べない'
+Update-ServerShells -Entries @($eShell) -GetProcesses { throw 'probe failed' } -GetListening $getListen
+Assert-Equal $eShell.Server $true '調べられなければ、前の見分けのまま'
+
+$eSrv = New-StateEntry -Key '1' -Status 'shell' -StartedAt $null -Now $tp; $eSrv.Server = $true
+$eSh = New-StateEntry -Key '2' -Status 'shell' -StartedAt $null -Now $tp; $eSh.Server = $false
+$eRun = New-StateEntry -Key '3' -Status 'busy' -StartedAt $null -Now $tp; $eRun.ShellOverride = $true
+Update-ShellIdle -Entries @($eSrv, $eSh, $eRun) -AutoIdle $true
+Assert-Equal "$($eSrv.ShellIdle)|$($eSh.ShellIdle)|$($eRun.ShellIdle)" 'True|False|False' 'メニューがオンなら、dev サーバーのセッションだけ待機として出す（shell でなければ出さない）'
+Assert-Equal "$(Get-StatusLabel $eSrv)|$(Get-Rank $eSrv)" '待機（サーバー）|3' '待機として出す dev サーバーは「待機（サーバー）」で、並びは待機'
+Assert-Equal "$(Get-StatusLabel $eSh)|$(Get-Rank $eSh)" 'シェル実行中|2' 'dev サーバーでないシェルは、シェル実行中のまま'
+$pd = Get-ThemePalette -Theme 'Dark'
+Assert-True ([object]::ReferenceEquals((Get-RowStyle -Palette $pd -Entry $eSrv), $pd.Rows[3])) '待機として出す行は、待機の色'
+Assert-Equal (Get-AlertLevel @($eRun, $eSrv)) 'none' 'トレイ: 待機として出すものは、待機と数える'
+Assert-Equal (Test-SessionVisible ([pscustomobject]@{ Status = 'shell'; Unread = $false; Sdk = $true; ShellIdle = $true })) $false '拡張機能のパネルのセッションは、待機として出すなら一覧に出さない'
+Update-ShellIdle -Entries @($eSrv, $eSh) -AutoIdle $false
+Assert-Equal "$($eSrv.ShellIdle)|$(Get-StatusLabel $eSrv)" 'False|シェル実行中' 'メニューがオフなら、dev サーバーもシェル実行中'
+$eSh.ShellOverride = $true
+Update-ShellIdle -Entries @($eSrv, $eSh) -AutoIdle $false
+Assert-Equal "$($eSh.ShellIdle)|$(Get-StatusLabel $eSh)" 'True|待機（シェル）' '右クリックで選べば、dev サーバーでないシェルも待機（シェル）として出す（メニューがオフでも）'
+$eSrv.ShellOverride = $false
+Update-ShellIdle -Entries @($eSrv, $eSh) -AutoIdle $true
+Assert-Equal "$($eSrv.ShellIdle)|$(Get-StatusLabel $eSrv)" 'False|シェル実行中' '右クリックで外せば、メニューがオンでも dev サーバーをシェル実行中として出す'
+Assert-Equal "$(Get-ShellIdleChoice -Entry $eSrv -AutoIdle $true)|$(Get-ShellIdleChoice -Entry $eSh -AutoIdle $false)" 'False|True' '右クリックの選択は、メニューより先に当てる'
+$eSh.Unread = $true
+Assert-Equal "$(Get-StatusLabel $eSh)|$(Get-Rank $eSh)" '完了|1' '待機として出すものでも、確認するまでは完了（D-171 の Q6）'
+$eSh.Unread = $false
+$eSh.Status = 'idle'
+Update-ShellIdle -Entries @($eSh) -AutoIdle $true
+Assert-Equal "$($eSh.ShellIdle)|$(Get-StatusLabel $eSh)" 'False|待機' '裏のシェルが止まれば、ふつうの待機'
+Assert-Equal $eSh.ShellOverride $true '右クリックの選択は、セッションが終わるまで覚える'
+
+Write-Host '== AndonShellProbe（プロセスの一覧と、TCP で待ち受けるポートの持ち主。D-172）'
+Initialize-ShellProbeType
+Initialize-ShellProbeType   # 2 回目は何もしない（定義し直さない）
+$sw = [Diagnostics.Stopwatch]::StartNew()
+$native = @([AndonShellProbe]::GetProcesses())
+$nativeMs = $sw.ElapsedMilliseconds
+$me = @($native | Where-Object { $_.ProcessId -eq $PID })
+Assert-Equal $me.Count 1 'プロセスの一覧に、このプロセスがいる'
+$meProc = Get-Process -Id $PID
+Assert-True ($me.Count -eq 1 -and $me[0].ParentProcessId -gt 0 -and $me[0].Name -ieq ($meProc.ProcessName + '.exe')) 'このプロセスの親の PID と名前を読める'
+Assert-True ($me.Count -eq 1 -and $me[0].CreationDate -is [datetime] -and [Math]::Abs(($me[0].CreationDate - $meProc.StartTime).TotalSeconds) -lt 2) 'このプロセスの起動時刻は、Get-Process と同じ'
+$parentId = 0; if ($me.Count -eq 1) { $parentId = $me[0].ParentProcessId }
+Assert-True (@($native | Where-Object { $_.ProcessId -eq $parentId }).Count -le 1) '親の PID で、親を引ける（重ならない）'
+$sw.Restart()
+$listeningBefore = @([AndonShellProbe]::GetListeningProcessIds())
+$listenMs = $sw.ElapsedMilliseconds
+Write-Host ("       プロセス {0} 個を {1} ms、待ち受けの持ち主 {2} 個を {3} ms で取った" -f $native.Count, $nativeMs, $listeningBefore.Count, $listenMs)
+$listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, 0)
+$listener.Start()
+try { Assert-True (@([AndonShellProbe]::GetListeningProcessIds()) -contains $PID) 'IPv4 で待ち受けを始めたら、持ち主の一覧にこのプロセスが入る' }
+finally { $listener.Stop() }
+$listener6 = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::IPv6Loopback, 0)
+$started6 = $false
+try { $listener6.Start(); $started6 = $true } catch { Write-Host '[SKIP] IPv6 で待ち受けられないので、IPv6 の持ち主の一覧は確かめない' }
+if ($started6) {
+    try {
+        $listening6 = @([AndonShellProbe]::GetListeningProcessIds())
+        Assert-True ($listening6 -contains $PID) 'IPv6 で待ち受けを始めたら、持ち主の一覧にこのプロセスが入る'
+    }
+    finally { $listener6.Stop() }
+}
+Assert-True (@([AndonShellProbe]::GetListeningProcessIds() | Where-Object { $_ -le 4 }).Count -eq 0) '持ち主の一覧に、Idle（0）と System（4）は入れない'
+
+# 画面の部分で、取り込みのたびに見分け、メニューと右クリックで決め直しているか
+$shellAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'andon.ps1'), [ref]$null, [ref]$null)
+$serverCalls = @($shellAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Update-ServerShells' }, $true))
+$idleCalls = @($shellAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Update-ShellIdle' }, $true))
+Assert-Equal "$($serverCalls.Count)|$($idleCalls.Count)" '1|3' 'Update-ServerShells は取り込みの 1 か所で、Update-ShellIdle は取り込み・トレイのメニュー・右クリックの 3 か所で呼ぶ'
+$menuTexts = @($shellAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] }, $true) | ForEach-Object { $_.Value })
+Assert-True ($menuTexts -contains 'dev サーバーは待機として出す' -and $menuTexts -contains '待機として出す') 'トレイのメニューに「dev サーバーは待機として出す」、行の右クリックに「待機として出す」がある'
+
+# ---------------------------------------------------------------------------
 Write-Host '== Get-AlertLevel / Get-AlertNotice'
 $script:State = @{}
 $null = Update-SessionState -Sessions @((New-Session 1 'busy'), (New-Session 2 'idle')) -Now $t0
@@ -1007,6 +1132,17 @@ try {
     Assert-Equal "$($null -eq $s.LocalSessions)|$($null -eq $s.OrcaSessions)" 'True|True' 'グループの扱いが 0〜2 でなければ使わない'
     New-ItemProperty -LiteralPath $settingsKey -Name 'OrcaSessions' -PropertyType String -Value '1' -Force | Out-Null
     Assert-Equal (Read-AndonSettings -Key $settingsKey).OrcaSessions $null 'DWORD でない OrcaSessions は使わない'
+
+    # 「dev サーバーは待機として出す」（D-172）。0 か 1 の DWORD だけを使い、ほかは既定（オン）にする
+    Assert-Equal (Read-AndonSettings -Key $settingsKey).ServerIdle $null 'ServerIdle を覚えていなければ $null（既定のオン）'
+    Write-AndonSettings -Key $settingsKey -Values ([ordered]@{ ServerIdle = 0 })
+    Assert-Equal (Read-AndonSettings -Key $settingsKey).ServerIdle $false 'ServerIdle が 0 ならオフ'
+    Write-AndonSettings -Key $settingsKey -Values ([ordered]@{ ServerIdle = 1 })
+    Assert-Equal (Read-AndonSettings -Key $settingsKey).ServerIdle $true 'ServerIdle が 1 ならオン'
+    Write-AndonSettings -Key $settingsKey -Values ([ordered]@{ ServerIdle = 2 })
+    Assert-Equal (Read-AndonSettings -Key $settingsKey).ServerIdle $null 'ServerIdle が 0 か 1 でなければ使わない'
+    New-ItemProperty -LiteralPath $settingsKey -Name 'ServerIdle' -PropertyType String -Value '0' -Force | Out-Null
+    Assert-Equal (Read-AndonSettings -Key $settingsKey).ServerIdle $null 'DWORD でない ServerIdle は使わない'
 
     # 選んだ Orca のペアリング先（D-141、D-149）。文字の値で、ID を ; で区切る。形の違うものは使わない
     Assert-Equal @((Read-AndonSettings -Key $settingsKey).OrcaRemote).Count 0 'OrcaRemote を覚えていなければ、どれも選んでいない'

@@ -22,6 +22,10 @@
 
     - waiting（許可待ち・質問待ち）を赤、busy から idle か shell に変わった未確認のもの（完了）を黄で上に並べる。
       busy（実行中）の行は薄い緑にする。shell は、確認したあとは、実行中より白っぽい緑で「シェル実行中」と出す（並びは実行中と同じ）。
+    - shell のセッションで、裏のシェルの下に TCP で待ち受けるプロセス（dev サーバー）があれば、確認したあとは「待機（サーバー）」として
+      待機と同じに出す。トレイのメニューの「dev サーバーは待機として出す」で切り替え（既定はオン。HKCU に覚える）、行の右クリックの
+      「待機として出す」で、そのセッションだけ逆にする（セッションが終わるまで覚える。dev サーバーでなければ「待機（シェル）」）。
+      見分けに使うプロセスの一覧と、待ち受けるポートの持ち主は、shell のセッションがあるときだけ、Windows の API で読む。
     - VS Code の拡張機能のパネルなど、SDK から動かしているセッションは、待機中（確認済み）なら出さない。
       拡張機能は、パネルを閉じても claude を終了させず、待機中のまま残すため。
     - タスクバーには出さず、通知領域（タスクトレイ）のアイコンの色で状態を示す。
@@ -155,6 +159,10 @@ function New-StateEntry {
         Agent = ''; Remote = $null
         # セッションのグループ（orca か local。見分けられなければ unknown）。$null は未判定（Update-SessionGroups。D-156）
         Group = $null
+        # shell のセッションの、裏のシェルの下に TCP で待ち受けるプロセス（dev サーバー）があるか（Update-ServerShells。$null は未判定）と、
+        # 行の右クリックで選んだ「待機として出す」（$null は選んでいない）、その 2 つとトレイのメニューから決めた、確認したあと待機として
+        # 出すか（Update-ShellIdle）。D-171、D-172
+        Server = $null; ShellOverride = $null; ShellIdle = $false
     }
     if ($entry.Unread) { $entry.AlertAt = $Now }
     return $entry
@@ -252,8 +260,9 @@ function Get-Rank {
     param($Entry)
     if ($Entry.Status -eq 'waiting') { return 0 }
     if (($Entry.Status -eq 'idle' -or $Entry.Status -eq 'shell') -and $Entry.Unread) { return 1 }
-    # 確認したあとも裏のシェルが動いていれば、実行中と同じに並べ、トレイでも実行中と数える（D-169）。行の色は Get-RowStyle
-    if ($Entry.Status -eq 'busy' -or $Entry.Status -eq 'shell') { return 2 }
+    # 確認したあとも裏のシェルが動いていれば、実行中と同じに並べ、トレイでも実行中と数える（D-169）。行の色は Get-RowStyle。
+    # 待機として出すもの（dev サーバーなど。ShellIdle。D-171、D-172）は、待機と同じ
+    if ($Entry.Status -eq 'busy' -or ($Entry.Status -eq 'shell' -and -not $Entry.ShellIdle)) { return 2 }
     return 3
 }
 
@@ -267,7 +276,11 @@ function Get-StatusLabel {
             return '待ち'
         }
         'idle' { if ($Entry.Unread) { return '完了' } else { return '待機' } }
-        'shell' { if ($Entry.Unread) { return '完了' } else { return 'シェル実行中' } }
+        'shell' {
+            if ($Entry.Unread) { return '完了' }
+            if ($Entry.ShellIdle) { if ($Entry.Server -eq $true) { return '待機（サーバー）' } else { return '待機（シェル）' } }
+            return 'シェル実行中'
+        }
         'busy' { return '実行中' }
         default { return [string]$Entry.Status }
     }
@@ -378,6 +391,182 @@ function Get-SessionSignature {
         '{0}:{1}' -f [IO.Path]::GetFileName($f), [IO.File]::GetLastWriteTimeUtc($f).Ticks
     }
     return ($parts | Sort-Object) -join '|'
+}
+
+# ---------------------------------------------------------------------------
+# dev サーバーの見分け（D-171、D-172）。返事が終わって裏のシェルだけが動いている（shell の）セッションで、
+# 裏のシェルの下に TCP で待ち受けるプロセスがあれば、dev サーバーとみなす
+# ---------------------------------------------------------------------------
+
+# Claude Code が裏のシェルとして動かすもの。セッションのプロセスの直下のこれらだけをたどる（MCP サーバーなどを、なるべく含めない）
+$script:ShellProcessNames = @('bash.exe', 'sh.exe', 'pwsh.exe', 'powershell.exe', 'cmd.exe')
+
+function Test-ServerShell {
+    <# $Processes（ProcessId、ParentProcessId、Name、CreationDate を持つもの）のうち、セッションのプロセス $SessionId の直下のシェルと
+       その子孫に、$Listening（PID -> $true。TCP で待ち受けるポートの持ち主）があれば $true。
+       親より前に起動したものは子として扱わない（PID の使い回し。Get-ProcessDescendant と同じ）。起動時刻が分からないものもたどらない #>
+    param([object[]]$Processes, [hashtable]$Listening, [int]$SessionId)
+    $self = $null
+    $children = @{}
+    foreach ($p in $Processes) {
+        if ($null -eq $p) { continue }
+        $id = [int]$p.ProcessId
+        if ($id -eq $SessionId) { $self = $p }
+        $parent = [int]$p.ParentProcessId
+        if ($parent -eq $id) { continue }
+        if (-not $children.ContainsKey($parent)) { $children[$parent] = New-Object System.Collections.ArrayList }
+        [void]$children[$parent].Add($p)
+    }
+    if ($null -eq $self -or $null -eq $self.CreationDate -or -not $children.ContainsKey($SessionId)) { return $false }
+    $queue = New-Object System.Collections.Queue
+    foreach ($c in $children[$SessionId]) {
+        if ($script:ShellProcessNames -notcontains [string]$c.Name) { continue }
+        if ($null -eq $c.CreationDate -or $c.CreationDate -lt $self.CreationDate) { continue }
+        $queue.Enqueue($c)
+    }
+    $seen = @{}
+    while ($queue.Count -gt 0) {
+        $c = $queue.Dequeue()
+        $id = [int]$c.ProcessId
+        if ($seen.ContainsKey($id)) { continue }
+        $seen[$id] = $true
+        if ($Listening.ContainsKey($id)) { return $true }
+        if (-not $children.ContainsKey($id)) { continue }
+        foreach ($d in $children[$id]) {
+            if ($null -eq $d.CreationDate -or $d.CreationDate -lt $c.CreationDate) { continue }
+            $queue.Enqueue($d)
+        }
+    }
+    return $false
+}
+
+function Get-ShellIdleChoice {
+    <# shell のセッションを、確認したあと待機として出すか。行の右クリックで選んでいれば（ShellOverride）それ、なければ、
+       トレイのメニュー（$AutoIdle）がオンで、dev サーバーがある（Server）とき #>
+    param($Entry, [bool]$AutoIdle)
+    if ($null -ne $Entry.ShellOverride) { return [bool]$Entry.ShellOverride }
+    return ($AutoIdle -and $Entry.Server -eq $true)
+}
+
+function Update-ShellIdle {
+    <# セッションごとに、確認したあと待機として出すか（ShellIdle）を決め直す。shell でないセッションは $false #>
+    param([object[]]$Entries, [bool]$AutoIdle)
+    foreach ($e in $Entries) {
+        if ($null -eq $e) { continue }
+        $e.ShellIdle = ($e.Status -eq 'shell' -and (Get-ShellIdleChoice -Entry $e -AutoIdle $AutoIdle))
+    }
+}
+
+function Update-ServerShells {
+    <# shell のセッションごとに、dev サーバーがあるか（Test-ServerShell）を見て Server に入れる。shell でないセッションは $null にする。
+       shell のセッションがなければ、何も調べない（$GetProcesses と $GetListening を呼ばない）。調べられなければ、前の値のまま #>
+    param([object[]]$Entries, [scriptblock]$GetProcesses, [scriptblock]$GetListening)
+    $shells = @()
+    foreach ($e in $Entries) {
+        if ($null -eq $e) { continue }
+        if ($e.Status -eq 'shell' -and [string]$e.Key -match '^[1-9][0-9]{0,9}$') { $shells += $e }
+        elseif ($e.Status -ne 'shell') { $e.Server = $null }
+    }
+    if ($shells.Count -eq 0) { return }
+    try {
+        $procs = @(& $GetProcesses)
+        $listening = @{}
+        foreach ($id in @(& $GetListening)) { $listening[[int]$id] = $true }
+    }
+    catch { return }
+    foreach ($e in $shells) { $e.Server = Test-ServerShell -Processes $procs -Listening $listening -SessionId ([int]$e.Key) }
+}
+
+function Initialize-ShellProbeType {
+    <# プロセスの一覧と、TCP で待ち受けるポートの持ち主を取る型（AndonShellProbe）を定義する。Get-NetTCPConnection と Win32_Process は
+       それぞれ 0.3 秒以上かかり、状態の取り込み（画面の処理と同じ流れ）が固まるので、Windows の API を直に呼ぶ。
+       Windows PowerShell 5.1 は C# 5 でコンパイルするので、それより新しい書き方を使わない #>
+    if ('AndonShellProbe' -as [type]) { return }
+    Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+public class AndonProcessInfo {
+    public int ProcessId;
+    public int ParentProcessId;
+    public string Name;
+    public DateTime? CreationDate;
+}
+public static class AndonShellProbe {
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct ProcessEntry {
+        public uint dwSize; public uint cntUsage; public uint th32ProcessID; public IntPtr th32DefaultHeapID; public uint th32ModuleID;
+        public uint cntThreads; public uint th32ParentProcessID; public int pcPriClassBase; public uint dwFlags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string szExeFile;
+    }
+    [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint pid);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern bool Process32FirstW(IntPtr snapshot, ref ProcessEntry entry);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern bool Process32NextW(IntPtr snapshot, ref ProcessEntry entry);
+    [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
+    [DllImport("kernel32.dll")] static extern bool GetProcessTimes(IntPtr process, out long creation, out long exit, out long kernel, out long user);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+    [DllImport("iphlpapi.dll")] static extern uint GetExtendedTcpTable(IntPtr table, ref int size, bool order, int family, int tableClass, uint reserved);
+
+    // プロセスの PID、親の PID、名前、起動時刻（開けないプロセスは null）
+    public static List<AndonProcessInfo> GetProcesses() {
+        List<AndonProcessInfo> list = new List<AndonProcessInfo>();
+        IntPtr snapshot = CreateToolhelp32Snapshot(2, 0);   // TH32CS_SNAPPROCESS
+        if (snapshot == IntPtr.Zero || snapshot == new IntPtr(-1)) throw new InvalidOperationException("CreateToolhelp32Snapshot");
+        try {
+            ProcessEntry entry = new ProcessEntry();
+            entry.dwSize = (uint)Marshal.SizeOf(typeof(ProcessEntry));
+            if (!Process32FirstW(snapshot, ref entry)) return list;
+            do {
+                AndonProcessInfo p = new AndonProcessInfo();
+                p.ProcessId = (int)entry.th32ProcessID;
+                p.ParentProcessId = (int)entry.th32ParentProcessID;
+                p.Name = entry.szExeFile;
+                IntPtr h = OpenProcess(0x1000, false, entry.th32ProcessID);   // PROCESS_QUERY_LIMITED_INFORMATION
+                if (h != IntPtr.Zero) {
+                    long creation, exit, kernel, user;
+                    if (GetProcessTimes(h, out creation, out exit, out kernel, out user) && creation > 0) p.CreationDate = DateTime.FromFileTime(creation);
+                    CloseHandle(h);
+                }
+                list.Add(p);
+            } while (Process32NextW(snapshot, ref entry));
+        }
+        finally { CloseHandle(snapshot); }
+        return list;
+    }
+
+    // TCP で待ち受けている（LISTEN の）ポートの持ち主の PID。IPv4 と IPv6
+    public static int[] GetListeningProcessIds() {
+        Dictionary<int, bool> ids = new Dictionary<int, bool>();
+        Collect(ids, 2, 24, 20);    // AF_INET: MIB_TCPROW_OWNER_PID（6 つの DWORD。最後が PID）
+        Collect(ids, 23, 56, 52);   // AF_INET6: MIB_TCP6ROW_OWNER_PID（56 バイト。最後が PID）
+        int[] result = new int[ids.Count];
+        ids.Keys.CopyTo(result, 0);
+        return result;
+    }
+
+    static void Collect(Dictionary<int, bool> ids, int family, int rowSize, int pidOffset) {
+        int size = 0;
+        GetExtendedTcpTable(IntPtr.Zero, ref size, false, family, 3, 0);   // TCP_TABLE_OWNER_PID_LISTENER
+        for (int attempt = 0; attempt < 4; attempt++) {
+            if (size < 4) size = 4;
+            IntPtr buffer = Marshal.AllocHGlobal(size);
+            try {
+                uint result = GetExtendedTcpTable(buffer, ref size, false, family, 3, 0);
+                if (result == 122) continue;   // ERROR_INSUFFICIENT_BUFFER。size が新しい大きさになる
+                if (result != 0) throw new InvalidOperationException("GetExtendedTcpTable " + result);
+                int count = Marshal.ReadInt32(buffer);
+                for (int i = 0; i < count; i++) {
+                    int pid = Marshal.ReadInt32(buffer, 4 + i * rowSize + pidOffset);
+                    if (pid > 4) ids[pid] = true;   // 0（Idle）と 4（System）は除く
+                }
+                return;
+            }
+            finally { Marshal.FreeHGlobal(buffer); }
+        }
+        throw new InvalidOperationException("GetExtendedTcpTable: buffer");
+    }
+}
+'@
 }
 
 # ---------------------------------------------------------------------------
@@ -1342,7 +1531,7 @@ function Get-AndonSettingsKey {
 
 function Read-AndonSettings {
     <# 覚えた設定を読む。値がない、DWORD でない、ありえない値なら、その組（位置、大きさ、常に手前、テーマ、縦表示、Orca の通知、
-       グループの扱い）を $null にし、既定を使わせる。
+       グループの扱い、dev サーバーの扱い）を $null にし、既定を使わせる。
        位置はマイナスもありうる（主画面の左や上の画面）。小さすぎる大きさは、戻すと操作しにくいので使わない。
        キーが読めなくても失敗しない #>
     param([string]$Key, [int]$MinWidth = 160, [int]$MinHeight = 80, [int]$Limit = 100000)
@@ -1356,7 +1545,7 @@ function Read-AndonSettings {
             if ($names -contains 'OrcaRemote' -and $item.GetValueKind('OrcaRemote') -eq [Microsoft.Win32.RegistryValueKind]::String) {
                 $remoteText = [string]$item.GetValue('OrcaRemote')
             }
-            foreach ($name in 'Left', 'Top', 'Width', 'Height', 'TopMost', 'Theme', 'Vertical', 'OrcaNotify', 'LocalSessions', 'OrcaSessions') {
+            foreach ($name in 'Left', 'Top', 'Width', 'Height', 'TopMost', 'Theme', 'Vertical', 'OrcaNotify', 'LocalSessions', 'OrcaSessions', 'ServerIdle') {
                 if ($names -notcontains $name) { continue }
                 if ($item.GetValueKind($name) -ne [Microsoft.Win32.RegistryValueKind]::DWord) { continue }
                 $raw[$name] = [int]$item.GetValue($name)
@@ -1366,7 +1555,7 @@ function Read-AndonSettings {
     catch { $raw = @{}; $remoteText = $null }
     $s = [pscustomobject]@{
         Left = $null; Top = $null; Width = $null; Height = $null; TopMost = $null; Theme = $null; Vertical = $null; OrcaNotify = $null; OrcaRemote = @()
-        LocalSessions = $null; OrcaSessions = $null
+        LocalSessions = $null; OrcaSessions = $null; ServerIdle = $null
     }
     $s.OrcaRemote = ConvertFrom-OrcaRemoteSetting $remoteText   # 配列で返る（@() で包むと、配列の配列になる）
     if ($raw.ContainsKey('Left') -and $raw.ContainsKey('Top') -and
@@ -1381,6 +1570,8 @@ function Read-AndonSettings {
     if ($raw.ContainsKey('Theme') -and $raw['Theme'] -ge 0 -and $raw['Theme'] -lt $script:ThemeChoices.Count) { $s.Theme = $script:ThemeChoices[$raw['Theme']] }
     if ($raw.ContainsKey('Vertical') -and ($raw['Vertical'] -eq 0 -or $raw['Vertical'] -eq 1)) { $s.Vertical = ($raw['Vertical'] -eq 1) }
     if ($raw.ContainsKey('OrcaNotify') -and ($raw['OrcaNotify'] -eq 0 -or $raw['OrcaNotify'] -eq 1)) { $s.OrcaNotify = ($raw['OrcaNotify'] -eq 1) }
+    # 「dev サーバーは待機として出す」（D-172。既定はオン）
+    if ($raw.ContainsKey('ServerIdle') -and ($raw['ServerIdle'] -eq 0 -or $raw['ServerIdle'] -eq 1)) { $s.ServerIdle = ($raw['ServerIdle'] -eq 1) }
     # グループの扱いは 0（表示しない）、1（表示するだけ）、2（表示して通知する）
     foreach ($name in 'LocalSessions', 'OrcaSessions') {
         if ($raw.ContainsKey($name) -and $raw[$name] -ge 0 -and $raw[$name] -le 2) { $s.$name = $raw[$name] }
@@ -1464,7 +1655,7 @@ function Get-RowStyle {
     <# 行の色（Get-ThemePalette の Rows の 1 つ）。並び順（Get-Rank）ごとの色で、確認した shell（シェル実行中）だけは、
        並びは実行中と同じまま、実行中より白っぽい色にする（D-170） #>
     param($Palette, $Entry)
-    if ($Entry.Status -eq 'shell' -and -not $Entry.Unread) { return $Palette.Rows['shell'] }
+    if ($Entry.Status -eq 'shell' -and -not $Entry.Unread -and -not $Entry.ShellIdle) { return $Palette.Rows['shell'] }
     return $Palette.Rows[(Get-Rank $Entry)]
 }
 
@@ -2761,6 +2952,9 @@ $miOrcaSessions = New-GroupModeMenu -Text 'Orca のセッション' -Group 'orca
 $miOrcaRemote = New-Object System.Windows.Forms.ToolStripMenuItem('Orca のリモートを出す')
 [void]$miOrcaRemote.DropDownItems.Add('読み込み中…')
 [void]$trayMenu.Items.Add($miOrcaRemote)
+# 返事が終わって dev サーバーだけが動いているセッションを、確認したあと待機として出す（D-171、D-172）
+$miServerIdle = New-Object System.Windows.Forms.ToolStripMenuItem('dev サーバーは待機として出す')
+[void]$trayMenu.Items.Add($miServerIdle)
 $miTheme = New-Object System.Windows.Forms.ToolStripMenuItem('テーマ')
 $miThemeItems = @()
 foreach ($choice in @(@{ Text = 'ライト'; Name = 'Light' }, @{ Text = 'ダーク'; Name = 'Dark' }, @{ Text = 'Windows に合わせる'; Name = 'System' })) {
@@ -2786,6 +2980,10 @@ $sessionModes = Get-SessionModes $script:Settings
 $script:LocalMode = $sessionModes.Local
 $script:OrcaMode = $sessionModes.Orca
 $script:OrcaRemoteIds = @($script:Settings.OrcaRemote)   # 選んだペアリング先。既定は、どれも選んでいない
+# 「dev サーバーは待機として出す」（D-171、D-172）。既定はオン。見分けに使う型を作れなければ、見分けない（シェル実行中のまま）
+$script:ServerIdle = $script:Settings.ServerIdle -ne $false
+$script:ShellProbeReady = $false
+try { Initialize-ShellProbeType; $script:ShellProbeReady = $true } catch { $script:ShellProbeReady = $false }
 
 $lv = New-Object System.Windows.Forms.ListView
 $lv.Dock = 'Fill'
@@ -2860,6 +3058,9 @@ $form.Controls.Add($panel)
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
 $miOpen = $menu.Items.Add('開く')
 $miRead = $menu.Items.Add('既読にする')
+# 裏のシェルだけが動いているセッションを、確認したあと待機として出すか、そのセッションだけ選ぶ（D-172）
+$miShellIdle = New-Object System.Windows.Forms.ToolStripMenuItem('待機として出す')
+[void]$menu.Items.Add($miShellIdle)
 $lv.ContextMenuStrip = $menu
 $lvV.ContextMenuStrip = $menu
 
@@ -3498,6 +3699,23 @@ $miRead.Add_Click({
         $e = Get-SelectedEntry
         if ($e) { $e.Unread = $false; Clear-ListSelection; Update-ListView }
     })
+# 「待機として出す」は、裏のシェルだけが動いている（shell の）セッションでだけ選べる。チェックは、今そのセッションに当たっているもの
+$menu.Add_Opening({
+        $e = Get-SelectedEntry
+        $isShell = $null -ne $e -and $e.Status -eq 'shell'
+        $miShellIdle.Enabled = $isShell
+        $miShellIdle.Checked = $isShell -and (Get-ShellIdleChoice -Entry $e -AutoIdle $script:ServerIdle)
+    })
+$miShellIdle.Add_Click({
+        $e = Get-SelectedEntry
+        if ($e -and $e.Status -eq 'shell') {
+            # そのセッションが終わるまで覚える（PID を使い回した新しいセッションには引き継がない。New-StateEntry）
+            $e.ShellOverride = -not (Get-ShellIdleChoice -Entry $e -AutoIdle $script:ServerIdle)
+            Update-ShellIdle -Entries @($script:State.Values) -AutoIdle $script:ServerIdle
+        }
+        Clear-ListSelection
+        Update-ListView
+    })
 $btnRead.Add_Click({ Set-AllRead })
 $chkTop.Add_CheckedChanged({
         $form.TopMost = $chkTop.Checked
@@ -3549,6 +3767,8 @@ $trayMenu.Add_Opening({
         }
         foreach ($mi in $miThemeItems) { $mi.Checked = ([string]$mi.Tag -eq $script:ThemeChoice) }
         $miVertical.Checked = $script:Vertical
+        $miServerIdle.Checked = $script:ServerIdle
+        $miServerIdle.Enabled = $script:ShellProbeReady   # 見分けに使う型を作れなければ、選べない
         $orcaRunning = $false
         try { $orcaRunning = @(Get-OrcaWindowList).Count -gt 0 } catch { $orcaRunning = $false }
         foreach ($mi in $miLocalSessions.DropDownItems) { $mi.Checked = ($mi.Tag.Mode -eq $script:LocalMode) }
@@ -3608,6 +3828,14 @@ foreach ($mi in $miThemeItems) {
             Update-AndonTheme
         })
 }
+# 「dev サーバーは待機として出す」を切り替えたら、覚えて一覧を作り直す（行の右クリックで選んだセッションは、そのまま）
+$miServerIdle.Add_Click({
+        $script:ServerIdle = -not $script:ServerIdle
+        try { Write-AndonSettings -Key $script:SettingsKey -Values ([ordered]@{ ServerIdle = [int]$script:ServerIdle }) }
+        catch { }   # 覚えられなくても、今の andon の表示は変える
+        Update-ShellIdle -Entries @($script:State.Values) -AutoIdle $script:ServerIdle
+        Update-ListView
+    })
 # 縦表示を切り替えたら、覚えて一覧を入れ替える
 $miVertical.Add_Click({
         $script:Vertical = -not $script:Vertical
@@ -3763,6 +3991,16 @@ $timer.Add_Tick({
                     # 起動引数は変わらないので、新しいセッションだけ 1 回見る。取れなければ普通のセッションとして扱う
                     if ($null -eq $e.Sdk) { $e.Sdk = Test-SdkCommandLine (Get-ProcessCommandLine -Id $e.Key) }
                 }
+                # 裏のシェルだけが動いているセッションに dev サーバーがあるかを見て、確認したあと待機として出すかを決める（D-171、D-172）。
+                # 見分けられなくても、一覧は続ける
+                if ($script:ShellProbeReady) {
+                    try {
+                        Update-ServerShells -Entries @($script:State.Values) -GetProcesses { [AndonShellProbe]::GetProcesses() } `
+                            -GetListening { [AndonShellProbe]::GetListeningProcessIds() }
+                    }
+                    catch { }
+                }
+                Update-ShellIdle -Entries @($script:State.Values) -AutoIdle $script:ServerIdle
                 Update-ListView
                 $script:NextRender = $now.AddSeconds(5)
                 $lblStatus.Text = '更新 ' + $now.ToString('HH:mm:ss')
