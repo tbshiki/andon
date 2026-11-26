@@ -21,7 +21,7 @@
     VS Code の拡張機能のセッションは、待機なら出さない。
 
     - waiting（許可待ち・質問待ち）を赤、busy から idle か shell に変わった未確認のもの（完了）を黄で上に並べる。
-      busy（実行中）の行は薄い緑にする。shell は、確認したあとも、実行中と同じ薄い緑で「シェル実行中」と出す。
+      busy（実行中）の行は薄い緑にする。shell は、確認したあとは、実行中より白っぽい緑で「シェル実行中」と出す（並びは実行中と同じ）。
     - VS Code の拡張機能のパネルなど、SDK から動かしているセッションは、待機中（確認済み）なら出さない。
       拡張機能は、パネルを閉じても claude を終了させず、待機中のまま残すため。
     - タスクバーには出さず、通知領域（タスクトレイ）のアイコンの色で状態を示す。
@@ -252,7 +252,7 @@ function Get-Rank {
     param($Entry)
     if ($Entry.Status -eq 'waiting') { return 0 }
     if (($Entry.Status -eq 'idle' -or $Entry.Status -eq 'shell') -and $Entry.Unread) { return 1 }
-    # 確認したあとも裏のシェルが動いていれば、実行中と同じに並べ、同じ色にする（D-169）
+    # 確認したあとも裏のシェルが動いていれば、実行中と同じに並べ、トレイでも実行中と数える（D-169）。行の色は Get-RowStyle
     if ($Entry.Status -eq 'busy' -or $Entry.Status -eq 'shell') { return 2 }
     return 3
 }
@@ -1436,6 +1436,8 @@ function Get-ThemePalette {
                 1 = [pscustomobject]@{ Back = @(105, 85, 20); Fore = @(255, 255, 255); Bold = $true; Hover = @(123, 105, 48) }   # 完了: 暗い黄
                 2 = [pscustomobject]@{ Back = @(30, 64, 38); Fore = @(235, 235, 235); Bold = $false; Hover = @(56, 86, 64) }     # 実行中: 暗い緑
                 3 = [pscustomobject]@{ Back = @(25, 25, 25); Fore = @(140, 140, 140); Bold = $false; Hover = @(37, 37, 37) }     # 待機
+                # シェル実行中（確認した shell）: 実行中の暗い緑に白を 15% 混ぜた色（D-170）
+                shell = [pscustomobject]@{ Back = @(64, 93, 71); Fore = @(235, 235, 235); Bold = $false; Hover = @(87, 112, 93) }
             }
         }
     }
@@ -1452,8 +1454,18 @@ function Get-ThemePalette {
             1 = [pscustomobject]@{ Back = @(255, 240, 180); Fore = $null; Bold = $true; Hover = @(237, 223, 167) }
             2 = [pscustomobject]@{ Back = @(228, 248, 230); Fore = $null; Bold = $false; Hover = @(212, 230, 214) }
             3 = [pscustomobject]@{ Back = $null; Fore = @(128, 128, 128); Bold = $false; Hover = @(237, 237, 237) }      # Gray
+            # シェル実行中（確認した shell）: 実行中の薄い緑に白を 40% 混ぜた色（D-170）
+            shell = [pscustomobject]@{ Back = @(239, 251, 240); Fore = $null; Bold = $false; Hover = @(222, 233, 223) }
         }
     }
+}
+
+function Get-RowStyle {
+    <# 行の色（Get-ThemePalette の Rows の 1 つ）。並び順（Get-Rank）ごとの色で、確認した shell（シェル実行中）だけは、
+       並びは実行中と同じまま、実行中より白っぽい色にする（D-170） #>
+    param($Palette, $Entry)
+    if ($Entry.Status -eq 'shell' -and -not $Entry.Unread) { return $Palette.Rows['shell'] }
+    return $Palette.Rows[(Get-Rank $Entry)]
 }
 
 function Get-ContrastRatio {
@@ -3057,10 +3069,10 @@ function Show-VerticalItem {
         $fore = [System.Drawing.SystemColors]::HighlightText
     }
     elseif ($DrawArgs.ItemIndex -eq $script:VerticalHot) {
-        $rank = 3
+        $style = $p.Rows[3]
         $entry = $script:State[[string]$item.Tag]
-        if ($entry) { $rank = Get-Rank $entry }
-        if ($p.Rows[$rank].Hover) { $back = ConvertTo-ThemeColor $p.Rows[$rank].Hover }
+        if ($entry) { $style = Get-RowStyle -Palette $p -Entry $entry }
+        if ($style.Hover) { $back = ConvertTo-ThemeColor $style.Hover }
     }
     $brush = New-Object System.Drawing.SolidBrush($back)
     $pen = New-Object System.Drawing.Pen((ConvertTo-ThemeColor $p.RowLine))
@@ -3190,7 +3202,7 @@ function Update-ListView {
         [void]$item.SubItems.Add((Get-EntryFolder $e))
         $item.Tag = $e.Key
         # 行の色はテーマの色の組（Get-ThemePalette）から。実行中は見てほしい行ではないので、太字にしない
-        $style = $script:Palette.Rows[(Get-Rank $e)]
+        $style = Get-RowStyle -Palette $script:Palette -Entry $e
         if ($style.Back) { $item.BackColor = ConvertTo-ThemeColor $style.Back }
         if ($style.Fore) { $item.ForeColor = ConvertTo-ThemeColor $style.Fore }
         if ($style.Bold) { $item.Font = $boldFont }

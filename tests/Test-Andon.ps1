@@ -1135,6 +1135,40 @@ foreach ($rank in 0..2) {
 $ratio = Get-ContrastRatio -Fore $light.Rows[3].Fore -Back $light.Rows[3].Hover
 Assert-True ($ratio -ge 3) ("ライトの待機の行は、マウスを乗せても 3 以上で読める（コントラスト比 {0:0.0}）" -f $ratio)
 
+# シェル実行中の行（D-170）: 実行中より白っぽい緑。字、太字、マウスを乗せたときの決まりは、実行中と同じ
+foreach ($p in @($light, $dark)) {
+    $run = $p.Rows[2]; $sh = $p.Rows['shell']
+    Assert-True ($null -ne $sh -and $sh.Back -and $sh.Hover) "$($p.Name) は、シェル実行中の行の色を持つ"
+    $lighter = @(0..2 | Where-Object { $sh.Back[$_] -le $run.Back[$_] -or $sh.Back[$_] -gt 255 }).Count -eq 0
+    Assert-True $lighter "$($p.Name) のシェル実行中の行は、実行中の行より白っぽい（R、G、B のどれも明るい）"
+    Assert-True ($sh.Back[1] -gt $sh.Back[0] -and $sh.Back[1] -gt $sh.Back[2]) "$($p.Name) のシェル実行中の行も、緑がかっている"
+    Assert-Equal ('{0}|{1}' -f (Format-Rgb $sh.Fore), $sh.Bold) ('{0}|{1}' -f (Format-Rgb $run.Fore), $run.Bold) "$($p.Name) のシェル実行中の字と太字は、実行中と同じ"
+    Assert-Equal @(@($sh.Back, $sh.Hover) | Where-Object { $_.Count -ne 3 -or @($_ | Where-Object { $_ -lt 0 -or $_ -gt 255 }).Count -gt 0 }).Count 0 "$($p.Name) のシェル実行中の色は、0〜255 の R, G, B"
+}
+$diff = @(0..2 | ForEach-Object { $light.Rows['shell'].Back[$_] - $light.Rows['shell'].Hover[$_] })
+Assert-True (@($diff | Where-Object { $_ -lt 0 -or $_ -gt 32 }).Count -eq 0 -and @($diff | Where-Object { $_ -gt 0 }).Count -gt 0) 'ライトのシェル実行中の行は、マウスを乗せると少し暗くなる'
+$diff = @(0..2 | ForEach-Object { $dark.Rows['shell'].Hover[$_] - $dark.Rows['shell'].Back[$_] })
+Assert-True (@($diff | Where-Object { $_ -lt 0 -or $_ -gt 32 }).Count -eq 0 -and @($diff | Where-Object { $_ -gt 0 }).Count -gt 0) 'ダークのシェル実行中の行は、マウスを乗せると少し明るくなる'
+foreach ($c in @($dark.Rows['shell'].Back, $dark.Rows['shell'].Hover)) {
+    $ratio = Get-ContrastRatio -Fore $dark.Rows['shell'].Fore -Back $c
+    Assert-True ($ratio -ge 4.5) ("ダークのシェル実行中の行の字は、マウスを乗せても読める（コントラスト比 {0:0.0} が 4.5 以上）" -f $ratio)
+}
+foreach ($c in @($light.Rows['shell'].Back, $light.Rows['shell'].Hover)) {
+    $ratio = Get-ContrastRatio -Fore @(0, 0, 0) -Back $c
+    Assert-True ($ratio -ge 4.5) ("ライトのシェル実行中の行の字は、マウスを乗せても読める（コントラスト比 {0:0.0} が 4.5 以上）" -f $ratio)
+}
+foreach ($p in @($light, $dark)) {
+    Assert-True ([object]::ReferenceEquals((Get-RowStyle -Palette $p -Entry ([pscustomobject]@{ Status = 'shell'; Unread = $false })), $p.Rows['shell'])) "$($p.Name): 確認した shell は、シェル実行中の色"
+    Assert-True ([object]::ReferenceEquals((Get-RowStyle -Palette $p -Entry ([pscustomobject]@{ Status = 'shell'; Unread = $true })), $p.Rows[1])) "$($p.Name): 未確認の shell は、完了の色"
+    Assert-True ([object]::ReferenceEquals((Get-RowStyle -Palette $p -Entry ([pscustomobject]@{ Status = 'busy'; Unread = $false })), $p.Rows[2])) "$($p.Name): 実行中は、実行中の色"
+    Assert-True ([object]::ReferenceEquals((Get-RowStyle -Palette $p -Entry ([pscustomobject]@{ Status = 'waiting'; Unread = $true })), $p.Rows[0])) "$($p.Name): 待ちは、待ちの色"
+    Assert-True ([object]::ReferenceEquals((Get-RowStyle -Palette $p -Entry ([pscustomobject]@{ Status = 'idle'; Unread = $false })), $p.Rows[3])) "$($p.Name): 待機は、待機の色"
+}
+# 画面の部分で行の色を決める所が、Get-RowStyle を通しているか（Rows を並び順だけで引かない）
+$rankLookups = @($andonAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.IndexExpressionAst] -and $n.Target.Extent.Text -match '\.Rows$' -and $n.Index.Extent.Text -match 'Get-Rank' }, $true))
+$styleCalls = @($andonAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-RowStyle' }, $true))
+Assert-Equal ('{0}|{1}' -f $rankLookups.Count, $styleCalls.Count) '1|2' '行の色は Get-RowStyle の中でだけ並び順から引き、一覧と縦表示のマウスの 2 か所が Get-RowStyle を使う'
+
 # ---------------------------------------------------------------------------
 Write-Host '== andon.ps1: 縦表示（Get-VerticalName / Get-VerticalRowHeight / Get-VerticalItemLayout）'
 Assert-Equal (Get-VerticalName -Name 'api-refactor' -Cwd 'C:\work\backend') 'api-refactor' '中の段は、セッション名'
