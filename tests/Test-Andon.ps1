@@ -169,34 +169,67 @@ function New-Proc {
     return [pscustomobject]@{ ProcessId = $Id; ParentProcessId = $Parent; Name = $Name; CreationDate = $Created }
 }
 $script:FakeProcs = @(
+    # 100: 裏のシェル（Bash のツール）が dev サーバーだけ。MCP サーバー（直下の node と、cmd /c npx の形）もある
     (New-Proc 100 1 'claude.exe' $tp)
     (New-Proc 101 100 'bash.exe' $tp.AddSeconds(1))
     (New-Proc 102 101 'bash.exe' $tp.AddSeconds(2))
     (New-Proc 103 102 'python.exe' $tp.AddSeconds(3))
-    (New-Proc 110 100 'node.exe' $tp.AddSeconds(1))        # MCP サーバーなど、シェルでない直下のプロセス
+    (New-Proc 110 100 'node.exe' $tp.AddSeconds(1))
     (New-Proc 111 110 'node.exe' $tp.AddSeconds(2))
-    (New-Proc 120 100 'cmd.exe' $tp.AddSeconds(-5))        # セッションより前に起動した（PID の使い回し）
-    (New-Proc 121 120 'node.exe' $tp.AddSeconds(1))
-    (New-Proc 130 100 'pwsh.exe' $tp.AddSeconds(1))
-    (New-Proc 131 130 'node.exe' $tp.AddSeconds(-10))      # 親より前に起動した
+    (New-Proc 112 100 'cmd.exe' $tp.AddSeconds(1))
+    (New-Proc 113 112 'node.exe' $tp.AddSeconds(2))
+    # 150: dev サーバーの裏のシェルと、待ち受けない裏のシェル（ビルドなど）
+    (New-Proc 150 1 'claude.exe' $tp)
+    (New-Proc 151 150 'bash.exe' $tp.AddSeconds(1))
+    (New-Proc 152 151 'node.exe' $tp.AddSeconds(2))
+    (New-Proc 153 150 'bash.exe' $tp.AddSeconds(5))
+    (New-Proc 154 153 'node.exe' $tp.AddSeconds(6))
+    # 170: PowerShell のツール（cmd.exe の下の pwsh.exe）の dev サーバー
+    (New-Proc 170 1 'claude.exe' $tp)
+    (New-Proc 171 170 'cmd.exe' $tp.AddSeconds(1))
+    (New-Proc 172 171 'pwsh.exe' $tp.AddSeconds(2))
+    (New-Proc 173 172 'node.exe' $tp.AddSeconds(3))
+    (New-Proc 174 170 'powershell.exe' $tp.AddSeconds(4))
+    # 175: 裏のシェルは、cmd.exe の下の pwsh.exe（PowerShell のツール）だけ
+    (New-Proc 175 1 'claude.exe' $tp)
+    (New-Proc 176 175 'cmd.exe' $tp.AddSeconds(1))
+    (New-Proc 177 176 'pwsh.exe' $tp.AddSeconds(2))
+    (New-Proc 178 177 'node.exe' $tp.AddSeconds(3))
+    # 180: セッションより前に起動したシェル（PID の使い回し）と、親より前に起動した子
+    (New-Proc 180 1 'claude.exe' $tp)
+    (New-Proc 181 180 'bash.exe' $tp.AddSeconds(-5))
+    (New-Proc 182 180 'pwsh.exe' $tp.AddSeconds(1))
+    (New-Proc 183 182 'node.exe' $tp.AddSeconds(-10))
+    # 200: 名前の大文字小文字と、起動時刻が分からない子
     (New-Proc 200 1 'claude.exe' $tp)
     (New-Proc 201 200 'BASH.EXE' $tp.AddSeconds(1))
-    (New-Proc 202 201 'node.exe' $null)                    # 起動時刻が分からない
-    (New-Proc 300 1 'claude.exe' $null)                    # セッションの起動時刻が分からない
+    (New-Proc 202 201 'node.exe' $null)
+    # 300: セッションの起動時刻が分からない。310: 裏のシェルがない（MCP サーバーだけが待ち受けている）
+    (New-Proc 300 1 'claude.exe' $null)
     (New-Proc 301 300 'bash.exe' $tp.AddSeconds(1))
+    (New-Proc 310 1 'claude.exe' $tp)
+    (New-Proc 311 310 'cmd.exe' $tp.AddSeconds(1))
+    (New-Proc 312 311 'node.exe' $tp.AddSeconds(2))
 )
-Assert-True (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 103 = $true } -SessionId 100) '裏のシェルの子孫が待ち受けていれば dev サーバー'
+Assert-True (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 103 = $true } -SessionId 100) '裏のシェルの子孫が待ち受けていれば dev サーバー（MCP サーバーは裏のシェルと数えない）'
 Assert-True (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 101 = $true } -SessionId 100) 'シェルそのものが待ち受けていても dev サーバー'
 Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{} -SessionId 100) $false '待ち受けるプロセスがなければ dev サーバーでない'
-Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 100 = $true; 110 = $true; 111 = $true } -SessionId 100) $false 'セッションそのものと、シェルでない直下のプロセス（MCP サーバーなど）とその子は見ない'
-Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 120 = $true; 121 = $true } -SessionId 100) $false 'セッションより前に起動したシェル（PID の使い回し）はたどらない'
-Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 131 = $true } -SessionId 100) $false '親より前に起動した子はたどらない'
-Assert-True (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 130 = $true } -SessionId 100) 'pwsh.exe（PowerShell のツール）も裏のシェルとしてたどる'
-Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 103 = $true } -SessionId 200) $false 'ほかのセッションの dev サーバーは見ない'
+Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 100 = $true; 110 = $true; 111 = $true; 112 = $true; 113 = $true } -SessionId 100) $false 'セッションそのものと、MCP サーバー（直下の node と、下で node が動く cmd.exe）は見ない'
+Assert-True (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 152 = $true; 154 = $true } -SessionId 150) '裏のシェルが全部 dev サーバーなら dev サーバー'
+Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 152 = $true } -SessionId 150) $false '待ち受けない裏のシェル（ビルドなど）も動いていれば、dev サーバーだけではない（D-173）'
+Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 173 = $true } -SessionId 170) $false 'cmd.exe の下の pwsh.exe（PowerShell のツール）は裏のシェルと数える（待ち受けない powershell.exe があれば dev サーバーだけではない）'
+Assert-True (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 173 = $true; 174 = $true } -SessionId 170) 'cmd.exe の下の pwsh.exe と、直下の powershell.exe が両方待ち受けていれば dev サーバー'
+Assert-True (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 178 = $true } -SessionId 175) '裏のシェルが cmd.exe の下の pwsh.exe（PowerShell のツール）だけでも、dev サーバーを見分ける'
+Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 182 = $true } -SessionId 180) $true 'セッションより前に起動したシェル（PID の使い回し）は、裏のシェルと数えない'
+Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 183 = $true } -SessionId 180) $false '親より前に起動した子はたどらない'
 Assert-True (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 201 = $true } -SessionId 200) 'シェルの名前は大文字小文字を区別しない'
 Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 202 = $true } -SessionId 200) $false '起動時刻が分からない子はたどらない'
+Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 103 = $true } -SessionId 200) $false 'ほかのセッションの dev サーバーは見ない'
 Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 301 = $true } -SessionId 300) $false 'セッションの起動時刻が分からなければ、たどらない'
+Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 311 = $true; 312 = $true } -SessionId 310) $false '裏のシェルがなければ（MCP サーバーだけが待ち受けていても）dev サーバーでない'
 Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 103 = $true } -SessionId 999) $false 'セッションのプロセスがなければ dev サーバーでない'
+$fakeIndex = New-ProcessIndex -Processes $script:FakeProcs
+Assert-True (Test-ServerShell -Processes @() -Listening @{ 103 = $true } -SessionId 100 -Index $fakeIndex) '作っておいた表（New-ProcessIndex）を渡せば、それを使う'
 
 $fresh = New-StateEntry -Key '100' -Status 'shell' -StartedAt $null -Now $tp
 Assert-Equal "$($null -eq $fresh.Server)|$($null -eq $fresh.ShellOverride)|$($fresh.ShellIdle)" 'True|True|False' '新しいセッションは、見分けも右クリックの選択もまだ'

@@ -22,7 +22,7 @@
 
     - waiting（許可待ち・質問待ち）を赤、busy から idle か shell に変わった未確認のもの（完了）を黄で上に並べる。
       busy（実行中）の行は薄い緑にする。shell は、確認したあとは、実行中より白っぽい緑で「シェル実行中」と出す（並びは実行中と同じ）。
-    - shell のセッションで、裏のシェルの下に TCP で待ち受けるプロセス（dev サーバー）があれば、確認したあとは「待機（サーバー）」として
+    - shell のセッションで、裏のシェルの全部の下に TCP で待ち受けるプロセス（dev サーバー）があれば、確認したあとは「待機（サーバー）」として
       待機と同じに出す。トレイのメニューの「dev サーバーは待機として出す」で切り替え（既定はオン。HKCU に覚える）、行の右クリックの
       「待機として出す」で、そのセッションだけ逆にする（セッションが終わるまで覚える。dev サーバーでなければ「待機（シェル）」）。
       見分けに使うプロセスの一覧と、待ち受けるポートの持ち主は、shell のセッションがあるときだけ、Windows の API で読む。
@@ -395,49 +395,88 @@ function Get-SessionSignature {
 
 # ---------------------------------------------------------------------------
 # dev サーバーの見分け（D-171、D-172）。返事が終わって裏のシェルだけが動いている（shell の）セッションで、
-# 裏のシェルの下に TCP で待ち受けるプロセスがあれば、dev サーバーとみなす
+# 裏のシェルの全部の下に TCP で待ち受けるプロセスがあれば、dev サーバー（だけが動いている）とみなす（D-173）
 # ---------------------------------------------------------------------------
 
-# Claude Code が裏のシェルとして動かすもの。セッションのプロセスの直下のこれらだけをたどる（MCP サーバーなどを、なるべく含めない）
-$script:ShellProcessNames = @('bash.exe', 'sh.exe', 'pwsh.exe', 'powershell.exe', 'cmd.exe')
+# Claude Code が裏のシェルとして動かすもの（Bash のツールと、PowerShell のツールのうち cmd.exe を挟まないもの）。
+# cmd.exe は、下で PowerShell が動いているとき（PowerShell のツール）だけ数える（D-173）
+$script:ShellProcessNames = @('bash.exe', 'sh.exe', 'pwsh.exe', 'powershell.exe')
+$script:PowerShellProcessNames = @('pwsh.exe', 'powershell.exe')
 
-function Test-ServerShell {
-    <# $Processes（ProcessId、ParentProcessId、Name、CreationDate を持つもの）のうち、セッションのプロセス $SessionId の直下のシェルと
-       その子孫に、$Listening（PID -> $true。TCP で待ち受けるポートの持ち主）があれば $true。
-       親より前に起動したものは子として扱わない（PID の使い回し。Get-ProcessDescendant と同じ）。起動時刻が分からないものもたどらない #>
-    param([object[]]$Processes, [hashtable]$Listening, [int]$SessionId)
-    $self = $null
+function New-ProcessIndex {
+    <# $Processes（ProcessId、ParentProcessId、Name、CreationDate を持つもの）を、PID からプロセス（ById）と、
+       親の PID から子の一覧（Children）に引けるようにする #>
+    param([object[]]$Processes)
+    $byId = @{}
     $children = @{}
     foreach ($p in $Processes) {
         if ($null -eq $p) { continue }
         $id = [int]$p.ProcessId
-        if ($id -eq $SessionId) { $self = $p }
+        $byId[$id] = $p
         $parent = [int]$p.ParentProcessId
         if ($parent -eq $id) { continue }
         if (-not $children.ContainsKey($parent)) { $children[$parent] = New-Object System.Collections.ArrayList }
         [void]$children[$parent].Add($p)
     }
-    if ($null -eq $self -or $null -eq $self.CreationDate -or -not $children.ContainsKey($SessionId)) { return $false }
-    $queue = New-Object System.Collections.Queue
-    foreach ($c in $children[$SessionId]) {
-        if ($script:ShellProcessNames -notcontains [string]$c.Name) { continue }
-        if ($null -eq $c.CreationDate -or $c.CreationDate -lt $self.CreationDate) { continue }
-        $queue.Enqueue($c)
+    return [pscustomobject]@{ ById = $byId; Children = $children }
+}
+
+function Get-ChildProcess {
+    <# $Parent の子のうち、$Parent より後に起動したもの。親より前に起動したものは子として扱わない（PID の使い回し。
+       Get-ProcessDescendant と同じ）。起動時刻が分からないものも扱わない #>
+    param($Index, $Parent)
+    $id = [int]$Parent.ProcessId
+    if ($null -eq $Parent.CreationDate -or -not $Index.Children.ContainsKey($id)) { return @() }
+    return @($Index.Children[$id] | Where-Object { $null -ne $_.CreationDate -and $_.CreationDate -ge $Parent.CreationDate })
+}
+
+function Get-BackgroundShell {
+    <# セッションのプロセス $Session の直下の、Claude Code の裏のシェル。bash.exe などと、下で pwsh.exe か powershell.exe が動いている
+       cmd.exe（PowerShell のツール）。下で node などが動いている cmd.exe（cmd /c npx で起動した MCP サーバーなど）は含めない（D-173） #>
+    param($Index, $Session)
+    $result = @()
+    foreach ($c in @(Get-ChildProcess -Index $Index -Parent $Session)) {
+        $name = [string]$c.Name
+        if ($script:ShellProcessNames -contains $name) { $result += $c; continue }
+        if ($name -ieq 'cmd.exe' -and
+            @(Get-ChildProcess -Index $Index -Parent $c | Where-Object { $script:PowerShellProcessNames -contains [string]$_.Name }).Count -gt 0) {
+            $result += $c
+        }
     }
+    return $result   # 呼ぶ側で @() に包む
+}
+
+function Test-ProcessTreeListening {
+    <# $Root とその子孫に、$Listening（PID -> $true）があるか #>
+    param($Index, $Root, [hashtable]$Listening)
+    $queue = New-Object System.Collections.Queue
+    $queue.Enqueue($Root)
     $seen = @{}
     while ($queue.Count -gt 0) {
-        $c = $queue.Dequeue()
-        $id = [int]$c.ProcessId
+        $p = $queue.Dequeue()
+        $id = [int]$p.ProcessId
         if ($seen.ContainsKey($id)) { continue }
         $seen[$id] = $true
         if ($Listening.ContainsKey($id)) { return $true }
-        if (-not $children.ContainsKey($id)) { continue }
-        foreach ($d in $children[$id]) {
-            if ($null -eq $d.CreationDate -or $d.CreationDate -lt $c.CreationDate) { continue }
-            $queue.Enqueue($d)
-        }
+        foreach ($c in @(Get-ChildProcess -Index $Index -Parent $p)) { $queue.Enqueue($c) }
     }
     return $false
+}
+
+function Test-ServerShell {
+    <# セッションのプロセス $SessionId の裏のシェル（Get-BackgroundShell）が 1 つ以上あり、その全部の下に、$Listening（PID -> $true。
+       TCP で待ち受けるポートの持ち主）があれば $true（dev サーバーだけが動いている。D-173）。ビルドなど、待ち受けないシェルも動いていれば $false。
+       $Index（New-ProcessIndex）を渡さなければ、$Processes から作る #>
+    param([object[]]$Processes, [hashtable]$Listening, [int]$SessionId, $Index = $null)
+    if ($null -eq $Index) { $Index = New-ProcessIndex -Processes $Processes }
+    $self = $Index.ById[$SessionId]
+    if ($null -eq $self -or $null -eq $self.CreationDate) { return $false }
+    $shells = @(Get-BackgroundShell -Index $Index -Session $self)
+    if ($shells.Count -eq 0) { return $false }
+    foreach ($shell in $shells) {
+        if (-not (Test-ProcessTreeListening -Index $Index -Root $shell -Listening $Listening)) { return $false }
+    }
+    return $true
 }
 
 function Get-ShellIdleChoice {
@@ -474,7 +513,8 @@ function Update-ServerShells {
         foreach ($id in @(& $GetListening)) { $listening[[int]$id] = $true }
     }
     catch { return }
-    foreach ($e in $shells) { $e.Server = Test-ServerShell -Processes $procs -Listening $listening -SessionId ([int]$e.Key) }
+    $index = New-ProcessIndex -Processes $procs   # 1 回の取り込みで 1 回だけ作る
+    foreach ($e in $shells) { $e.Server = Test-ServerShell -Processes $procs -Listening $listening -SessionId ([int]$e.Key) -Index $index }
 }
 
 function Initialize-ShellProbeType {
