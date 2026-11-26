@@ -153,6 +153,173 @@ Assert-Equal (Get-Rank ([pscustomobject]@{ Status = 'idle'; Unread = $true })) 1
 Assert-Equal (Get-Rank ([pscustomobject]@{ Status = 'busy'; Unread = $false })) 2 '並び順: 実行中'
 Assert-Equal (Get-Rank ([pscustomobject]@{ Status = 'idle'; Unread = $false })) 3 '並び順: 待機が最後'
 Assert-Equal (Get-StatusLabel ([pscustomobject]@{ Status = 'waiting'; WaitingFor = 'sandbox request' })) '待ち（sandbox request）' '未知の waitingFor はそのまま表示する'
+# shell（ターンが終わって裏のシェルだけが動いている。D-167〜D-169）
+Assert-Equal (Get-Rank ([pscustomobject]@{ Status = 'shell'; Unread = $true })) 1 '並び順: 未確認の shell は完了と同じ'
+Assert-Equal (Get-Rank ([pscustomobject]@{ Status = 'shell'; Unread = $false })) 2 '並び順: 確認した shell は実行中と同じ'
+Assert-Equal (Get-StatusLabel ([pscustomobject]@{ Status = 'shell'; Unread = $true })) '完了' '未確認の shell は完了'
+Assert-Equal (Get-StatusLabel ([pscustomobject]@{ Status = 'shell'; Unread = $false })) 'シェル実行中' '確認した shell はシェル実行中'
+Assert-Equal (Get-AlertLevel @([pscustomobject]@{ Key = '1'; Status = 'busy'; Unread = $false }, [pscustomobject]@{ Key = '2'; Status = 'shell'; Unread = $false })) 'busy' 'トレイ: 実行中とシェル実行中だけなら緑'
+Assert-Equal (Get-AlertLevel @([pscustomobject]@{ Key = '2'; Status = 'shell'; Unread = $true })) 'done' 'トレイ: 未確認の shell は完了'
+
+# ---------------------------------------------------------------------------
+Write-Host '== dev サーバーの見分け（Test-ServerShell / Update-ServerShells / Update-ShellIdle。D-171、D-172）'
+$tp = [datetime]'2026-01-03T00:00:00'
+function New-Proc {
+    param([int]$Id, [int]$Parent, [string]$Name, $Created)
+    return [pscustomobject]@{ ProcessId = $Id; ParentProcessId = $Parent; Name = $Name; CreationDate = $Created }
+}
+$script:FakeProcs = @(
+    # 100: 裏のシェル（Bash のツール）が dev サーバーだけ。MCP サーバー（直下の node と、cmd /c npx の形）もある
+    (New-Proc 100 1 'claude.exe' $tp)
+    (New-Proc 101 100 'bash.exe' $tp.AddSeconds(1))
+    (New-Proc 102 101 'bash.exe' $tp.AddSeconds(2))
+    (New-Proc 103 102 'python.exe' $tp.AddSeconds(3))
+    (New-Proc 110 100 'node.exe' $tp.AddSeconds(1))
+    (New-Proc 111 110 'node.exe' $tp.AddSeconds(2))
+    (New-Proc 112 100 'cmd.exe' $tp.AddSeconds(1))
+    (New-Proc 113 112 'node.exe' $tp.AddSeconds(2))
+    # 150: dev サーバーの裏のシェルと、待ち受けない裏のシェル（ビルドなど）
+    (New-Proc 150 1 'claude.exe' $tp)
+    (New-Proc 151 150 'bash.exe' $tp.AddSeconds(1))
+    (New-Proc 152 151 'node.exe' $tp.AddSeconds(2))
+    (New-Proc 153 150 'bash.exe' $tp.AddSeconds(5))
+    (New-Proc 154 153 'node.exe' $tp.AddSeconds(6))
+    # 170: PowerShell のツール（cmd.exe の下の pwsh.exe）の dev サーバー
+    (New-Proc 170 1 'claude.exe' $tp)
+    (New-Proc 171 170 'cmd.exe' $tp.AddSeconds(1))
+    (New-Proc 172 171 'pwsh.exe' $tp.AddSeconds(2))
+    (New-Proc 173 172 'node.exe' $tp.AddSeconds(3))
+    (New-Proc 174 170 'powershell.exe' $tp.AddSeconds(4))
+    # 175: 裏のシェルは、cmd.exe の下の pwsh.exe（PowerShell のツール）だけ
+    (New-Proc 175 1 'claude.exe' $tp)
+    (New-Proc 176 175 'cmd.exe' $tp.AddSeconds(1))
+    (New-Proc 177 176 'pwsh.exe' $tp.AddSeconds(2))
+    (New-Proc 178 177 'node.exe' $tp.AddSeconds(3))
+    # 180: セッションより前に起動したシェル（PID の使い回し）。190: 親より前に起動した子
+    (New-Proc 180 1 'claude.exe' $tp)
+    (New-Proc 181 180 'bash.exe' $tp.AddSeconds(-5))
+    (New-Proc 182 180 'pwsh.exe' $tp.AddSeconds(1))
+    (New-Proc 190 1 'claude.exe' $tp)
+    (New-Proc 191 190 'pwsh.exe' $tp.AddSeconds(1))
+    (New-Proc 192 191 'node.exe' $tp.AddSeconds(-10))
+    # 200: 名前の大文字小文字と、起動時刻が分からない子
+    (New-Proc 200 1 'claude.exe' $tp)
+    (New-Proc 201 200 'BASH.EXE' $tp.AddSeconds(1))
+    (New-Proc 202 201 'node.exe' $null)
+    # 300: セッションの起動時刻が分からない。310: 裏のシェルがない（MCP サーバーだけが待ち受けている）
+    (New-Proc 300 1 'claude.exe' $null)
+    (New-Proc 301 300 'bash.exe' $tp.AddSeconds(1))
+    (New-Proc 310 1 'claude.exe' $tp)
+    (New-Proc 311 310 'cmd.exe' $tp.AddSeconds(1))
+    (New-Proc 312 311 'node.exe' $tp.AddSeconds(2))
+)
+Assert-True (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 103 = $true } -SessionId 100) '裏のシェルの子孫が待ち受けていれば dev サーバー（MCP サーバーは裏のシェルと数えない）'
+Assert-True (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 101 = $true } -SessionId 100) 'シェルそのものが待ち受けていても dev サーバー'
+Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{} -SessionId 100) $false '待ち受けるプロセスがなければ dev サーバーでない'
+Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 100 = $true; 110 = $true; 111 = $true; 112 = $true; 113 = $true } -SessionId 100) $false 'セッションそのものと、MCP サーバー（直下の node と、下で node が動く cmd.exe）は見ない'
+Assert-True (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 152 = $true; 154 = $true } -SessionId 150) '裏のシェルが全部 dev サーバーなら dev サーバー'
+Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 152 = $true } -SessionId 150) $false '待ち受けない裏のシェル（ビルドなど）も動いていれば、dev サーバーだけではない（D-173）'
+Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 173 = $true } -SessionId 170) $false 'cmd.exe の下の pwsh.exe（PowerShell のツール）は裏のシェルと数える（待ち受けない powershell.exe があれば dev サーバーだけではない）'
+Assert-True (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 173 = $true; 174 = $true } -SessionId 170) 'cmd.exe の下の pwsh.exe と、直下の powershell.exe が両方待ち受けていれば dev サーバー'
+Assert-True (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 178 = $true } -SessionId 175) '裏のシェルが cmd.exe の下の pwsh.exe（PowerShell のツール）だけでも、dev サーバーを見分ける'
+Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 182 = $true } -SessionId 180) $true 'セッションより前に起動したシェル（PID の使い回し）は、裏のシェルと数えない'
+Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 192 = $true } -SessionId 190) $false '親より前に起動した子はたどらない'
+Assert-True (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 201 = $true } -SessionId 200) 'シェルの名前は大文字小文字を区別しない'
+Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 202 = $true } -SessionId 200) $false '起動時刻が分からない子はたどらない'
+Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 103 = $true } -SessionId 200) $false 'ほかのセッションの dev サーバーは見ない'
+Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 301 = $true } -SessionId 300) $false 'セッションの起動時刻が分からなければ、たどらない'
+Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 311 = $true; 312 = $true } -SessionId 310) $false '裏のシェルがなければ（MCP サーバーだけが待ち受けていても）dev サーバーでない'
+Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 103 = $true } -SessionId 999) $false 'セッションのプロセスがなければ dev サーバーでない'
+$fakeIndex = New-ProcessIndex -Processes $script:FakeProcs
+Assert-True (Test-ServerShell -Processes @() -Listening @{ 103 = $true } -SessionId 100 -Index $fakeIndex) '作っておいた表（New-ProcessIndex）を渡せば、それを使う'
+
+$fresh = New-StateEntry -Key '100' -Status 'shell' -StartedAt $null -Now $tp
+Assert-Equal "$($null -eq $fresh.Server)|$($null -eq $fresh.ShellOverride)|$($fresh.ShellIdle)" 'True|True|False' '新しいセッションは、見分けも右クリックの選択もまだ'
+$eShell = New-StateEntry -Key '100' -Status 'shell' -StartedAt $null -Now $tp
+$eBusy = New-StateEntry -Key '200' -Status 'busy' -StartedAt $null -Now $tp; $eBusy.Server = $true
+$eCodex = New-StateEntry -Key 'codex:s1' -Status 'idle' -StartedAt $null -Now $tp
+$eOdd = New-StateEntry -Key 'orca:e:p' -Status 'shell' -StartedAt $null -Now $tp
+$script:ProbeCalls = 0
+$getProcs = { $script:ProbeCalls++; $script:FakeProcs }
+$getListen = { @(103) }
+Update-ServerShells -Entries @($eShell, $eBusy, $eCodex, $eOdd) -GetProcesses $getProcs -GetListening $getListen
+Assert-Equal $eShell.Server $true 'shell のセッションに dev サーバーがあるかを見分ける'
+Assert-Equal $eBusy.Server $null 'shell でないセッションは、見分けを消す'
+Assert-Equal $eOdd.Server $null 'PID でないキーのセッションは、見分けない'
+Assert-Equal $script:ProbeCalls 1 'プロセスの一覧は、1 回の取り込みで 1 回だけ取る'
+Update-ServerShells -Entries @($eBusy, $eCodex) -GetProcesses $getProcs -GetListening $getListen
+Assert-Equal $script:ProbeCalls 1 'shell のセッションがなければ、プロセスを調べない'
+Update-ServerShells -Entries @($eShell) -GetProcesses { throw 'probe failed' } -GetListening $getListen
+Assert-Equal $eShell.Server $true '調べられなければ、前の見分けのまま'
+
+$eSrv = New-StateEntry -Key '1' -Status 'shell' -StartedAt $null -Now $tp; $eSrv.Server = $true
+$eSh = New-StateEntry -Key '2' -Status 'shell' -StartedAt $null -Now $tp; $eSh.Server = $false
+$eRun = New-StateEntry -Key '3' -Status 'busy' -StartedAt $null -Now $tp; $eRun.ShellOverride = $true
+Update-ShellIdle -Entries @($eSrv, $eSh, $eRun) -AutoIdle $true
+Assert-Equal "$($eSrv.ShellIdle)|$($eSh.ShellIdle)|$($eRun.ShellIdle)" 'True|False|False' 'メニューがオンなら、dev サーバーのセッションだけ待機として出す（shell でなければ出さない）'
+Assert-Equal "$(Get-StatusLabel $eSrv)|$(Get-Rank $eSrv)" '待機（サーバー）|3' '待機として出す dev サーバーは「待機（サーバー）」で、並びは待機'
+Assert-Equal "$(Get-StatusLabel $eSh)|$(Get-Rank $eSh)" 'シェル実行中|2' 'dev サーバーでないシェルは、シェル実行中のまま'
+$pd = Get-ThemePalette -Theme 'Dark'
+Assert-True ([object]::ReferenceEquals((Get-RowStyle -Palette $pd -Entry $eSrv), $pd.Rows[3])) '待機として出す行は、待機の色'
+Assert-Equal (Get-AlertLevel @($eRun, $eSrv)) 'none' 'トレイ: 待機として出すものは、待機と数える'
+Assert-Equal (Test-SessionVisible ([pscustomobject]@{ Status = 'shell'; Unread = $false; Sdk = $true; ShellIdle = $true })) $false '拡張機能のパネルのセッションは、待機として出すなら一覧に出さない'
+Update-ShellIdle -Entries @($eSrv, $eSh) -AutoIdle $false
+Assert-Equal "$($eSrv.ShellIdle)|$(Get-StatusLabel $eSrv)" 'False|シェル実行中' 'メニューがオフなら、dev サーバーもシェル実行中'
+$eSh.ShellOverride = $true
+Update-ShellIdle -Entries @($eSrv, $eSh) -AutoIdle $false
+Assert-Equal "$($eSh.ShellIdle)|$(Get-StatusLabel $eSh)" 'True|待機（シェル）' '右クリックで選べば、dev サーバーでないシェルも待機（シェル）として出す（メニューがオフでも）'
+$eSrv.ShellOverride = $false
+Update-ShellIdle -Entries @($eSrv, $eSh) -AutoIdle $true
+Assert-Equal "$($eSrv.ShellIdle)|$(Get-StatusLabel $eSrv)" 'False|シェル実行中' '右クリックで外せば、メニューがオンでも dev サーバーをシェル実行中として出す'
+Assert-Equal "$(Get-ShellIdleChoice -Entry $eSrv -AutoIdle $true)|$(Get-ShellIdleChoice -Entry $eSh -AutoIdle $false)" 'False|True' '右クリックの選択は、メニューより先に当てる'
+$eSh.Unread = $true
+Assert-Equal "$(Get-StatusLabel $eSh)|$(Get-Rank $eSh)" '完了|1' '待機として出すものでも、確認するまでは完了（D-171 の Q6）'
+$eSh.Unread = $false
+$eSh.Status = 'idle'
+Update-ShellIdle -Entries @($eSh) -AutoIdle $true
+Assert-Equal "$($eSh.ShellIdle)|$(Get-StatusLabel $eSh)" 'False|待機' '裏のシェルが止まれば、ふつうの待機'
+Assert-Equal $eSh.ShellOverride $true '右クリックの選択は、セッションが終わるまで覚える'
+
+Write-Host '== AndonShellProbe（プロセスの一覧と、TCP で待ち受けるポートの持ち主。D-172）'
+Initialize-ShellProbeType
+Initialize-ShellProbeType   # 2 回目は何もしない（定義し直さない）
+$sw = [Diagnostics.Stopwatch]::StartNew()
+$native = @([AndonShellProbe]::GetProcesses())
+$nativeMs = $sw.ElapsedMilliseconds
+$me = @($native | Where-Object { $_.ProcessId -eq $PID })
+Assert-Equal $me.Count 1 'プロセスの一覧に、このプロセスがいる'
+$meProc = Get-Process -Id $PID
+Assert-True ($me.Count -eq 1 -and $me[0].ParentProcessId -gt 0 -and $me[0].Name -ieq ($meProc.ProcessName + '.exe')) 'このプロセスの親の PID と名前を読める'
+Assert-True ($me.Count -eq 1 -and $me[0].CreationDate -is [datetime] -and [Math]::Abs(($me[0].CreationDate - $meProc.StartTime).TotalSeconds) -lt 2) 'このプロセスの起動時刻は、Get-Process と同じ'
+$parentId = 0; if ($me.Count -eq 1) { $parentId = $me[0].ParentProcessId }
+Assert-True (@($native | Where-Object { $_.ProcessId -eq $parentId }).Count -le 1) '親の PID で、親を引ける（重ならない）'
+$sw.Restart()
+$listeningBefore = @([AndonShellProbe]::GetListeningProcessIds())
+$listenMs = $sw.ElapsedMilliseconds
+Write-Host ("       プロセス {0} 個を {1} ms、待ち受けの持ち主 {2} 個を {3} ms で取った" -f $native.Count, $nativeMs, $listeningBefore.Count, $listenMs)
+$listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, 0)
+$listener.Start()
+try { Assert-True (@([AndonShellProbe]::GetListeningProcessIds()) -contains $PID) 'IPv4 で待ち受けを始めたら、持ち主の一覧にこのプロセスが入る' }
+finally { $listener.Stop() }
+$listener6 = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::IPv6Loopback, 0)
+$started6 = $false
+try { $listener6.Start(); $started6 = $true } catch { Write-Host '[SKIP] IPv6 で待ち受けられないので、IPv6 の持ち主の一覧は確かめない' }
+if ($started6) {
+    try {
+        $listening6 = @([AndonShellProbe]::GetListeningProcessIds())
+        Assert-True ($listening6 -contains $PID) 'IPv6 で待ち受けを始めたら、持ち主の一覧にこのプロセスが入る'
+    }
+    finally { $listener6.Stop() }
+}
+Assert-True (@([AndonShellProbe]::GetListeningProcessIds() | Where-Object { $_ -le 4 }).Count -eq 0) '持ち主の一覧に、Idle（0）と System（4）は入れない'
+
+# 画面の部分で、取り込みのたびに見分け、メニューと右クリックで決め直しているか
+$shellAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'andon.ps1'), [ref]$null, [ref]$null)
+$serverCalls = @($shellAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Update-ServerShells' }, $true))
+$idleCalls = @($shellAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Update-ShellIdle' }, $true))
+Assert-Equal "$($serverCalls.Count)|$($idleCalls.Count)" '1|3' 'Update-ServerShells は取り込みの 1 か所で、Update-ShellIdle は取り込み・トレイのメニュー・右クリックの 3 か所で呼ぶ'
+$menuTexts = @($shellAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] }, $true) | ForEach-Object { $_.Value })
+Assert-True ($menuTexts -contains 'dev サーバーは待機として出す' -and $menuTexts -contains '待機として出す') 'トレイのメニューに「dev サーバーは待機として出す」、行の右クリックに「待機として出す」がある'
 
 # ---------------------------------------------------------------------------
 Write-Host '== Get-AlertLevel / Get-AlertNotice'
@@ -564,6 +731,7 @@ Assert-Equal (Test-SessionVisible ([pscustomobject]@{ Status = 'idle'; Unread = 
 Assert-True (Test-SessionVisible ([pscustomobject]@{ Status = 'busy'; Unread = $false; Sdk = $true })) 'SDK でも実行中は出す'
 Assert-True (Test-SessionVisible ([pscustomobject]@{ Status = 'waiting'; Unread = $true; Sdk = $true })) 'SDK でも待ちは出す'
 Assert-True (Test-SessionVisible ([pscustomobject]@{ Status = 'idle'; Unread = $true; Sdk = $true })) 'SDK でも完了は出す'
+Assert-True (Test-SessionVisible ([pscustomobject]@{ Status = 'shell'; Unread = $false; Sdk = $true })) 'SDK でもシェル実行中は出す（実行中と同じ。D-169）'
 Assert-True (Test-SessionVisible ([pscustomobject]@{ Status = 'idle'; Unread = $false; Sdk = $false })) 'ターミナルの待機中は出す'
 Assert-True (Test-SessionVisible ([pscustomobject]@{ Status = 'idle'; Unread = $false; Sdk = $null })) '未判定の待機中は出す'
 
@@ -1000,6 +1168,17 @@ try {
     New-ItemProperty -LiteralPath $settingsKey -Name 'OrcaSessions' -PropertyType String -Value '1' -Force | Out-Null
     Assert-Equal (Read-AndonSettings -Key $settingsKey).OrcaSessions $null 'DWORD でない OrcaSessions は使わない'
 
+    # 「dev サーバーは待機として出す」（D-172）。0 か 1 の DWORD だけを使い、ほかは既定（オン）にする
+    Assert-Equal (Read-AndonSettings -Key $settingsKey).ServerIdle $null 'ServerIdle を覚えていなければ $null（既定のオン）'
+    Write-AndonSettings -Key $settingsKey -Values ([ordered]@{ ServerIdle = 0 })
+    Assert-Equal (Read-AndonSettings -Key $settingsKey).ServerIdle $false 'ServerIdle が 0 ならオフ'
+    Write-AndonSettings -Key $settingsKey -Values ([ordered]@{ ServerIdle = 1 })
+    Assert-Equal (Read-AndonSettings -Key $settingsKey).ServerIdle $true 'ServerIdle が 1 ならオン'
+    Write-AndonSettings -Key $settingsKey -Values ([ordered]@{ ServerIdle = 2 })
+    Assert-Equal (Read-AndonSettings -Key $settingsKey).ServerIdle $null 'ServerIdle が 0 か 1 でなければ使わない'
+    New-ItemProperty -LiteralPath $settingsKey -Name 'ServerIdle' -PropertyType String -Value '0' -Force | Out-Null
+    Assert-Equal (Read-AndonSettings -Key $settingsKey).ServerIdle $null 'DWORD でない ServerIdle は使わない'
+
     # 選んだ Orca のペアリング先（D-141、D-149）。文字の値で、ID を ; で区切る。形の違うものは使わない
     Assert-Equal @((Read-AndonSettings -Key $settingsKey).OrcaRemote).Count 0 'OrcaRemote を覚えていなければ、どれも選んでいない'
     Write-AndonSettingText -Key $settingsKey -Name 'OrcaRemote' -Value 'env-1;bad id;env-2'
@@ -1126,6 +1305,40 @@ foreach ($rank in 0..2) {
 # ライトの待機は灰色の字で、もともとコントラスト比が 4.5 未満（これまでと同じ見た目）。マウスを乗せても 3 以上は保つ
 $ratio = Get-ContrastRatio -Fore $light.Rows[3].Fore -Back $light.Rows[3].Hover
 Assert-True ($ratio -ge 3) ("ライトの待機の行は、マウスを乗せても 3 以上で読める（コントラスト比 {0:0.0}）" -f $ratio)
+
+# シェル実行中の行（D-170）: 実行中より白っぽい緑。字、太字、マウスを乗せたときの決まりは、実行中と同じ
+foreach ($p in @($light, $dark)) {
+    $run = $p.Rows[2]; $sh = $p.Rows['shell']
+    Assert-True ($null -ne $sh -and $sh.Back -and $sh.Hover) "$($p.Name) は、シェル実行中の行の色を持つ"
+    $lighter = @(0..2 | Where-Object { $sh.Back[$_] -le $run.Back[$_] -or $sh.Back[$_] -gt 255 }).Count -eq 0
+    Assert-True $lighter "$($p.Name) のシェル実行中の行は、実行中の行より白っぽい（R、G、B のどれも明るい）"
+    Assert-True ($sh.Back[1] -gt $sh.Back[0] -and $sh.Back[1] -gt $sh.Back[2]) "$($p.Name) のシェル実行中の行も、緑がかっている"
+    Assert-Equal ('{0}|{1}' -f (Format-Rgb $sh.Fore), $sh.Bold) ('{0}|{1}' -f (Format-Rgb $run.Fore), $run.Bold) "$($p.Name) のシェル実行中の字と太字は、実行中と同じ"
+    Assert-Equal @(@($sh.Back, $sh.Hover) | Where-Object { $_.Count -ne 3 -or @($_ | Where-Object { $_ -lt 0 -or $_ -gt 255 }).Count -gt 0 }).Count 0 "$($p.Name) のシェル実行中の色は、0〜255 の R, G, B"
+}
+$diff = @(0..2 | ForEach-Object { $light.Rows['shell'].Back[$_] - $light.Rows['shell'].Hover[$_] })
+Assert-True (@($diff | Where-Object { $_ -lt 0 -or $_ -gt 32 }).Count -eq 0 -and @($diff | Where-Object { $_ -gt 0 }).Count -gt 0) 'ライトのシェル実行中の行は、マウスを乗せると少し暗くなる'
+$diff = @(0..2 | ForEach-Object { $dark.Rows['shell'].Hover[$_] - $dark.Rows['shell'].Back[$_] })
+Assert-True (@($diff | Where-Object { $_ -lt 0 -or $_ -gt 32 }).Count -eq 0 -and @($diff | Where-Object { $_ -gt 0 }).Count -gt 0) 'ダークのシェル実行中の行は、マウスを乗せると少し明るくなる'
+foreach ($c in @($dark.Rows['shell'].Back, $dark.Rows['shell'].Hover)) {
+    $ratio = Get-ContrastRatio -Fore $dark.Rows['shell'].Fore -Back $c
+    Assert-True ($ratio -ge 4.5) ("ダークのシェル実行中の行の字は、マウスを乗せても読める（コントラスト比 {0:0.0} が 4.5 以上）" -f $ratio)
+}
+foreach ($c in @($light.Rows['shell'].Back, $light.Rows['shell'].Hover)) {
+    $ratio = Get-ContrastRatio -Fore @(0, 0, 0) -Back $c
+    Assert-True ($ratio -ge 4.5) ("ライトのシェル実行中の行の字は、マウスを乗せても読める（コントラスト比 {0:0.0} が 4.5 以上）" -f $ratio)
+}
+foreach ($p in @($light, $dark)) {
+    Assert-True ([object]::ReferenceEquals((Get-RowStyle -Palette $p -Entry ([pscustomobject]@{ Status = 'shell'; Unread = $false })), $p.Rows['shell'])) "$($p.Name): 確認した shell は、シェル実行中の色"
+    Assert-True ([object]::ReferenceEquals((Get-RowStyle -Palette $p -Entry ([pscustomobject]@{ Status = 'shell'; Unread = $true })), $p.Rows[1])) "$($p.Name): 未確認の shell は、完了の色"
+    Assert-True ([object]::ReferenceEquals((Get-RowStyle -Palette $p -Entry ([pscustomobject]@{ Status = 'busy'; Unread = $false })), $p.Rows[2])) "$($p.Name): 実行中は、実行中の色"
+    Assert-True ([object]::ReferenceEquals((Get-RowStyle -Palette $p -Entry ([pscustomobject]@{ Status = 'waiting'; Unread = $true })), $p.Rows[0])) "$($p.Name): 待ちは、待ちの色"
+    Assert-True ([object]::ReferenceEquals((Get-RowStyle -Palette $p -Entry ([pscustomobject]@{ Status = 'idle'; Unread = $false })), $p.Rows[3])) "$($p.Name): 待機は、待機の色"
+}
+# 画面の部分で行の色を決める所が、Get-RowStyle を通しているか（Rows を並び順だけで引かない）
+$rankLookups = @($andonAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.IndexExpressionAst] -and $n.Target.Extent.Text -match '\.Rows$' -and $n.Index.Extent.Text -match 'Get-Rank' }, $true))
+$styleCalls = @($andonAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-RowStyle' }, $true))
+Assert-Equal ('{0}|{1}' -f $rankLookups.Count, $styleCalls.Count) '1|2' '行の色は Get-RowStyle の中でだけ並び順から引き、一覧と縦表示のマウスの 2 か所が Get-RowStyle を使う'
 
 # ---------------------------------------------------------------------------
 Write-Host '== andon.ps1: 縦表示（Get-VerticalName / Get-VerticalRowHeight / Get-VerticalItemLayout）'
@@ -1723,6 +1936,85 @@ try {
     [IO.File]::SetLastWriteTimeUtc($jsonFile, [datetime]::UtcNow.AddMinutes(1))
     Assert-True ((Get-SessionSignature -Path $sessions) -ne $sig1) '更新時刻が変わると署名も変わる'
     Assert-Equal (Get-SessionSignature -Path (Join-Path $tmp 'missing')) '' 'ディレクトリがなければ空'
+
+    Write-Host '== Get-SessionFileStatus / Update-SessionState の shell（D-167〜D-169）'
+    $utf8 = New-Object Text.UTF8Encoding($false)
+    [IO.File]::WriteAllText((Join-Path $sessions '201.json'), '{"pid":201,"name":"セッション","status":"shell","updatedAt":1}', $utf8)
+    [IO.File]::WriteAllText((Join-Path $sessions '202.json'), '{"pid":202,"status":"busy"}', $utf8)
+    [IO.File]::WriteAllText((Join-Path $sessions '203.json'), '{"pid":203,"status":', $utf8)
+    [IO.File]::WriteAllText((Join-Path $sessions '204.json'), '{"pid":204,"status":"Shell"}', $utf8)
+    [IO.File]::WriteAllText((Join-Path $sessions '205.json'), '{"pid":205}', $utf8)
+    [IO.File]::WriteAllText((Join-Path $sessions '206.json'), ('{"pid":206,"status":"shell","pad":"' + ('x' * 300000) + '"}'), $utf8)
+    [IO.File]::WriteAllText((Join-Path $sessions '207.json'), '{"pid":207,"status":["shell"]}', $utf8)
+    # PID の形を確かめないと読んでしまう場所に、読める記録を置いておく
+    [IO.File]::WriteAllText((Join-Path $sessions '100.0123abcd.json'), '{"status":"shell"}', $utf8)
+    [IO.File]::WriteAllText((Join-Path $tmp '201.json'), '{"status":"shell"}', $utf8)
+    Assert-Equal (Get-SessionFileStatus -Path $sessions -ProcessId '201') 'shell' '記録の status を読む'
+    Assert-Equal (Get-SessionFileStatus -Path $sessions -ProcessId '202') 'busy' 'shell 以外の値もそのまま返す'
+    Assert-Equal (Get-SessionFileStatus -Path $sessions -ProcessId '203') $null '壊れた記録は $null'
+    Assert-Equal (Get-SessionFileStatus -Path $sessions -ProcessId '205') $null 'status がなければ $null'
+    Assert-Equal (Get-SessionFileStatus -Path $sessions -ProcessId '206') $null '大きすぎる記録は読まない'
+    Assert-Equal (Get-SessionFileStatus -Path $sessions -ProcessId '207') $null 'status が文字列でなければ $null'
+    Assert-Equal (Get-SessionFileStatus -Path $sessions -ProcessId '299') $null '記録がなければ $null'
+    Assert-Equal (Get-SessionFileStatus -Path (Join-Path $tmp 'missing') -ProcessId '201') $null 'フォルダがなければ $null'
+    Assert-Equal (Get-SessionFileStatus -Path $sessions -ProcessId '100.0123abcd') $null 'PID の形でなければ読まない（*.key の名前を作らない）'
+    Assert-Equal (Get-SessionFileStatus -Path $sessions -ProcessId '..\201') $null 'PID に区切りを含めない'
+    Assert-Equal (Get-SessionFileStatus -Path '' -ProcessId '201') $null 'フォルダを渡さなければ読まない'
+
+    $script:State = @{}
+    $ts = [datetime]'2026-01-02T00:00:00'
+    $null = Update-SessionState -Sessions @((New-Session 201 'busy')) -Now $ts
+    Assert-Equal $script:State['201'].Status 'busy' 'sessions フォルダを渡さなければ、記録を読まない'
+    $script:State = @{}
+    $null = Update-SessionState -Sessions @((New-Session 201 'busy'), (New-Session 202 'busy'), (New-Session 203 'busy'), (New-Session 204 'busy'), (New-Session 299 'busy')) -Now $ts -SessionsDir $sessions
+    Assert-Equal $script:State['201'].Status 'shell' '起動したとき: --json が busy で記録が shell なら shell'
+    Assert-Equal $script:State['201'].Unread $false '起動したときの shell は確認済み（シェル実行中）'
+    Assert-Equal $script:State['202'].Status 'busy' '記録も busy なら busy のまま'
+    Assert-Equal $script:State['203'].Status 'busy' '記録が読めなければ busy のまま（フェイルソフト）'
+    Assert-Equal $script:State['204'].Status 'busy' '記録の値がちょうど shell でなければ使わない'
+    Assert-Equal $script:State['299'].Status 'busy' '記録がなければ busy のまま'
+
+    $script:State = @{}
+    $null = Update-SessionState -Sessions @((New-Session 201 'idle'), (New-Session 202 'busy')) -Now $ts -SessionsDir $sessions
+    Assert-Equal $script:State['201'].Status 'idle' '--json が busy でなければ記録は使わない'
+    [IO.File]::WriteAllText((Join-Path $sessions '202.json'), '{"pid":202,"status":"shell"}', $utf8)
+    $alert = Update-SessionState -Sessions @((New-Session 201 'idle'), (New-Session 202 'busy')) -Now $ts.AddSeconds(5) -SessionsDir $sessions
+    Assert-Equal $alert $true 'busy から shell は通知する（D-168）'
+    Assert-Equal $script:State['202'].Status 'shell' 'busy から shell になる'
+    Assert-Equal (Get-StatusLabel $script:State['202']) '完了' 'busy から shell になったものは完了'
+    Assert-Equal $script:State['202'].AlertAt $ts.AddSeconds(5) 'shell になった時刻で通知する'
+    Assert-Equal (Get-AlertNotice -Entries @($script:State.Values) -Now $ts.AddSeconds(5)).Text '完了: s202' '通知の本文は完了'
+    [IO.File]::WriteAllText((Join-Path $sessions '202.json'), '{"pid":202,"status":"idle"}', $utf8)
+    $alert = Update-SessionState -Sessions @((New-Session 201 'idle'), (New-Session 202 'idle')) -Now $ts.AddSeconds(10) -SessionsDir $sessions
+    Assert-Equal $alert $false '未確認の shell から idle（裏のシェルが止まった）は通知しない'
+    Assert-Equal $script:State['202'].Unread $true '未確認の shell から idle は、完了のまま'
+    Assert-Equal $script:State['202'].Since $ts.AddSeconds(5) '未確認の完了の経過は、完了したときから数える'
+    $null = Update-SessionState -Sessions @((New-Session 201 'idle'), (New-Session 202 'busy')) -Now $ts.AddSeconds(15) -SessionsDir $sessions
+    [IO.File]::WriteAllText((Join-Path $sessions '202.json'), '{"pid":202,"status":"shell"}', $utf8)
+    $null = Update-SessionState -Sessions @((New-Session 201 'idle'), (New-Session 202 'busy')) -Now $ts.AddSeconds(20) -SessionsDir $sessions
+    $script:State['202'].Unread = $false   # 確認した
+    Assert-Equal (Get-StatusLabel $script:State['202']) 'シェル実行中' '確認したあとはシェル実行中'
+    [IO.File]::WriteAllText((Join-Path $sessions '202.json'), '{"pid":202,"status":"idle"}', $utf8)
+    $alert = Update-SessionState -Sessions @((New-Session 201 'idle'), (New-Session 202 'idle')) -Now $ts.AddSeconds(25) -SessionsDir $sessions
+    Assert-Equal $alert $false '確認した shell から idle は通知しない'
+    Assert-Equal (Get-StatusLabel $script:State['202']) '待機' '確認した shell から idle は待機'
+    Assert-Equal $script:State['202'].Since $ts.AddSeconds(25) '確認した shell から idle は、待機になった時刻から数える'
+    [IO.File]::WriteAllText((Join-Path $sessions '202.json'), '{"pid":202,"status":"shell"}', $utf8)
+    $alert = Update-SessionState -Sessions @((New-Session 201 'idle'), (New-Session 202 'busy')) -Now $ts.AddSeconds(30) -SessionsDir $sessions
+    Assert-Equal $alert $false '待機から shell（ターンの外で裏のシェルが動き出した）は通知しない'
+    Assert-Equal (Get-StatusLabel $script:State['202']) 'シェル実行中' '確認した待機から shell はシェル実行中'
+    $null = Update-SessionState -Sessions @((New-Session 201 'idle'), (New-Session 202 'waiting' 'permission prompt')) -Now $ts.AddSeconds(35) -SessionsDir $sessions
+    $alert = Update-SessionState -Sessions @((New-Session 201 'idle'), (New-Session 202 'busy')) -Now $ts.AddSeconds(40) -SessionsDir $sessions
+    Assert-Equal $alert $false 'waiting から shell（手元で拒否）は通知しない'
+    Assert-Equal $script:State['202'].Unread $false 'waiting から shell は未読にしない'
+    [IO.File]::WriteAllText((Join-Path $sessions '202.json'), '{"pid":202,"status":"busy"}', $utf8)
+    $null = Update-SessionState -Sessions @((New-Session 201 'idle'), (New-Session 202 'busy')) -Now $ts.AddSeconds(45) -SessionsDir $sessions
+    Assert-Equal (Get-StatusLabel $script:State['202']) '実行中' '記録が busy に戻れば実行中'
+    $script:State = @{}
+    Remove-Item -LiteralPath (Join-Path $sessions '100.0123abcd.json'), (Join-Path $tmp '201.json') -Force
+    # 画面の部分（ドットソースの境界より後ろ）で、claude agents --json の結果を取り込むときに sessions フォルダを渡しているか
+    $stateCalls = @($andonAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Update-SessionState' }, $true))
+    Assert-True ($stateCalls.Count -ge 1 -and @($stateCalls | Where-Object { $_.Extent.Text -notmatch '-SessionsDir\s+\$script:SessionsDir\b' }).Count -eq 0) 'Update-SessionState を呼ぶ所は、どれも sessions フォルダを渡す'
 
     Write-Host '== Resolve-VSCodeTarget'
     $ws = Join-Path $tmp 'ws'
@@ -2376,6 +2668,7 @@ $psJson = ConvertTo-OrcaPsJson @(
             (New-OrcaAgent 'tab2:leaf5' 'busy' -At 8000)
             (New-OrcaAgent 'tab2:leaf6' 'waiting' -At 9000 -Program 'working')
             (New-OrcaAgent 'tab2:leaf7' 'waiting' -At 9500)
+            (New-OrcaAgent 'tab2:leaf8' 'shell' -At 9800)
         ))
     (New-OrcaWorktree 'empty' '/home/user/empty')
 )
@@ -2389,7 +2682,7 @@ Assert-Equal (@($remote | ForEach-Object { Format-OrcaSession $_ }) -join "`n") 
         "orca:${envA}:tab2:leaf4|waiting|False|proj-b x (3)|/home/user/proj-b|claude|7000|True|permission prompt"
         "orca:${envA}:tab2:leaf6|waiting|False|proj-b x (4)|/home/user/proj-b|claude|9000|True|"
         "orca:${envA}:tab2:leaf7|waiting|False|proj-b x (5)|/home/user/proj-b|claude|9500|True|"
-    ) -join "`n") 'working は実行中、waiting は待ち（Orca が止まっていると見ていれば許可待ち）、done は完了、中断した done と idle は待機。知らない状態はそのまま出す。子の区画、ほかのエージェント、形の違う区画、重なり、形の違う状態、andon の状態の名前（busy）は出さない'
+    ) -join "`n") 'working は実行中、waiting は待ち（Orca が止まっていると見ていれば許可待ち）、done は完了、中断した done と idle は待機。知らない状態はそのまま出す。子の区画、ほかのエージェント、形の違う区画、重なり、形の違う状態、andon の状態の名前（busy、shell）は出さない'
 Assert-Equal (@($remote[0].PSObject.Properties.Name) -join ',') 'Key,Status,WaitingFor,Done,Name,Cwd,Agent,PaneKey,At,Active' 'プロンプト、返事、ツールの入力は取り出さない'
 Assert-True (-not ((ConvertTo-Json -Depth 5 $remote) -match 'secret')) '取り出したものに、プロンプトや返事の文字が入っていない'
 Assert-Equal (ConvertTo-OrcaRemoteSessions -Json (ConvertTo-OrcaPsJson @()) -EnvId $envA).Count 0 'workspace がなければ空'
