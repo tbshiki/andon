@@ -195,11 +195,13 @@ $script:FakeProcs = @(
     (New-Proc 176 175 'cmd.exe' $tp.AddSeconds(1))
     (New-Proc 177 176 'pwsh.exe' $tp.AddSeconds(2))
     (New-Proc 178 177 'node.exe' $tp.AddSeconds(3))
-    # 180: セッションより前に起動したシェル（PID の使い回し）と、親より前に起動した子
+    # 180: セッションより前に起動したシェル（PID の使い回し）。190: 親より前に起動した子
     (New-Proc 180 1 'claude.exe' $tp)
     (New-Proc 181 180 'bash.exe' $tp.AddSeconds(-5))
     (New-Proc 182 180 'pwsh.exe' $tp.AddSeconds(1))
-    (New-Proc 183 182 'node.exe' $tp.AddSeconds(-10))
+    (New-Proc 190 1 'claude.exe' $tp)
+    (New-Proc 191 190 'pwsh.exe' $tp.AddSeconds(1))
+    (New-Proc 192 191 'node.exe' $tp.AddSeconds(-10))
     # 200: 名前の大文字小文字と、起動時刻が分からない子
     (New-Proc 200 1 'claude.exe' $tp)
     (New-Proc 201 200 'BASH.EXE' $tp.AddSeconds(1))
@@ -221,7 +223,7 @@ Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 173 = 
 Assert-True (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 173 = $true; 174 = $true } -SessionId 170) 'cmd.exe の下の pwsh.exe と、直下の powershell.exe が両方待ち受けていれば dev サーバー'
 Assert-True (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 178 = $true } -SessionId 175) '裏のシェルが cmd.exe の下の pwsh.exe（PowerShell のツール）だけでも、dev サーバーを見分ける'
 Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 182 = $true } -SessionId 180) $true 'セッションより前に起動したシェル（PID の使い回し）は、裏のシェルと数えない'
-Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 183 = $true } -SessionId 180) $false '親より前に起動した子はたどらない'
+Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 192 = $true } -SessionId 190) $false '親より前に起動した子はたどらない'
 Assert-True (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 201 = $true } -SessionId 200) 'シェルの名前は大文字小文字を区別しない'
 Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 202 = $true } -SessionId 200) $false '起動時刻が分からない子はたどらない'
 Assert-Equal (Test-ServerShell -Processes $script:FakeProcs -Listening @{ 103 = $true } -SessionId 200) $false 'ほかのセッションの dev サーバーは見ない'
