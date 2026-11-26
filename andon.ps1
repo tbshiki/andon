@@ -1833,7 +1833,8 @@ function ConvertTo-OrcaRemoteSessions {
                 }
                 'done' { $status = 'idle'; $done = ((Get-JsonValue $a 'interrupted') -ne $true) }
                 'idle' { $status = 'idle' }
-                default { if ($state -cmatch '^[a-z][a-z-]{0,23}$' -and $state -cne 'busy') { $status = $state } }
+                # andon が自分の意味で使う状態の名前（busy、shell）は、知らない状態として出さない
+                default { if ($state -cmatch '^[a-z][a-z-]{0,23}$' -and @('busy', 'shell') -cnotcontains $state) { $status = $state } }
             }
             if (-not $status) { continue }
             $at = [long]0

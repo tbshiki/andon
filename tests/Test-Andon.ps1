@@ -2463,6 +2463,7 @@ $psJson = ConvertTo-OrcaPsJson @(
             (New-OrcaAgent 'tab2:leaf5' 'busy' -At 8000)
             (New-OrcaAgent 'tab2:leaf6' 'waiting' -At 9000 -Program 'working')
             (New-OrcaAgent 'tab2:leaf7' 'waiting' -At 9500)
+            (New-OrcaAgent 'tab2:leaf8' 'shell' -At 9800)
         ))
     (New-OrcaWorktree 'empty' '/home/user/empty')
 )
@@ -2476,7 +2477,7 @@ Assert-Equal (@($remote | ForEach-Object { Format-OrcaSession $_ }) -join "`n") 
         "orca:${envA}:tab2:leaf4|waiting|False|proj-b x (3)|/home/user/proj-b|claude|7000|True|permission prompt"
         "orca:${envA}:tab2:leaf6|waiting|False|proj-b x (4)|/home/user/proj-b|claude|9000|True|"
         "orca:${envA}:tab2:leaf7|waiting|False|proj-b x (5)|/home/user/proj-b|claude|9500|True|"
-    ) -join "`n") 'working は実行中、waiting は待ち（Orca が止まっていると見ていれば許可待ち）、done は完了、中断した done と idle は待機。知らない状態はそのまま出す。子の区画、ほかのエージェント、形の違う区画、重なり、形の違う状態、andon の状態の名前（busy）は出さない'
+    ) -join "`n") 'working は実行中、waiting は待ち（Orca が止まっていると見ていれば許可待ち）、done は完了、中断した done と idle は待機。知らない状態はそのまま出す。子の区画、ほかのエージェント、形の違う区画、重なり、形の違う状態、andon の状態の名前（busy、shell）は出さない'
 Assert-Equal (@($remote[0].PSObject.Properties.Name) -join ',') 'Key,Status,WaitingFor,Done,Name,Cwd,Agent,PaneKey,At,Active' 'プロンプト、返事、ツールの入力は取り出さない'
 Assert-True (-not ((ConvertTo-Json -Depth 5 $remote) -match 'secret')) '取り出したものに、プロンプトや返事の文字が入っていない'
 Assert-Equal (ConvertTo-OrcaRemoteSessions -Json (ConvertTo-OrcaPsJson @()) -EnvId $envA).Count 0 'workspace がなければ空'
